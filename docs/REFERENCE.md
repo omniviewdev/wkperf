@@ -192,7 +192,7 @@ Sampled hotspot findings require at least 20 ms and 0.1% of active wall time. A 
 
 Function identity is `(url,line,column,name)`, with `sourceID` in place of the URL when the URL is empty. Distinct anonymous functions on one minified line stay distinct. Reports print generated `file:line:column` and original locations when a map resolves them. Native frames retain their source identity even without a URL.
 
-Pass `--sourcemap path/to/bundle.js.map` or `--sourcemap path/to/maps` repeatedly. Standard v3 `mappings` and `names` resolve generated columns to original file, line, column, and name. Local bundle-adjacent maps and recording-adjacent bundle-name sidecars can be discovered without network requests. Ambiguous matches retain the generated frame with a warning. Without a matching map, minified profiles include a source-map hint; no source locations are invented.
+Pass `--sourcemap path/to/bundle.js.map` or `--sourcemap path/to/maps` repeatedly. Standard v3 mappings resolve original file, line, and column; function names use conservative declaration-oriented lookup rather than the parameter token at the profiler position. Anonymous frames do not inherit a nearby parameter name. Local bundle-adjacent maps and recording-adjacent bundle-name sidecars can be discovered without network requests. A directory scan warns and continues past unrelated unsupported maps; explicitly supplied unsupported map files still fail. Missing relocated sources retain their cleaned map-relative path with a warning rather than inventing a local absolute path. Ambiguous matches retain the generated frame with a warning.
 
 Hot functions retain a stable query `id`, self and inclusive time, weighted callers and callees, and `commonStack`. The common stack is the most frequent complete containing path by sample count, with weight and lexical tie-breaks; it is distinct from the heaviest window stack. Module grouping defaults to individual file URLs without query/hash. Use `--module-grouping parent-directory` for roll-up. Inclusive time overlaps between callers and callees; never add inclusive rows as a wall-time breakdown.
 
@@ -280,6 +280,8 @@ wkperf query recording.json depth --format json
 ### MCP
 
 `wkperf mcp` starts a stdio MCP server with tools backed by the same query engine. Connect it as a command-based server; stdout is reserved for JSON-RPC protocol messages and diagnostics go to stderr. Tools accept local recording paths, query arguments, and window bounds. Tool results use the same bounded structured query schema as the CLI. Requests and responses are bounded at 4 MiB, with explicit truncation metadata for cut result detail.
+
+Request IDs must be strings or integer literals; integers retain their exact value. Null, fractional, boolean, array, and object IDs receive `-32600` with a null response ID. An oversized line is discarded through its newline, rejected, and followed by normal processing of later requests. `initialize.serverInfo.version` uses the same installed-module build-info fallback as the version command. Recording and source-map inputs must be regular files; directories, devices, and named pipes are rejected before reading.
 
 ```json
 {
