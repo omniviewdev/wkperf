@@ -1,0 +1,76 @@
+// Package audit aggregates many recordings of the SAME build (different
+// scenes, optionally several runs per scene) into one non-comparison report:
+// where time goes overall, what to fix first, how far from a performant UI.
+package audit
+
+import (
+	"github.com/omniviewdev/wkperf/internal/insights"
+	"github.com/omniviewdev/wkperf/internal/scorecard"
+)
+
+// Run is one analyzed recording.
+type Run struct {
+	Source string
+	Report *insights.Report
+	Card   *scorecard.Scorecard
+}
+
+// Scene is one scenario; Runs has >=1 entries (repeat captures of the scene).
+type Scene struct {
+	Name string
+	Runs []Run
+}
+
+// SceneResult is a scene after aggregating its runs.
+type SceneResult struct {
+	Name        string               `json:"name"`
+	Sources     []string             `json:"sources"`
+	Runs        int                  `json:"runs"`
+	DurationSec float64              `json:"durationSec"` // median
+	Card        *scorecard.Scorecard `json:"card"`        // scorecard of per-metric medians across runs
+	Breakdown   []insights.Slice     `json:"breakdown"`   // median share per slice
+	TopFinding  string               `json:"topFinding"`  // title of highest-impact finding
+	Rep         *insights.Report     `json:"-"`           // representative run (closest to median frame p95) for detail
+}
+
+// Priority is a cross-scene finding rollup, the "fix this first" list.
+type Priority struct {
+	ID            string            `json:"id"`
+	Title         string            `json:"title"`
+	Category      string            `json:"category"`
+	Severity      insights.Severity `json:"severity"` // max across scenes
+	Scenes        []string          `json:"scenes"`   // scenes where it fired
+	TotalImpactMs float64           `json:"totalImpactMs"`
+	AvgImpactPct  float64           `json:"avgImpactPct"` // mean ImpactPct over ALL scenes (0 where absent)
+	Rank          float64           `json:"rank"`         // sort key: breadth-weighted impact; documented in implementation
+	Evidence      []string          `json:"evidence"`     // from the scene with highest impact, prefixed by scene name
+	Suggestion    string            `json:"suggestion"`
+}
+
+// HotFunction is a function merged across scenes by FuncStat.Key.
+type HotFunction struct {
+	Name       string   `json:"name"`
+	URL        string   `json:"url"`
+	Line       int      `json:"line"`
+	SelfMs     float64  `json:"selfMs"` // sum of per-scene median self ms
+	Pct        float64  `json:"pct"`    // of total sampled self time across scenes
+	SceneCount int      `json:"sceneCount"`
+	Scenes     []string `json:"scenes"`
+}
+
+type Report struct {
+	Scenes     []SceneResult         `json:"scenes"`          // worst score first
+	Overall    *scorecard.Scorecard  `json:"overall"`         // across scenes: per standard take the WORST scene median? NO: use the median across scenes; the per-scene worst is in WorstByStandard
+	WorstByStd map[string]string     `json:"worstByStandard"` // standard ID -> scene name with the worst value
+	Breakdown  []insights.Slice      `json:"breakdown"`       // duration-weighted across scenes
+	Priorities []Priority            `json:"priorities"`
+	Hotspots   []HotFunction         `json:"hotspots"` // top N
+	Modules    []insights.ModuleStat `json:"modules"`  // merged across scenes, top N
+}
+
+type Options struct{ Top int } // default 10
+
+// Implemented in audit.go:    func Build(scenes []Scene, o Options) *Report
+// Implemented in render.go:   func RenderTerm(w io.Writer, r *Report, color bool) error
+//                             func RenderMarkdown(w io.Writer, r *Report) error
+// (HTML is rendered by internal/report/audithtml.)
