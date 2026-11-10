@@ -98,11 +98,26 @@ func Build(scenes []Scene, o Options) *Report {
 	rep.Breakdown = mergeBreakdown(results)
 	rep.Priorities = buildPriorities(results, top)
 	rep.Hotspots, rep.Modules = mergeHotspots(results, top)
+	for i := range results {
+		results[i].runs = nil // Keep only the representative after deriving replication.
+	}
 	return rep
 }
 
 func buildScene(s Scene) SceneResult {
-	sr := SceneResult{Name: s.Name, Sources: []string{}, Runs: len(s.Runs)}
+	if len(s.Runs) > 1 {
+		s.Runs = append([]Run(nil), s.Runs...)
+		sort.SliceStable(s.Runs, func(i, j int) bool {
+			a, b := s.Runs[i], s.Runs[j]
+			if runSource(a) != runSource(b) {
+				return runSource(a) < runSource(b)
+			}
+			av, _ := frameP95(a)
+			bv, _ := frameP95(b)
+			return av < bv
+		})
+	}
+	sr := SceneResult{Name: s.Name, Sources: []string{}, Runs: len(s.Runs), AttemptedRuns: len(s.Runs) + s.MissingRuns, MissingRuns: s.MissingRuns, runs: s.Runs}
 
 	cards := make([]*scorecard.Scorecard, len(s.Runs)+s.MissingRuns)
 	var durations []float64
@@ -131,6 +146,16 @@ func buildScene(s Scene) SceneResult {
 		}
 	}
 	return sr
+}
+
+func runSource(run Run) string {
+	if run.Source != "" {
+		return run.Source
+	}
+	if run.Report != nil {
+		return run.Report.Source
+	}
+	return ""
 }
 
 func frameP95(run Run) (float64, bool) {
@@ -276,6 +301,24 @@ func buildPriorities(scenes []SceneResult, top int) []Priority {
 	}
 	byID := map[string]*acc{}
 	var order []string
+	findingRuns := map[string][]*insights.Report{}
+	attemptedRuns, parsedRuns := 0, 0
+	for _, scene := range scenes {
+		attemptedRuns += scene.AttemptedRuns
+		for _, run := range scene.runs {
+			if run.Report == nil {
+				continue
+			}
+			parsedRuns++
+			seen := make(map[string]bool, len(run.Report.Findings))
+			for _, finding := range run.Report.Findings {
+				if !seen[finding.ID] {
+					findingRuns[finding.ID] = append(findingRuns[finding.ID], run.Report)
+					seen[finding.ID] = true
+				}
+			}
+		}
+	}
 	for sceneIndex, s := range scenes {
 		if s.Rep == nil {
 			continue
@@ -304,7 +347,7 @@ func buildPriorities(scenes []SceneResult, top int) []Priority {
 				a.p.EvidenceScene = s.Name
 				a.p.EvidenceSceneIndex = sceneIndex
 				a.p.NumericEvidence, a.p.MetricKeys, a.p.Verify = f.NumericEvidence, f.MetricKeys, f.Verify
-				a.p.Confidence, a.p.ConfidenceReasons = f.Confidence, f.ConfidenceReasons
+				a.p.EvidenceBasis = f.EvidenceBasis
 				a.p.SuggestedWindows, a.p.Functions, a.p.Triggers = f.SuggestedWindows, f.Functions, f.Triggers
 				a.p.Nodes = f.Nodes
 				a.p.Stacks, a.p.Command = f.Stacks, f.Command
@@ -325,6 +368,10 @@ func buildPriorities(scenes []SceneResult, top int) []Priority {
 		if len(scenes) > 0 {
 			a.p.AvgImpactPct = a.pctSum / float64(len(scenes))
 		}
+		finding := insights.Finding{ID: a.p.ID, EvidenceBasis: a.p.EvidenceBasis}
+		insights.SetFindingConfidence(&finding, findingRuns[id], attemptedRuns, parsedRuns)
+		a.p.EvidenceBasis, a.p.Replication = finding.EvidenceBasis, finding.Replication
+		a.p.Confidence, a.p.ConfidenceReasons = finding.Confidence, finding.ConfidenceReasons
 		out = append(out, a.p)
 	}
 	sort.SliceStable(out, func(i, j int) bool {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/omniviewdev/wkperf/internal/model"
 	"github.com/omniviewdev/wkperf/internal/query"
+	"github.com/omniviewdev/wkperf/internal/sourcemap"
 )
 
 func TestUntimedMCPWindowProvenance(t *testing.T) {
@@ -16,7 +17,9 @@ func TestUntimedMCPWindowProvenance(t *testing.T) {
 		{StackFrames: []model.StackFrame{{Name: "untimed"}}},
 		{Timestamp: 11, StackFrames: []model.StackFrame{{Name: "timed"}}},
 	}, Durations: []float64{.025, .004}}}}
-	engine := &query.Engine{Loader: func(context.Context, string, query.SourceOptions) (*model.Recording, error) { return rec, nil }}
+	engine := &query.Engine{Loader: func(context.Context, string, query.SourceOptions) (*model.Recording, sourcemap.Diagnostics, error) {
+		return rec, sourcemap.Diagnostics{}, nil
+	}}
 	input := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`,
 		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
@@ -36,7 +39,7 @@ func TestUntimedMCPWindowProvenance(t *testing.T) {
 		t.Fatal(err)
 	}
 	result := response.Result.Structured
-	if result["total_ms"] != float64(0) {
+	if result["sampled_total_ms"] != float64(0) {
 		t.Fatalf("window received invented untimed weight: %v", result)
 	}
 	source := result["sources"].([]any)[0].(map[string]any)

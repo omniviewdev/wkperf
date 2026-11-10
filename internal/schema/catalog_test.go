@@ -62,7 +62,14 @@ func TestDocumentValidatesNewAttributionFacetsWithoutEmbeddedFrames(t *testing.T
 	r.RootCause.HotPath.Branches = []rootcause.PathNode{node}
 	r.RootCause.HotPath.BranchesTotal = 1
 	r.RootCause.HotPath.StopReason = "near-tie"
-	finding := insights.Finding{ID: "depth-facet", Title: "Depth facet", Severity: insights.SevInfo, Depth: &rootcause.DepthFacets{MaxDepth: 40, RepeatedFrame: &rootcause.RepeatedFrame{Frame: frame, Count: 40}}, NativeReads: []rootcause.NativeRead{{API: "getAnimations", Flush: "style", Samples: 5, StyleSamples: 5, StyleMs: 10}}, RelatedFindings: []string{"style-recalc-heavy"}}
+	finding := insights.Finding{
+		ID: "depth-facet", Title: "Depth facet", Severity: insights.SevInfo, Category: "script",
+		Confidence: insights.ConfidenceLow, EvidenceBasis: insights.EvidenceSampled,
+		Replication:     insights.Replication{Runs: 1, ParsedRuns: 1, RunsWithFinding: 1},
+		Depth:           &rootcause.DepthFacets{MaxDepth: 40, RepeatedFrame: &rootcause.RepeatedFrame{Frame: frame, Count: 40}},
+		NativeReads:     []rootcause.NativeRead{{API: "getAnimations", Flush: "style", Samples: 5, StyleSamples: 5, StyleMs: 10}},
+		RelatedFindings: []string{"style-recalc-heavy"},
+	}
 	r.Findings = append(r.Findings, finding)
 	reports := []any{
 		InsightsDocument{Schema: InsightsVersion, Reports: []Analysis{{Report: r}}},

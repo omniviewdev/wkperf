@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/omniviewdev/wkperf/internal/diagnostic"
 	"github.com/omniviewdev/wkperf/internal/model"
 )
 
@@ -322,7 +323,7 @@ func Resolve(rec *model.Recording, paths []string, recordingPath string) (Diagno
 	for _, name := range paths {
 		info, err := os.Stat(name)
 		if err != nil {
-			return d, fmt.Errorf("source map %s: %w", name, err)
+			return d, diagnostic.Wrap(diagnostic.SourceMapError, name, err)
 		}
 		if !info.IsDir() {
 			add(name, true)
@@ -337,7 +338,7 @@ func Resolve(rec *model.Recording, paths []string, recordingPath string) (Diagno
 			}
 			return nil
 		}); err != nil {
-			return d, fmt.Errorf("source map directory %s: %w", name, err)
+			return d, diagnostic.Wrap(diagnostic.SourceMapError, name, err)
 		}
 	}
 	seenBundles := map[string]bool{}
@@ -370,9 +371,9 @@ func Resolve(rec *model.Recording, paths []string, recordingPath string) (Diagno
 		mapping, err := loadMap(name)
 		if err != nil {
 			if candidates[name].explicit {
-				return d, fmt.Errorf("source map %s: %w", name, err)
+				return d, diagnostic.Wrap(diagnostic.SourceMapError, name, err)
 			}
-			d.Warnings = append(d.Warnings, fmt.Sprintf("Source map %s could not be read: %v", name, err))
+			d.Warnings = append(d.Warnings, "Source map could not be read: "+diagnostic.Wrap(diagnostic.SourceMapError, name, err).Error())
 			continue
 		}
 		maps = append(maps, loadedMap{name, mapping})

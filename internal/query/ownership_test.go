@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/omniviewdev/wkperf/internal/model"
+	"github.com/omniviewdev/wkperf/internal/sourcemap"
 )
 
 func TestOwnershipRulesSurviveQueryOperations(t *testing.T) {
@@ -60,9 +61,9 @@ func TestOwnershipCategoriesAndPatternValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	loaded := false
-	engine := &Engine{Loader: func(context.Context, string, SourceOptions) (*model.Recording, error) {
+	engine := &Engine{Loader: func(context.Context, string, SourceOptions) (*model.Recording, sourcemap.Diagnostics, error) {
 		loaded = true
-		return fixture(), nil
+		return fixture(), sourcemap.Diagnostics{}, nil
 	}}
 	if _, err := engine.Run(context.Background(), req); err == nil || loaded {
 		t.Fatalf("invalid rules must fail before loading: loaded=%t err=%v", loaded, err)

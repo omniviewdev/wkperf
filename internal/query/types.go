@@ -4,14 +4,19 @@ package query
 import (
 	"context"
 
+	"github.com/omniviewdev/wkperf/internal/diagnostic"
 	"github.com/omniviewdev/wkperf/internal/flame"
 	"github.com/omniviewdev/wkperf/internal/model"
+	"github.com/omniviewdev/wkperf/internal/sourcemap"
 )
 
 const (
-	Schema       = "wkperf.query.v1"
-	DefaultLimit = 50
-	MaxLimit     = 1000
+	Schema                = "wkperf.query.v2"
+	DefaultLimit          = 50
+	MaxLimit              = 1000
+	DefaultMaxBytes       = 131072
+	MaxBytes              = 4 << 20
+	DefaultMaxStackFrames = 48
 )
 
 // SourceOptions controls source-map resolution before a shared flame tree is built.
@@ -24,65 +29,73 @@ type SourceOptions struct {
 // Zero limit means DefaultLimit. Zero to means recording end. DepthSet and
 // MinShareSet preserve explicit zero; omitted values use depth eight and 5%.
 type Request struct {
-	File           string   `json:"file"`
-	Operation      string   `json:"operation"`
-	QueryOperation string   `json:"query_operation,omitempty"`
-	Selector       string   `json:"selector,omitempty"`
-	Baseline       string   `json:"baseline,omitempty"`
-	Candidate      string   `json:"candidate,omitempty"`
-	By             string   `json:"by,omitempty"`
-	Module         string   `json:"module,omitempty"`
-	Category       string   `json:"category,omitempty"`
-	Limit          int      `json:"limit,omitempty"`
-	RootCauseTop   int      `json:"top,omitempty"`
-	Depth          int      `json:"depth,omitempty"`
-	DepthSet       bool     `json:"-"`
-	MinMS          float64  `json:"min_ms,omitempty"`
-	MinShare       float64  `json:"min_share,omitempty"`
-	MinShareSet    bool     `json:"-"`
-	MinSamples     int      `json:"min_samples,omitempty"`
-	MinSamplesSet  bool     `json:"-"`
-	TieRatio       float64  `json:"tie_ratio,omitempty"`
-	TieRatioSet    bool     `json:"-"`
-	LongTaskMS     float64  `json:"long_task_ms,omitempty"`
-	JankMS         float64  `json:"jank_ms,omitempty"`
-	From           float64  `json:"from,omitempty"`
-	To             float64  `json:"to,omitempty"`
-	TrimStart      float64  `json:"trim_start,omitempty"`
-	TrimEnd        float64  `json:"trim_end,omitempty"`
-	AppURLs        []string `json:"app_url,omitempty"`
-	LibraryURLs    []string `json:"library_url,omitempty"`
-	Sourcemaps     []string `json:"sourcemaps,omitempty"`
+	File              string   `json:"file"`
+	Operation         string   `json:"operation"`
+	QueryOperation    string   `json:"query_operation,omitempty"`
+	Selector          string   `json:"selector,omitempty"`
+	Baseline          string   `json:"baseline,omitempty"`
+	Candidate         string   `json:"candidate,omitempty"`
+	By                string   `json:"by,omitempty"`
+	Module            string   `json:"module,omitempty"`
+	Category          string   `json:"category,omitempty"`
+	Limit             int      `json:"limit,omitempty"`
+	Offset            int      `json:"offset,omitempty"`
+	MaxBytes          int      `json:"max_bytes,omitempty"`
+	MaxStackFrames    int      `json:"max_stack_frames,omitempty"`
+	MaxStackFramesSet bool     `json:"-"`
+	Normalize         string   `json:"normalize,omitempty"`
+	RootCauseTop      int      `json:"top,omitempty"`
+	Depth             int      `json:"depth,omitempty"`
+	DepthSet          bool     `json:"-"`
+	MinMS             float64  `json:"min_ms,omitempty"`
+	MinShare          float64  `json:"min_share,omitempty"`
+	MinShareSet       bool     `json:"-"`
+	MinSamples        int      `json:"min_samples,omitempty"`
+	MinSamplesSet     bool     `json:"-"`
+	TieRatio          float64  `json:"tie_ratio,omitempty"`
+	TieRatioSet       bool     `json:"-"`
+	LongTaskMS        float64  `json:"long_task_ms,omitempty"`
+	JankMS            float64  `json:"jank_ms,omitempty"`
+	From              float64  `json:"from,omitempty"`
+	To                float64  `json:"to,omitempty"`
+	TrimStart         float64  `json:"trim_start,omitempty"`
+	TrimEnd           float64  `json:"trim_end,omitempty"`
+	AppURLs           []string `json:"app_url,omitempty"`
+	LibraryURLs       []string `json:"library_url,omitempty"`
+	Sourcemaps        []string `json:"sourcemaps,omitempty"`
 }
 
 // Loader must use model.Load for file inputs. The default loader does so and
 // resolves source maps using the same resolver as the CLI.
-type Loader func(context.Context, string, SourceOptions) (*model.Recording, error)
+type Loader func(context.Context, string, SourceOptions) (*model.Recording, sourcemap.Diagnostics, error)
 
 type Engine struct{ Loader Loader }
 
 type Source struct {
-	File            string              `json:"file"`
-	From            float64             `json:"from"`
-	To              float64             `json:"to"`
-	UntimedSamples  int                 `json:"untimed_samples"`
-	UntimedMs       float64             `json:"untimed_ms"`
-	UntimedExcluded bool                `json:"untimed_excluded"`
-	UntimedSpans    []flame.UntimedSpan `json:"untimed_spans,omitempty"`
+	File            string                `json:"file"`
+	From            float64               `json:"from"`
+	To              float64               `json:"to"`
+	UntimedSamples  int                   `json:"untimed_samples"`
+	UntimedMs       float64               `json:"untimed_ms"`
+	UntimedExcluded bool                  `json:"untimed_excluded"`
+	UntimedSpans    []flame.UntimedSpan   `json:"untimed_spans,omitempty"`
+	SourceMaps      sourcemap.Diagnostics `json:"source_maps"`
 }
 
 // Function keeps generated identity and optional original source locations.
 // Function IDs and calling-context node IDs remain stable across sample order.
 type Function struct {
-	ID       string          `json:"id"`
-	Name     string          `json:"name"`
-	URL      string          `json:"url"`
-	Line     int             `json:"line"`
-	Column   int             `json:"column"`
-	SourceID string          `json:"source_id,omitempty"`
-	Module   string          `json:"module"`
-	Category string          `json:"category"`
-	Original *flame.Location `json:"original,omitempty"`
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	URL       string          `json:"url"`
+	Line      int             `json:"line"`
+	Column    int             `json:"column"`
+	SourceID  string          `json:"source_id,omitempty"`
+	Module    string          `json:"module"`
+	Category  string          `json:"category"`
+	Native    bool            `json:"native"`
+	Anonymous bool            `json:"anonymous"`
+	Original  *flame.Location `json:"original,omitempty"`
 }
 
 type FunctionCost struct {
@@ -92,10 +105,10 @@ type FunctionCost struct {
 	SelfSamples int     `json:"self_samples"`
 }
 
-// Row is the stable union used by all operations. Unused numeric fields are zero.
-// percent is a percentage, not a fraction. Call edges divide by selected
-// function inclusive time. Other sampled rows divide by total sampled time.
-// diff deltas are candidate minus baseline, ordered by absolute selected delta.
+// Row is an internal operation union. The v2 wire format uses distinct typed
+// row shapes, so unrelated fields never appear as measured zero values.
+// Percent is a percentage, not a fraction. Edge rows use the selected function
+// inclusive time; other sampled rows use total selected sampled weight.
 type Row struct {
 	Function
 	NodeID                 string         `json:"node_id,omitempty"`
@@ -125,35 +138,47 @@ type Row struct {
 	TopSelfTotalCount      int            `json:"top_self_total_count"`
 	TopInclusiveTotalCount int            `json:"top_inclusive_total_count"`
 	FunctionsTruncated     bool           `json:"functions_truncated"`
+	Operation              string         `json:"op,omitempty"`
+	Description            string         `json:"description,omitempty"`
+	AliasOf                string         `json:"alias_of,omitempty"`
 }
 
 // Result always reports complete row count before limit, even for ambiguity.
 // Ambiguous selectors return candidates, never an arbitrarily selected function.
 type Result struct {
-	Schema               string     `json:"schema"`
-	Operation            string     `json:"operation"`
-	Status               string     `json:"status"`
-	Sources              []Source   `json:"sources"`
-	Command              []string   `json:"command"`
-	Selector             string     `json:"selector,omitempty"`
-	By                   string     `json:"by"`
-	TotalMS              float64    `json:"total_ms"`
-	TotalCount           int        `json:"total_count"`
-	Limit                int        `json:"limit"`
-	Truncated            bool       `json:"truncated"`
-	Rows                 []Row      `json:"rows"`
-	Candidates           []Function `json:"candidates,omitempty"`
-	DeepestStack         []Function `json:"deepest_stack,omitempty"`
-	HotPathBranches      []Row      `json:"hot_path_branches,omitempty"`
-	HotPathBranchesTotal int        `json:"hot_path_branches_total,omitempty"`
-	HotPathStopReason    string     `json:"hot_path_stop_reason,omitempty"`
-	Errors               []Error    `json:"errors,omitempty"`
+	Schema               string                   `json:"schema"`
+	Operation            string                   `json:"operation"`
+	Status               string                   `json:"status"`
+	Sources              []Source                 `json:"sources"`
+	Command              []string                 `json:"command"`
+	Selector             string                   `json:"selector,omitempty"`
+	By                   string                   `json:"by"`
+	TotalMS              float64                  `json:"total_ms"`
+	TotalCount           int                      `json:"total_count"`
+	Limit                int                      `json:"limit"`
+	Truncated            bool                     `json:"truncated"`
+	ReturnedCount        int                      `json:"returned_count"`
+	Offset               int                      `json:"offset"`
+	NextOffset           *int                     `json:"next_offset,omitempty"`
+	TruncatedBy          []string                 `json:"truncated_by,omitempty"`
+	MaxBytes             int                      `json:"max_bytes"`
+	MaxStackFrames       int                      `json:"-"`
+	MaxStackFramesSet    bool                     `json:"-"`
+	DiffNormalization    *flame.DiffNormalization `json:"diff_normalization,omitempty"`
+	Rows                 []Row                    `json:"rows"`
+	Candidates           []Function               `json:"candidates,omitempty"`
+	DeepestStack         []Function               `json:"deepest_stack,omitempty"`
+	HotPathBranches      []Row                    `json:"hot_path_branches,omitempty"`
+	HotPathBranchesTotal int                      `json:"hot_path_branches_total,omitempty"`
+	HotPathStopReason    string                   `json:"hot_path_stop_reason,omitempty"`
+	Errors               []Error                  `json:"errors,omitempty"`
 }
 
 type Error struct {
-	File    string `json:"file"`
-	Message string `json:"message"`
-	Code    string `json:"code"`
+	File       string          `json:"file"`
+	Message    string          `json:"message"`
+	Code       diagnostic.Code `json:"code"`
+	Candidates []string        `json:"candidates,omitempty"`
 }
 
-var Operations = []string{"top", "callers", "callees", "paths", "stacks", "subtree", "hot-path", "by-root", "find", "diff", "depth", "metrics", "events", "rootcause", "window"}
+var Operations = []string{"top", "callers", "callees", "paths", "stacks", "subtree", "hot-path", "by-root", "find", "diff", "depth", "metrics", "events", "rootcause", "keys", "window"}

@@ -12,30 +12,20 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"github.com/omniviewdev/wkperf/internal/diagnostic"
 	"github.com/omniviewdev/wkperf/internal/schema"
 )
 
-type inputError struct {
-	File string
-	Code string
-	Err  error
-}
-
-func (e *inputError) Error() string {
-	if strings.Contains(e.Err.Error(), e.File) {
-		return e.Err.Error()
-	}
-	return e.File + ": " + e.Err.Error()
-}
-
-func (e *inputError) Unwrap() error { return e.Err }
-
+type reportWrittenKey struct{}
 type partialFailure struct{ Errors []schema.Error }
 
 func (e *partialFailure) Error() string {
 	messages := make([]string, len(e.Errors))
 	for i, failure := range e.Errors {
 		messages[i] = failure.Message
+		if failure.File != "" {
+			messages[i] = failure.File + ": " + failure.Message
+		}
 	}
 	return fmt.Sprintf("%d input(s) failed: %s", len(messages), strings.Join(messages, "; "))
 }
@@ -45,23 +35,25 @@ func failuresFor(err error) []schema.Error {
 	if errors.As(err, &partial) {
 		return partial.Errors
 	}
-	failure := schema.Error{Message: err.Error(), Code: "command_error"}
-	var input *inputError
+	failure := schema.Error{Message: err.Error(), Code: diagnostic.UsageError}
+	var input *diagnostic.Error
 	var path *os.PathError
 	var exit *ExitError
 	switch {
 	case errors.As(err, &input):
-		failure.File, failure.Code = input.File, input.Code
+		failure.File, failure.Code, failure.Message = input.File, input.Code, input.Message()
+		failure.Candidates = input.Candidates
 	case errors.As(err, &path):
-		failure.File, failure.Code = path.Path, "input_error"
+		failure.File, failure.Code = path.Path, diagnostic.InputError
+		failure.Message = diagnostic.Wrap(diagnostic.InputError, path.Path, path).Message()
 	case errors.As(err, &exit):
 		switch exit.Code {
 		case 2:
-			failure.Code = "regression"
+			failure.Code = diagnostic.Regression
 		case 3:
-			failure.Code = "fixture_mismatch"
+			failure.Code = diagnostic.FixtureMismatch
 		case 4:
-			failure.Code = "score_below_minimum"
+			failure.Code = diagnostic.ScoreBelowMinimum
 		}
 	}
 	return []schema.Error{failure}
@@ -120,9 +112,15 @@ func executeCommand(root *cobra.Command, args []string) error {
 		_, writeErr := io.Copy(stdout, &output)
 		return writeErr
 	}
+	if output.Len() == 0 && root.Context().Value(reportWrittenKey{}) == true {
+		return err
+	}
 	failures := failuresFor(err)
-	var document map[string]json.RawMessage
-	if json.Unmarshal(output.Bytes(), &document) != nil || document == nil {
+	var envelope struct {
+		Errors []schema.Error `json:"errors"`
+	}
+	data := bytes.TrimSpace(output.Bytes())
+	if len(data) < 2 || data[0] != '{' || json.Unmarshal(data, &envelope) != nil {
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
 		if writeErr := enc.Encode(schema.ErrorDocument{Schema: schema.ErrorVersion, Errors: failures}); writeErr != nil {
@@ -130,28 +128,25 @@ func executeCommand(root *cobra.Command, args []string) error {
 		}
 		return err
 	}
-	var existing []schema.Error
-	_ = json.Unmarshal(document["errors"], &existing)
-	for _, failure := range failures {
-		found := false
-		for _, prior := range existing {
-			if prior == failure {
-				found = true
-				break
-			}
+	// Commands attach partial-input and gate failures to their typed envelope
+	// before rendering. Keep the original bytes and field order intact.
+	if len(envelope.Errors) != 0 {
+		_, writeErr := io.Copy(stdout, &output)
+		if writeErr != nil {
+			return writeErr
 		}
-		if !found {
-			existing = append(existing, failure)
-		}
+		return err
 	}
-	encoded, encodeErr := json.Marshal(existing)
+	encoded, encodeErr := json.Marshal(failures)
 	if encodeErr != nil {
 		return encodeErr
 	}
-	document["errors"] = encoded
-	enc := json.NewEncoder(stdout)
-	enc.SetIndent("", "  ")
-	if writeErr := enc.Encode(document); writeErr != nil {
+	// A late transport failure can occur after an otherwise valid document.
+	// Append its typed errors without decoding/re-encoding unrelated fields.
+	data = append(data[:len(data)-1], []byte(",\"errors\":")...)
+	data = append(data, encoded...)
+	data = append(data, '}', '\n')
+	if _, writeErr := stdout.Write(data); writeErr != nil {
 		return writeErr
 	}
 	return err

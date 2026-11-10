@@ -4,6 +4,7 @@ import (
 	"net/url"
 	"strconv"
 
+	"github.com/omniviewdev/wkperf/internal/flame"
 	"github.com/omniviewdev/wkperf/internal/metrics"
 )
 
@@ -30,7 +31,7 @@ func queryFlags(r *Report) string {
 	if !r.WholeRecording && r.WindowEndSec > r.WindowStartSec {
 		flags += " --from " + seconds(r.WindowStartSec) + " --to " + seconds(r.WindowEndSec)
 	}
-	for _, path := range r.Sourcemaps {
+	for _, path := range r.SourceMapPaths {
 		flags += " --sourcemap " + shellQuote(path)
 	}
 	for _, pattern := range r.Ownership.AppURLs {
@@ -42,7 +43,16 @@ func queryFlags(r *Report) string {
 	return flags
 }
 
-func functionMetricPrefix(f metrics.FuncStat) string { return "functions." + url.PathEscape(f.Key()) }
+func functionMetricPrefix(f metrics.FuncStat) string {
+	return "functions." + functionFrameID(f.Frame())
+}
+
+func functionFrameID(f metrics.FunctionFrame) string {
+	if f.ID != "" {
+		return f.ID
+	}
+	return flame.FunctionID(flame.Frame{Name: f.Name, URL: f.URL, Line: f.Line, Column: f.Column, SourceID: f.SourceID})
+}
 
 func moduleMetricPrefix(grouping, name string) string {
 	return "modules." + grouping + "." + url.PathEscape(name)
@@ -101,12 +111,12 @@ func NumericValues(r *Report) map[string]NumericValue {
 			add(base+".total_ms", f.TotalMs, metrics.UnitMs, "Sampled inclusive-time weight")
 			add(base+".self_samples", float64(f.SelfSamples), metrics.UnitCount, "Self sample count")
 			for _, edge := range f.Callers {
-				key := base + ".callers." + url.PathEscape(edge.Function.Key())
+				key := base + ".callers." + functionFrameID(edge.Function)
 				add(key+".weight_ms", edge.WeightMs, metrics.UnitMs, "Immediate caller edge sample weight")
 				add(key+".samples", float64(edge.Samples), metrics.UnitCount, "Immediate caller edge sample count")
 			}
 			for _, edge := range f.Callees {
-				key := base + ".callees." + url.PathEscape(edge.Function.Key())
+				key := base + ".callees." + functionFrameID(edge.Function)
 				add(key+".weight_ms", edge.WeightMs, metrics.UnitMs, "Immediate callee edge sample weight")
 				add(key+".samples", float64(edge.Samples), metrics.UnitCount, "Immediate callee edge sample count")
 			}
@@ -193,7 +203,7 @@ func TriggerFunctionCommand(r *Report, trigger TriggerStat, function metrics.Fun
 }
 
 func EdgeCommand(r *Report, function metrics.FuncStat, edge metrics.CallEdge, relation, field string) string {
-	return NumericCommand(r, functionMetricPrefix(function)+"."+relation+"."+url.PathEscape(edge.Function.Key())+"."+field)
+	return NumericCommand(r, functionMetricPrefix(function)+"."+relation+"."+functionFrameID(edge.Function)+"."+field)
 }
 
 func StackCommand(r *Report, index int, field string) string {

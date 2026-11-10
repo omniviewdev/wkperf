@@ -40,12 +40,12 @@ func TestOwnershipFlagsAndConfig(t *testing.T) {
 			if err := command.Execute(); err != nil {
 				t.Fatal(err)
 			}
-			var result query.Result
+			var result queryOutput[query.FunctionRow]
 			if err := json.Unmarshal(out.Bytes(), &result); err != nil {
 				t.Fatal(err)
 			}
 			for _, row := range result.Rows {
-				if row.Category != "app" {
+				if result.Functions[row.FunctionID].Category != "app" {
 					t.Fatalf("owner override lost: %+v", row)
 				}
 			}

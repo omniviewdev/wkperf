@@ -10,6 +10,7 @@ import (
 
 	"github.com/omniviewdev/wkperf/internal/flame"
 	"github.com/omniviewdev/wkperf/internal/model"
+	"github.com/omniviewdev/wkperf/internal/sourcemap"
 )
 
 func TestOriginalSelectorsAndContextIdentity(t *testing.T) {
@@ -124,18 +125,41 @@ func TestWindowOperationAndDefaultBounds(t *testing.T) {
 func TestSchemasConcreteAndComplete(t *testing.T) {
 	schema := ResultSchema()
 	properties := schema["properties"].(map[string]any)
-	for _, key := range []string{"schema", "sources", "command", "total_count", "truncated", "candidates", "deepest_stack", "errors"} {
+	for _, key := range []string{"schema", "sources", "command", "sampled_total_ms", "total_count", "returned_count", "offset", "truncated", "truncated_by", "functions", "candidates", "deepest_stack", "errors"} {
 		if properties[key] == nil {
 			t.Fatalf("missing result schema %s", key)
 		}
 	}
-	row := properties["rows"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)
-	for _, key := range []string{"id", "node_id", "self_ms", "total_ms", "stack", "original", "top_self", "top_inclusive", "delta_self_ms"} {
-		if row[key] == nil {
-			t.Fatalf("missing row schema %s", key)
+	rowsByOperation := map[string]map[string]any{}
+	for _, item := range schema["oneOf"].([]any) {
+		branch := item.(map[string]any)["properties"].(map[string]any)
+		operation, ok := branch["operation"].(map[string]any)
+		if !ok {
+			continue
+		}
+		rowsByOperation[operation["const"].(string)] = branch["rows"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)
+	}
+	for operation, fields := range map[string][]string{
+		"top":     {"function_id", "self_ms", "total_ms", "samples", "percent"},
+		"stacks":  {"function_id", "node_id", "depth", "stack", "stack_depth"},
+		"metrics": {"key", "value", "unit"},
+		"keys":    {"key", "op", "unit", "description", "basis"},
+		"events":  {"kind", "count", "total_ms", "top_self", "top_inclusive"},
+		"diff":    {"function_id", "baseline_self_ms", "candidate_self_ms", "delta_self_ms", "delta_samples"},
+	} {
+		for _, field := range fields {
+			if rowsByOperation[operation][field] == nil {
+				t.Errorf("missing %s row field %s", operation, field)
+			}
 		}
 	}
+	if len(rowsByOperation["metrics"]) != 3 {
+		t.Fatalf("metric row includes unrelated fields: %v", rowsByOperation["metrics"])
+	}
 	for _, op := range Operations {
+		if op != "window" && rowsByOperation[op] == nil {
+			t.Errorf("missing operation-specific row schema for %s", op)
+		}
 		input := RequestSchema(op)
 		if input["additionalProperties"] != false {
 			t.Fatalf("loose schema for %s", op)
@@ -156,11 +180,11 @@ func TestDiffGoldenAndShuffledDeterminism(t *testing.T) {
 				}
 			}
 		}
-		return &Engine{Loader: func(_ context.Context, file string, _ SourceOptions) (*model.Recording, error) {
+		return &Engine{Loader: func(_ context.Context, file string, _ SourceOptions) (*model.Recording, sourcemap.Diagnostics, error) {
 			if file == "a.json" {
-				return a, nil
+				return a, sourcemap.Diagnostics{}, nil
 			}
-			return b, nil
+			return b, sourcemap.Diagnostics{}, nil
 		}}
 	}
 	req := Request{Operation: "diff", Baseline: "a.json", Candidate: "b.json", By: "total"}

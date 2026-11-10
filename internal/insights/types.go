@@ -145,6 +145,32 @@ type NodeClue struct {
 	EventType   string `json:"eventType"`
 }
 
+// EvidenceBasis identifies how the finding itself is supported, not its severity.
+type EvidenceBasis string
+
+const (
+	EvidenceMeasured   EvidenceBasis = "measured"
+	EvidenceSampled    EvidenceBasis = "sampled"
+	EvidenceHypothesis EvidenceBasis = "hypothesis"
+)
+
+// Confidence rates support for a finding, not significance of a comparison delta.
+type Confidence string
+
+const (
+	ConfidenceLow    Confidence = "low"
+	ConfidenceMedium Confidence = "medium"
+	ConfidenceHigh   Confidence = "high"
+)
+
+// Replication counts actual findings against all requested captures. ParsedRuns
+// excludes failed or unavailable analyses; these remain in the Runs denominator.
+type Replication struct {
+	Runs            int `json:"runs"`
+	ParsedRuns      int `json:"parsedRuns"`
+	RunsWithFinding int `json:"runsWithFinding"`
+}
+
 // Finding retains numeric evidence and testable optimization hypotheses.
 type Finding struct {
 	ID                string                 `json:"id"`
@@ -157,7 +183,9 @@ type Finding struct {
 	NumericEvidence   []Evidence             `json:"numericEvidence"`
 	MetricKeys        []string               `json:"metricKeys"`
 	Verify            []Verification         `json:"verify"`
-	Confidence        string                 `json:"confidence"`
+	EvidenceBasis     EvidenceBasis          `json:"evidenceBasis"`
+	Replication       Replication            `json:"replication"`
+	Confidence        Confidence             `json:"confidence"`
 	ConfidenceReasons []string               `json:"confidenceReasons"`
 	SuggestedWindows  []SuggestedWindow      `json:"suggestedWindows"`
 	Functions         []string               `json:"functions"`
@@ -189,7 +217,7 @@ type Report struct {
 	ModuleGrouping      string               `json:"moduleGrouping"`
 	JankMs              float64              `json:"jankMs"`
 	LongTaskMs          float64              `json:"longTaskMs"`
-	Sourcemaps          []string             `json:"sourcemaps"`
+	SourceMapPaths      []string             `json:"sourceMapPaths"`
 	Ownership           flame.OwnershipRules `json:"ownership"`
 	Name                string               `json:"name"`
 	DurationSec         float64              `json:"durationSec"`

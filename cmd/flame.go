@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/viper"
 
 	"github.com/omniviewdev/wkperf/internal/analyze"
+	"github.com/omniviewdev/wkperf/internal/diagnostic"
 	core "github.com/omniviewdev/wkperf/internal/flame"
 	"github.com/omniviewdev/wkperf/internal/model"
 	"github.com/omniviewdev/wkperf/internal/profile"
@@ -100,7 +101,7 @@ func runFlameCommand(cmd *cobra.Command, args []string) error {
 		}
 		tree, err := buildFlameTree(rec, wo, around)
 		if err != nil {
-			return &inputError{File: path, Code: "window_error", Err: err}
+			return diagnostic.Wrap(diagnostic.WindowError, path, err)
 		}
 		trees = append(trees, tree)
 	}
@@ -111,7 +112,7 @@ func runFlameCommand(cmd *cobra.Command, args []string) error {
 		if focus != "" {
 			before, after, err = focusFlameDiff(before, after, focus)
 			if err != nil {
-				return err
+				return diagnostic.Wrap(diagnostic.SelectorError, files[0], err)
 			}
 		}
 		opts.Title = "Differential flame graph"
@@ -125,7 +126,7 @@ func runFlameCommand(cmd *cobra.Command, args []string) error {
 			if focus != "" {
 				tree, err = focusFlameTree(tree, focus)
 				if err != nil {
-					return &inputError{File: files[i], Code: "focus_error", Err: err}
+					return diagnostic.Wrap(diagnostic.SelectorError, files[i], err)
 				}
 			}
 			charts = append(charts, flamereport.Chart{Label: files[i], Tree: tree})
@@ -279,7 +280,7 @@ func resolveFlameFocus(trees []*core.Tree, selector string) (string, bool, error
 		labels = append(labels, fmt.Sprintf("%s %s (%s)", id, core.FrameLabel(candidate.frame), total))
 	}
 	sort.Strings(labels)
-	return "", false, fmt.Errorf("focus selector %q matches %d functions; choose a function or node ID: %s", selector, len(candidates), strings.Join(labels, "; "))
+	return "", false, diagnostic.Wrap(diagnostic.AmbiguousSelector, "", fmt.Errorf("focus selector %q matches %d functions; choose a function or node ID: %s", selector, len(candidates), strings.Join(labels, "; ")))
 }
 
 func focusFlameDiff(before, after *core.Tree, selector string) (*core.Tree, *core.Tree, error) {

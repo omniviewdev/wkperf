@@ -263,7 +263,7 @@ Differential JSON retains raw totals, active durations, per-function/context bef
 
 ## Queries for agents
 
-`wkperf query FILE OP [ARGS]` returns targeted evidence instead of a full profile dump. JSON is the default; select `--format md|tsv` for text. `--limit` defaults to 50 and is capped at 1000. Subtree depth defaults to 8; hot-path minimum share defaults to 0.05. JSON includes schema, sources, total count, the limit, and an explicit truncation flag. Text output marks truncation. Tie-breaking is stable.
+`wkperf query FILE OP [ARGS]` returns targeted evidence instead of a full profile dump. JSON is the default; select `--format md|tsv` for text. `--limit` defaults to 50 and is capped at 1000; `--offset` pages through the deterministic ordering. `--max-bytes` defaults to 131072 bytes and cannot exceed 4194304. The byte budget applies to the rendered report, not only its rows. JSON retains total and returned counts, pagination, and explicit truncation reasons. Text output marks truncation. Subtree depth defaults to eight.
 
 | Operation | Meaning |
 | --- | --- |
@@ -278,11 +278,18 @@ Differential JSON retains raw totals, active durations, per-function/context bef
 | `window FROM TO OP [ARGS]` | restrict another operation to a recording-relative window |
 | `diff A B` | per-function self/inclusive deltas, largest absolute change first; invoke as `wkperf query diff A B` or `wkperf query A diff B` |
 | `depth` | stack-depth distribution and deepest paths |
-| `metrics` | scalar recording metrics and their units |
+| `keys [PREFIX\|/REGEX/]` | discover scalar keys, operation, unit, description, and evidence basis; supports pagination |
+| `metrics [KEY\|PREFIX.*\|/REGEX/]` | scalar recording metrics and their units |
 | `events` | trigger counts and timing aggregates |
-| `rootcause KEY` | reproduce a named root-cause measurement |
+| `rootcause [KEY\|PREFIX.*\|/REGEX/]` | reproduce named root-cause measurements |
 
 Selectors accept plain names, stable IDs, `url:line:col`, or `/regex/`. If a selector is ambiguous, the command returns candidates and IDs rather than guessing. Source-mapped originals and generated locations are preserved. Native frames without URLs and anonymous frames are valid selectors through their stable IDs.
+
+Discovery can return the same key for different owning operations; use the row's `op` to choose `metrics` or `rootcause`. Function scalar keys use canonical IDs such as `functions.f_ID.self_ms`, not encoded name/URL tuples. Alias metadata names the canonical measurement as `operation:key`. For example, `recording.duration_sec` aliases `metrics:overview.duration_s`, and root-cause `samples.self_ms` aliases `metrics:samples.sampled_ms`. Aliases share the same values and nine-decimal rounding rather than recomputing competing totals.
+
+Stacks default to a 48-frame preview: the first eight root frames and last forty leaf frames. `stack_depth` retains the full depth, and a `{ "elided": N }` item marks omitted frames. `--max-stack-frames 0` requests the exact stack; increase `--max-bytes` if needed. Row limits apply before byte limits. Function metadata is interned once, and unused entries are removed when rows are cut. Use `next_offset` when present rather than assuming a page contains `--limit` rows.
+
+Query diffs use `--normalize auto|none|per-second|share`, as flame diffs do. Automatic normalization compares sampled milliseconds per active second when durations differ by more than 10%; otherwise it compares milliseconds. Raw before/after weights, active durations, the delta unit, and comparability warnings remain visible. `diff_normalization.unit` governs normalized `delta_self_ms` and `delta_total_ms` values despite their historical suffix; raw baseline/candidate fields remain milliseconds. Share deltas use percentage points. Ordering follows the absolute normalized delta, with stable function-identity ties.
 
 ```bash
 wkperf query recording.json top --by total --limit 8 --format json
@@ -294,7 +301,7 @@ wkperf query recording.json depth --format json
 
 ### MCP
 
-`wkperf mcp` starts a stdio MCP server with tools backed by the same query engine. Connect it as a command-based server; stdout is reserved for JSON-RPC protocol messages and diagnostics go to stderr. Tools accept local recording paths, query arguments, and window bounds. Tool results use the same bounded structured query schema as the CLI. Requests and responses are bounded at 4 MiB, with explicit truncation metadata for cut result detail.
+`wkperf mcp` starts a stdio MCP server with tools backed by the same query engine. Connect it as a command-based server; stdout is reserved for JSON-RPC protocol messages and diagnostics go to stderr. Tools accept local recording paths, query arguments, window bounds, `offset`, `max_bytes`, and `max_stack_frames`. Tool results use the same bounded structured query schema as the CLI. The default query budget is 128 KiB. Requests and complete encoded responses are bounded at 4 MiB, including the duplicated text and structured MCP content; explicit truncation metadata describes omitted detail.
 
 Request IDs must be strings or integer literals; integers retain their exact value. Null, fractional, boolean, array, and object IDs receive `-32600` with a null response ID. An oversized line is discarded through its newline, rejected, and followed by normal processing of later requests. `initialize.serverInfo.version` uses the same installed-module build-info fallback as the version command. Recording and source-map inputs must be regular files; directories, devices, and named pipes are rejected before reading.
 
@@ -335,13 +342,15 @@ Local reports and emitted prompts are deterministic. Responses from external AI 
 
 ## JSON contracts and errors
 
-Use the `schema` discriminator before decoding a result. `wkperf schema` prints a Draft 2020-12 JSON Schema covering the versioned output envelopes; breaking consumer changes get a new discriminator. JSON is never abbreviated by `--brief` or `--max-bytes`.
+Use the `schema` discriminator before decoding a result. `wkperf schema` prints a Draft 2020-12 JSON Schema covering the versioned output envelopes; breaking consumer changes get a new discriminator. Primitive fields have semantic descriptions and units where applicable; enums constrain documented vocabularies. Analysis and audit JSON are never abbreviated by `--brief` or `--max-bytes`. Query/MCP JSON is intentionally bounded and reports omitted detail.
+
+Numeric schema properties carry `x-unit`: a physical unit, dimensionless scale, or an explicit reference to a sibling unit field. Native or unknown source locations can retain zero or negative sentinel coordinates; consumers must not treat every location as a positive source line.
 
 | Output | Contract |
 | --- | --- |
 | Analysis | `wkperf-insights/v3` (unreleased): reports, untimed accounting, per-file errors, optional AI response |
-| Query/MCP | `wkperf.query.v1`: `operation`, `status`, `sources`, `command`, `rows`, `total_count`, `limit`, `truncated` |
-| Comparison | `wkperf/v1`: baseline/candidate groups, metric/function deltas, verdicts, comparability warnings |
+| Query/MCP | `wkperf.query.v2` (unreleased): sparse operation-specific rows, shared functions, sampled totals, pagination, byte/stack truncation |
+| Comparison | `wkperf/v2` (unreleased): baseline/candidate groups, metric/function deltas, verdicts, comparability warnings, camelCase counts |
 | Audit | `wkperf-audit/v2` (unreleased): scene scorecards, priorities, overall scorecard, per-file errors |
 | Flame | `wkperf-flame/v2` (unreleased): shared frames, flat profile/delta nodes, exact sample/path references, normalization metadata |
 | Summary | `wkperf-summary/v1`: scalar summary output |
@@ -349,15 +358,23 @@ Use the `schema` discriminator before decoding a result. `wkperf schema` prints 
 
 An analysis report retains recording identity and active duration, exclusive time breakdown, self/inclusive hotspots, file modules, slow frames, long tasks, idle wakeups, trigger tables, findings, and root-cause evidence. Its `frames` array stores generated identity, URL/line/column, category, native/anonymous flags, and optional original location once. Hotspots use a zero-based `frame` index, retain weighted self/inclusive times and sample counts, and link caller/callee frame indices. Source-map enrichment never changes generated identity.
 
+Analysis and nested root-cause `sourceMapPaths` contain requested path strings. Source-map diagnostics are separate structured metadata describing resolution and warnings, not another path list. Query/MCP retain these diagnostics so an agent can distinguish unmapped code from a resolver failure.
+
 Findings retain `id`, `severity`, `confidence`, human-readable `evidence`, `numericEvidence`, `metricKeys`, `verify`, and `suggestedWindows`. Numeric evidence contains `metricKey`, `value`, `unit`, `description`, `basis`, and a reproducing `command`. Verification entries identify metric, direction, rough target, unit, description, and command. Windows contain `fromSec`, `toSec`, `reason`, and reusable flags. Supporting functions, triggers, and layout nodes preserve captured names and CSS paths. `rootCause` includes supported hot path, owners, non-framework contexts, exact-stack findings, periodic roots, GC overlaps, depth facets, and ranked windows. Windows retain their heaviest selected stack or an explicit sample-placement status. Canonical findings provide the only severity decision; matching raw evidence receives that tier rather than a contradictory second rating.
+
+`evidenceBasis` distinguishes `measured` timeline evidence, `sampled` estimates, and `hypothesis` leads. `replication` reports attempted `runs`, available `parsedRuns`, and `runsWithFinding`; failed inputs never become supporting observations. High confidence requires measured evidence in at least three parsed runs and presence in at least two thirds of attempted runs. A measured single capture of at least ten seconds can reach medium confidence. Strong sampled evidence requires at least 100 observations, 50% script coverage, and ten seconds to reach medium; hypotheses and weaker evidence remain low. Severity remains the impact estimate, not a confidence tier. Comparison confidence describes run-to-run change evidence and is a separate concept.
 
 Exact selected paths live once in the report's `stacks` map, keyed by stable `n_` selectors. Each entry has root-to-leaf frame indices and full `depth`; occurrences use `stackId` or `stackIds` plus their own numeric observations. Canonical and raw findings reference the same paths. Detailed lists honor `--top` and carry explicit totals and retrieval commands, so a bounded default report does not pretend omitted evidence is absent. Text and HTML use shared stack references and root/leaf previews; query retrieves full stacks.
 
 When structured lists are capped, `moreEvidenceCommand` reruns `analyze` with a sufficient `--top` value and preserves selection, maps, thresholds, and module grouping. Use it for the remaining structured rows; existing `query stacks`, `query paths`, and scalar queries retrieve exact selected evidence without inventing a list operation.
 
-Query rows use explicit millisecond fields (`self_ms`, `total_ms`, deltas), `samples`, and `percent` in percentage points. `stack` is root-to-leaf. Ambiguous selectors include `candidates`; they do not return a guessed result. Caller/callee percentages use the selected function's inclusive sampled time as denominator. Sampled owner costs are self time, so their sum does not double-count callers.
+Query v2 uses operation-specific rows instead of a numeric union full of irrelevant zeros. Scalar rows contain `key`, `value`, and `unit`; genuine zero values remain present. Function rows reference a shared canonical `functions` dictionary keyed by `f_` identity. Sampled millisecond fields and the envelope's `sampled_total_ms` are weighted profiler estimates, not elapsed time. Stack references are root-to-leaf and retain full depth plus preview omissions. Ambiguous selectors include bounded `candidates`; they never return a guessed result. Caller/callee percentages use the selected function's inclusive sampled weight as denominator. Sampled owner costs are self weight, so their sum does not double-count callers.
 
 Errors contain `message`, `file`, and `code`. With JSON output, failures appear in the single stdout JSON document as well as human-readable stderr diagnostics. Multi-file `analyze` and `audit` keep successful results, list failed files, and exit 1 after processing the group. `compare` and `summary` may stop at the first bad input. Treat a nonempty `errors` array as incomplete evidence even when useful reports exist.
+
+Machine error codes distinguish `input_error`, `load_error`, `source_map_error`, `window_error`, `selector_error`, `ambiguous_selector`, `unknown_key`, and `usage_error`. Gate failures use `regression`, `fixture_mismatch`, or `score_below_minimum`. A missing file is a load failure, not a selector failure. An invalid window is not reported as an unrecognized recording.
+
+With `--out FILE`, a successfully written complete or partial report is the machine-readable artifact; stdout does not receive a second error-only document. Failures before report rendering still emit one JSON error document on stdout when JSON is selected. Stderr remains human-readable and names each file once.
 
 For bounded agent context, use `--brief` or `--max-bytes N` with Markdown or terminal output. Priority is recording identities and errors, all finding summaries, hot path, top functions, verification, then details. The final truncation marker counts toward the limit. Repeated stacks are referenced rather than expanded at every occurrence; use their query commands to retrieve full context.
 

@@ -266,7 +266,7 @@ type Report struct {
 	Top                     int                    `json:"-"`
 	SchemaVersion           string                 `json:"schemaVersion"`
 	Source                  string                 `json:"source"`
-	Sourcemaps              []string               `json:"sourcemaps"`
+	SourceMapPaths          []string               `json:"sourceMapPaths"`
 	Ownership               flame.OwnershipRules   `json:"ownership"`
 	FromSec                 float64                `json:"fromSec"`
 	ToSec                   float64                `json:"toSec"`

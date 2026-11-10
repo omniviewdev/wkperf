@@ -34,7 +34,7 @@ func triggerRows(rec *model.Recording, functionCount int, req Request) []Row {
 func costs(functions []metrics.FuncStat, classifier *flame.Classifier) []FunctionCost {
 	out := make([]FunctionCost, len(functions))
 	for i, f := range functions {
-		frame := flame.Frame{Name: f.Name, URL: f.URL, Line: f.Line, Column: f.Column, SourceID: f.SourceID}
+		frame := flame.Frame{Name: f.Name, URL: f.URL, Line: f.Line, Column: f.Column, SourceID: f.SourceID, Native: f.URL == "", Anonymous: f.Name == ""}
 		if f.Original != nil {
 			frame.Original = &flame.Location{Name: f.Original.Name, URL: f.Original.URL, Line: f.Original.Line, Column: f.Original.Column}
 		}

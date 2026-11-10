@@ -39,24 +39,25 @@ func TestUntimedPipelineRankingsAndMetrics(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var result query.Result
-		if err := json.Unmarshal([]byte(out), &result); err != nil || result.TotalMS != 80 {
+		var result queryOutput[query.FunctionRow]
+		if err := json.Unmarshal([]byte(out), &result); err != nil || result.SampledTotalMS != 80 {
 			t.Errorf("whole top lost sample weight: %v %s", err, out)
 		}
 		want := map[string]float64{"appRoot": 80, "sharedLeaf": 55, "untimedLeaf": 25}
 		wantSamples := map[string]int{"appRoot": 50, "sharedLeaf": 25, "untimedLeaf": 25}
 		for _, row := range result.Rows {
-			if row.TotalMS != want[row.Name] {
-				t.Errorf("%s total_ms=%v, want %v", row.Name, row.TotalMS, want[row.Name])
+			name := result.Functions[row.FunctionID].Name
+			if row.TotalMS != want[name] {
+				t.Errorf("%s total_ms=%v, want %v", name, row.TotalMS, want[name])
 			}
-			wantSelf := want[row.Name]
-			if row.Name == "appRoot" {
+			wantSelf := want[name]
+			if name == "appRoot" {
 				wantSelf = 0
 			}
-			if row.SelfMS != wantSelf || row.Samples != wantSamples[row.Name] {
-				t.Errorf("%s self_ms=%v samples=%d, want %v / %d", row.Name, row.SelfMS, row.Samples, wantSelf, wantSamples[row.Name])
+			if row.SelfMS != wantSelf || row.Samples != wantSamples[name] {
+				t.Errorf("%s self_ms=%v samples=%d, want %v / %d", name, row.SelfMS, row.Samples, wantSelf, wantSamples[name])
 			}
-			delete(want, row.Name)
+			delete(want, name)
 		}
 		if len(want) != 0 {
 			t.Errorf("missing rankings: %v", want)
@@ -68,7 +69,7 @@ func TestUntimedPipelineRankingsAndMetrics(t *testing.T) {
 			t.Errorf("%s: %v", key, err)
 			continue
 		}
-		var result query.Result
+		var result queryOutput[query.ValueRow]
 		if err := json.Unmarshal([]byte(out), &result); err != nil || len(result.Rows) != 1 || math.Abs(result.Rows[0].Value-want) > 1e-9 {
 			t.Errorf("%s did not reproduce %v: %v %s", key, want, err, out)
 		}
@@ -182,7 +183,7 @@ func TestUntimedPipelineSampleCommandsReproduce(t *testing.T) {
 				if err != nil {
 					t.Fatalf("exact command %s: %v", command, err)
 				}
-				var result query.Result
+				var result queryOutput[query.ValueRow]
 				if err := json.Unmarshal([]byte(resultJSON), &result); err != nil || len(result.Rows) != 1 || math.Abs(result.Rows[0].Value-expected) > 1e-9 {
 					t.Fatalf("exact command %s: want %v, got %s (%v)", command, expected, resultJSON, err)
 				}

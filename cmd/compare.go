@@ -101,6 +101,9 @@ func runCompare(cmd *cobra.Command, args []string) error {
 	default:
 		return fmt.Errorf("unknown --format %q (want term|md|html|json|all)", format)
 	}
+	if viper.GetBool("open") && format != "html" && format != "all" {
+		return fmt.Errorf("--open requires --format html or all")
+	}
 	grouping, err := moduleGrouping()
 	if err != nil {
 		return err
@@ -134,6 +137,11 @@ func runCompare(cmd *cobra.Command, args []string) error {
 	if res.Cand.Sources == nil {
 		res.Cand.Sources = candFiles
 	}
+	gateErr := comparisonGate(res)
+	var documentFailures []schema.Error
+	if gateErr != nil {
+		documentFailures = failuresFor(gateErr)
+	}
 
 	out := viper.GetString("out")
 	stdout := cmd.OutOrStdout()
@@ -155,10 +163,16 @@ func runCompare(cmd *cobra.Command, args []string) error {
 		prompt = ai.BuildComparePrompt(res, bRep, cRep, aiContext(top))
 	}
 	if emit != "" {
-		return emitPrompt(stdout, cmd.ErrOrStderr(), emit, prompt)
+		if err := emitPrompt(stdout, cmd.ErrOrStderr(), emit, prompt); err != nil {
+			return err
+		}
+		return gateErr
 	}
 
 	if format == "term" || format == "all" {
+		if _, err := io.WriteString(stdout, failureMarkdown(documentFailures)); err != nil {
+			return err
+		}
 		o := term.Options{
 			Color:   useColor(),
 			Width:   terminalWidth(),
@@ -178,8 +192,13 @@ func runCompare(cmd *cobra.Command, args []string) error {
 		printAI(cmd, format, aiText)
 	}
 	if format == "md" || format == "all" {
-		render := func(w io.Writer) error { return compare.RenderMarkdown(w, res) }
-		if format == "md" && out == "" {
+		render := func(w io.Writer) error {
+			if _, err := io.WriteString(w, failureMarkdown(documentFailures)); err != nil {
+				return err
+			}
+			return compare.RenderMarkdown(w, res)
+		}
+		if format == "md" && (out == "" || out == "-") {
 			if err := render(stdout); err != nil {
 				return err
 			}
@@ -206,13 +225,13 @@ func runCompare(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(cmd.ErrOrStderr(), "wrote", htmlPath)
 	}
 	if format == "json" || format == "all" {
-		document := schema.ComparisonDocument{Schema: schema.ComparisonVersion, Result: res, SourceMaps: append(sourceMapMetadata(baseL), sourceMapMetadata(candL)...)}
+		document := schema.ComparisonDocument{Schema: schema.ComparisonVersion, Result: res, SourceMaps: append(sourceMapMetadata(baseL), sourceMapMetadata(candL)...), Errors: documentFailures}
 		render := func(w io.Writer) error {
 			enc := json.NewEncoder(w)
 			enc.SetIndent("", "  ")
 			return enc.Encode(document)
 		}
-		if format == "json" && out == "" {
+		if format == "json" && (out == "" || out == "-") {
 			if err := render(stdout); err != nil {
 				return err
 			}
@@ -222,14 +241,15 @@ func runCompare(cmd *cobra.Command, args []string) error {
 	}
 
 	if viper.GetBool("open") {
-		if htmlPath == "" {
-			return fmt.Errorf("--open requires --format html or all")
-		}
 		if err := openFile(htmlPath); err != nil {
 			return fmt.Errorf("open %s: %w", htmlPath, err)
 		}
 	}
 
+	return gateErr
+}
+
+func comparisonGate(res *compare.Result) error {
 	if viper.GetBool("strict-fixture") {
 		min := viper.GetFloat64("min-comparability")
 		if sc := res.Comparability.Score; sc < min {

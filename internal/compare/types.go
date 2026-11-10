@@ -75,7 +75,10 @@ type FuncDiff struct {
 
 // Counts is the tally used for the headline.
 type Counts struct {
-	Improved, Regressed, Unchanged, Noisy int
+	Improved  int `json:"improved"`
+	Regressed int `json:"regressed"`
+	Unchanged int `json:"unchanged"`
+	Noisy     int `json:"noisy"`
 }
 
 // Result is the full comparison.

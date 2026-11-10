@@ -54,7 +54,7 @@ func Analyze(rec *model.Recording, source string, o Options) *Report {
 		ModuleGrouping:      o.ModuleGrouping,
 		JankMs:              o.JankMs,
 		LongTaskMs:          o.LongTaskMs,
-		Sourcemaps:          append([]string{}, o.Sourcemaps...),
+		SourceMapPaths:      append([]string{}, o.Sourcemaps...),
 		Ownership:           tree.Ownership,
 		Name:                rec.DisplayName,
 		DurationSec:         sum.DurationSec,

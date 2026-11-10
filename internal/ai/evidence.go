@@ -38,7 +38,7 @@ func auditLocation(f audit.HotFunction) string {
 }
 
 func priorityFinding(p audit.Priority) insights.Finding {
-	return insights.Finding{NumericEvidence: p.NumericEvidence, MetricKeys: p.MetricKeys, Verify: p.Verify, Confidence: p.Confidence, ConfidenceReasons: p.ConfidenceReasons, SuggestedWindows: p.SuggestedWindows, Functions: p.Functions, Triggers: p.Triggers, Nodes: p.Nodes, Stacks: p.Stacks, StackIDs: p.StackIDs, StacksTotal: p.StacksTotal, Command: p.Command, RelatedFindings: p.RelatedFindings, NativeReads: p.NativeReads, NativeReadsTotal: p.NativeReadsTotal, Depth: p.Depth}
+	return insights.Finding{NumericEvidence: p.NumericEvidence, MetricKeys: p.MetricKeys, Verify: p.Verify, EvidenceBasis: p.EvidenceBasis, Replication: p.Replication, Confidence: p.Confidence, ConfidenceReasons: p.ConfidenceReasons, SuggestedWindows: p.SuggestedWindows, Functions: p.Functions, Triggers: p.Triggers, Nodes: p.Nodes, Stacks: p.Stacks, StackIDs: p.StackIDs, StacksTotal: p.StacksTotal, Command: p.Command, RelatedFindings: p.RelatedFindings, NativeReads: p.NativeReads, NativeReadsTotal: p.NativeReadsTotal, Depth: p.Depth}
 }
 
 func writeFindingDetails(b *strings.Builder, f insights.Finding) {
@@ -55,7 +55,7 @@ func writeFindingDetails(b *strings.Builder, f insights.Finding) {
 		fmt.Fprintf(b, "   - metric keys: %s\n", clip(oneLine(strings.Join(f.MetricKeys, ", ")), 400))
 	}
 	if f.Confidence != "" {
-		fmt.Fprintf(b, "   - confidence=%s; reasons=%s\n", clip(oneLine(f.Confidence), 40), clip(oneLine(strings.Join(f.ConfidenceReasons, "; ")), 400))
+		fmt.Fprintf(b, "   - confidence=%s; evidenceBasis=%s; replication: %d of %d runs (%d parsed); reasons=%s\n", f.Confidence, f.EvidenceBasis, f.Replication.RunsWithFinding, f.Replication.Runs, f.Replication.ParsedRuns, clip(oneLine(strings.Join(f.ConfidenceReasons, "; ")), 400))
 	}
 	for _, e := range limitSlice(f.NumericEvidence, 6) {
 		fmt.Fprintf(b, "   - numeric evidence: %s=%s %s [%s]; %s; reproduce: %s\n", e.MetricKey, num(e.Value), e.Unit, clip(oneLine(e.Basis), 60), clip(oneLine(e.Description), maxEvidenceChars), e.Command)

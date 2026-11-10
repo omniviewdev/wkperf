@@ -178,7 +178,7 @@ func priorityDetails(pr Priority) []string {
 		lines = append(lines, fmt.Sprintf("Numeric evidence: %s = %.3f %s [%s] %s; reproduce: %s", e.MetricKey, e.Value, e.Unit, e.Basis, e.Description, e.Command))
 	}
 	if pr.Confidence != "" {
-		lines = append(lines, "Confidence: "+pr.Confidence+"; "+strings.Join(pr.ConfidenceReasons, "; "))
+		lines = append(lines, fmt.Sprintf("Confidence: %s; evidence basis: %s; replication: seen in %d of %d runs (%d parsed); %s", pr.Confidence, pr.EvidenceBasis, pr.Replication.RunsWithFinding, pr.Replication.Runs, pr.Replication.ParsedRuns, strings.Join(pr.ConfidenceReasons, "; ")))
 	}
 	for _, v := range pr.Verify {
 		lines = append(lines, fmt.Sprintf("Verify: %s %s; target %.3f %s; %s; reproduce: %s", v.MetricKey, v.Direction, v.Target, v.Unit, v.Description, v.Command))
@@ -245,6 +245,15 @@ func (r *Report) TotalRuns() int {
 	n := 0
 	for _, s := range r.Scenes {
 		n += s.Runs
+	}
+	return n
+}
+
+// TotalAttemptedRuns includes requested recordings that failed to yield a run.
+func (r *Report) TotalAttemptedRuns() int {
+	n := 0
+	for _, s := range r.Scenes {
+		n += s.AttemptedRuns
 	}
 	return n
 }
@@ -326,6 +335,7 @@ func RenderTerm(w io.Writer, r *Report, color bool) error {
 	ln("%s", p.bold("wkperf audit"))
 	ln("%s", p.dim(fmt.Sprintf("%d %s · %d %s · %.1fs recorded", len(r.Scenes), plural(len(r.Scenes), "scene", "scenes"),
 		r.TotalRuns(), plural(r.TotalRuns(), "run", "runs"), r.TotalSec())))
+	ln("Evidence: %d parsed of %d attempted runs; %d missing input(s).", r.TotalRuns(), r.TotalAttemptedRuns(), r.TotalAttemptedRuns()-r.TotalRuns())
 	ln("Overall (typical scene): grade %s · %s · coverage %.1f%%", p.grade(g), score, coverage*100)
 	if r.Overall == nil || r.Overall.Partial {
 		ln("%s", p.dim(partialGradeNote))
@@ -343,6 +353,7 @@ func RenderTerm(w io.Writer, r *Report, color bool) error {
 			padR(s.Name, 24), padGrade(p, s.Card.Grade, 5), cardScoreCell(s.Card), s.Card.Coverage*100,
 			CardCell(s.Card, "frame-p95"), CardCell(s.Card, "jank-ratio"), CardCell(s.Card, "tbt"),
 			trunc(orDash(s.TopFinding), 40))
+		ln("    runs: %d parsed of %d attempted; %d missing input(s)", s.Runs, s.AttemptedRuns, s.MissingRuns)
 	}
 
 	sec("Where the time goes (duration-weighted)")
@@ -472,7 +483,7 @@ func RenderMarkdown(w io.Writer, r *Report) error {
 	ln("# wkperf audit")
 	ln("")
 	ln("- Scenes: %d", len(r.Scenes))
-	ln("- Runs: %d", r.TotalRuns())
+	ln("- Runs: %d parsed of %d attempted; %d missing input(s)", r.TotalRuns(), r.TotalAttemptedRuns(), r.TotalAttemptedRuns()-r.TotalRuns())
 	ln("- Recorded time: %.1fs", r.TotalSec())
 	ln("- Overall (typical scene): grade **%s**, %s, coverage %.1f%%", g, score, coverage*100)
 	if r.Overall == nil || r.Overall.Partial {
@@ -485,10 +496,10 @@ func RenderMarkdown(w io.Writer, r *Report) error {
 	if len(r.Scenes) == 0 {
 		ln("_No scenes._")
 	} else {
-		ln("| Scene | Runs | Grade | Score | Coverage | Frame p95 | Jank | TBT | Top finding |")
-		ln("|---|---:|:---:|---:|---:|---:|---:|---:|---|")
+		ln("| Scene | Parsed runs | Attempted runs | Missing runs | Grade | Score | Coverage | Frame p95 | Jank | TBT | Top finding |")
+		ln("|---|---:|---:|---:|:---:|---:|---:|---:|---:|---:|---|")
 		for _, s := range r.Scenes {
-			ln("| %s | %d | %s | %s | %.1f%% | %s | %s | %s | %s |", mdEscape(s.Name), s.Runs, s.Card.Grade, cardScoreCell(s.Card), s.Card.Coverage*100,
+			ln("| %s | %d | %d | %d | %s | %s | %.1f%% | %s | %s | %s | %s |", mdEscape(s.Name), s.Runs, s.AttemptedRuns, s.MissingRuns, s.Card.Grade, cardScoreCell(s.Card), s.Card.Coverage*100,
 				CardCell(s.Card, "frame-p95"), CardCell(s.Card, "jank-ratio"), CardCell(s.Card, "tbt"), mdEscape(orDash(s.TopFinding)))
 		}
 	}

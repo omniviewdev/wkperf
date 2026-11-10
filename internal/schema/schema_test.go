@@ -2,11 +2,15 @@ package schema
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/omniviewdev/wkperf/internal/analyze"
 	"github.com/omniviewdev/wkperf/internal/audit"
@@ -18,6 +22,7 @@ import (
 	"github.com/omniviewdev/wkperf/internal/query"
 	flamereport "github.com/omniviewdev/wkperf/internal/report/flame"
 	"github.com/omniviewdev/wkperf/internal/scorecard"
+	"github.com/omniviewdev/wkperf/internal/sourcemap"
 	"github.com/omniviewdev/wkperf/internal/testgen"
 )
 
@@ -30,7 +35,7 @@ func TestDocumentDefinesCompleteOutputContracts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"wkperf-insights/v3", "wkperf/v1", "wkperf-audit/v2", "wkperf-error/v1", "hotspots", "inclusiveHotspots", "column", "callers", "callees", "stacks", "triggers", "findings", "evidence", "suggestedWindows", "errors", "rating"} {
+	for _, name := range []string{"wkperf-insights/v3", "wkperf/v2", "wkperf-audit/v2", "wkperf-error/v1", "hotspots", "inclusiveHotspots", "column", "callers", "callees", "stacks", "triggers", "findings", "evidence", "suggestedWindows", "errors", "rating"} {
 		if !strings.Contains(string(data), name) {
 			t.Errorf("schema omits %s", name)
 		}
@@ -89,13 +94,20 @@ func TestDocumentValidatesRealPipelineOutputs(t *testing.T) {
 			report := insights.Analyze(rec, "fixture.json", insights.Options{})
 			card := scorecard.Evaluate(rec, report)
 			summary := analyze.Summarize(rec, "fixture.json")
+			engine := &query.Engine{Loader: func(context.Context, string, query.SourceOptions) (*model.Recording, sourcemap.Diagnostics, error) {
+				return rec, sourcemap.Diagnostics{}, nil
+			}}
+			result, err := engine.Run(context.Background(), query.Request{File: "fixture.json", Operation: "top"})
+			if err != nil {
+				t.Fatal(err)
+			}
 			outputs := []any{
 				InsightsDocument{Schema: InsightsVersion, Reports: []Analysis{{Report: report, Scorecard: card}}},
 				AuditDocument{Schema: AuditVersion, Report: audit.Build([]audit.Scene{{Name: "fixture", Runs: []audit.Run{{Source: "fixture.json", Report: report, Card: card}}}}, audit.Options{})},
 				ComparisonDocument{Schema: ComparisonVersion, Result: compare.Compare([]*metrics.Summary{summary}, []*metrics.Summary{summary}, compare.DefaultOptions())},
 				SummaryDocument{Schema: SummaryVersion, Sources: []string{"fixture.json"}, Runs: 1, Metrics: summary.Metrics},
 				flamereport.NewDocument([]flamereport.Chart{{Label: "fixture", Tree: flame.Build(rec)}}, flamereport.Options{}),
-				query.Result{Schema: query.Schema, Operation: "top", Status: "ok", Sources: []query.Source{{File: "fixture.json"}}, Command: []string{"wkperf", "query", "fixture.json", "top"}, Rows: []query.Row{}},
+				result,
 			}
 			for _, output := range outputs {
 				data, err := json.Marshal(output)
@@ -134,18 +146,24 @@ func Validate(root map[string]any, value any) error {
 			}
 			return check(def, value)
 		}
-		for _, combinator := range []string{"oneOf", "anyOf"} {
+		for _, combinator := range []string{"oneOf", "anyOf", "allOf"} {
 			if alternatives, ok := spec[combinator].([]any); ok {
 				matches := 0
+				var failures []string
 				for _, alternative := range alternatives {
-					if check(alternative.(map[string]any), value) == nil {
+					if err := check(alternative.(map[string]any), value); err == nil {
 						matches++
+					} else {
+						failures = append(failures, err.Error())
 					}
 				}
-				if matches == 0 || combinator == "oneOf" && matches != 1 {
-					return fmt.Errorf("%s matched %d branches", combinator, matches)
+				if matches == 0 || combinator == "oneOf" && matches != 1 || combinator == "allOf" && matches != len(alternatives) {
+					return fmt.Errorf("%s matched %d branches: %s", combinator, matches, strings.Join(failures, "; "))
 				}
 			}
+		}
+		if rejected, ok := spec["not"].(map[string]any); ok && check(rejected, value) == nil {
+			return fmt.Errorf("value matches forbidden schema")
 		}
 		if constant, ok := spec["const"]; ok && !reflect.DeepEqual(constant, value) {
 			return fmt.Errorf("want const %v, got %v", constant, value)
@@ -162,18 +180,50 @@ func Validate(root map[string]any, value any) error {
 			}
 		}
 		kind, _ := spec["type"].(string)
+		if kind == "" {
+			switch value.(type) {
+			case map[string]any:
+				if spec["properties"] != nil || spec["required"] != nil || spec["additionalProperties"] != nil {
+					kind = "object"
+				}
+			case []any:
+				if spec["minItems"] != nil || spec["maxItems"] != nil {
+					kind = "array"
+				}
+			}
+		}
 		switch kind {
 		case "null":
 			if value != nil {
 				return fmt.Errorf("want null, got %T", value)
 			}
 		case "string":
-			if _, ok := value.(string); !ok {
+			text, ok := value.(string)
+			if !ok {
 				return fmt.Errorf("want string, got %T", value)
 			}
+			if minimum, ok := spec["minLength"].(float64); ok && float64(utf8.RuneCountInString(text)) < minimum {
+				return fmt.Errorf("string shorter than %g characters", minimum)
+			}
+			if pattern, ok := spec["pattern"].(string); ok {
+				matched, err := regexp.MatchString(pattern, text)
+				if err != nil || !matched {
+					return fmt.Errorf("string does not match %s", pattern)
+				}
+			}
 		case "number", "integer":
-			if _, ok := value.(float64); !ok {
+			number, ok := value.(float64)
+			if !ok {
 				return fmt.Errorf("want number, got %T", value)
+			}
+			if kind == "integer" && math.Trunc(number) != number {
+				return fmt.Errorf("want integer, got %v", number)
+			}
+			if minimum, ok := spec["minimum"].(float64); ok && number < minimum {
+				return fmt.Errorf("number below %g", minimum)
+			}
+			if maximum, ok := spec["maximum"].(float64); ok && number > maximum {
+				return fmt.Errorf("number above %g", maximum)
 			}
 		case "boolean":
 			if _, ok := value.(bool); !ok {
@@ -183,6 +233,12 @@ func Validate(root map[string]any, value any) error {
 			values, ok := value.([]any)
 			if !ok {
 				return fmt.Errorf("want array, got %T", value)
+			}
+			if minimum, ok := spec["minItems"].(float64); ok && float64(len(values)) < minimum {
+				return fmt.Errorf("array has fewer than %g items", minimum)
+			}
+			if maximum, ok := spec["maxItems"].(float64); ok && float64(len(values)) > maximum {
+				return fmt.Errorf("array has more than %g items", maximum)
 			}
 			item, _ := spec["items"].(map[string]any)
 			for i, entry := range values {

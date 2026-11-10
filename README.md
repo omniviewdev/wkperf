@@ -244,6 +244,11 @@ wkperf query recording.json top --by total --limit 10
 wkperf query recording.json callers performSyncWorkOnRoot
 wkperf query recording.json paths getAnimations --limit 5
 
+# Discover measurements, page through results, or retrieve an exact deep stack.
+wkperf query recording.json keys functions. --limit 10
+wkperf query recording.json top --by total --limit 10 --offset 10
+wkperf query recording.json paths getAnimations --max-stack-frames 0 --max-bytes 1048576
+
 # Explore the same evidence visually.
 wkperf flame recording.json --format html --out flame.html
 
@@ -253,9 +258,11 @@ wkperf compare baseline/ --vs candidate/ --format md --fail-on-regression
 
 Ambiguous function names produce candidate IDs instead of silently choosing a function. Use an ID or `url:line:col` to select precisely. Findings include suggested time windows and commands to reproduce their supporting measurements.
 
-The unreleased fixes use `wkperf-insights/v3` and `wkperf-audit/v2`; v0.4.0 emits analysis v2 and audit v1. Run `wkperf schema` for the checked-out binary's complete contract. Untimed samples remain in whole-recording rankings but are explicitly excluded from temporal attribution. Bad files do not discard valid analyze/audit results: failures appear in `errors` and stderr, and the command exits nonzero.
+The unreleased fixes use `wkperf-insights/v3`, `wkperf-audit/v2`, `wkperf.query.v2`, and comparison `wkperf/v2`; these contracts differ from v0.4.0. Run `wkperf schema` for the checked-out binary's complete contract. Untimed samples remain in whole-recording rankings but are explicitly excluded from temporal attribution. Bad files do not discard valid analyze/audit results: failures appear in `errors` and stderr, and the command exits nonzero.
 
 Use `wkperf analyze capture.json --brief --max-bytes 12000` for a bounded terminal report, or add `--format md` for Markdown. Sources, errors, and finding summaries take priority over detail. JSON stores selected frames and exact stacks once, with references, totals, and retrieval commands instead of repeated stack dumps. Use `--out -` to write a single-format analysis report to stdout.
+
+Targeted queries default to a 128 KiB output budget and 48-frame root/leaf stack previews. Their JSON is intentionally bounded, unlike complete analysis JSON. Truncation metadata records omitted rows or stack frames; use pagination or the exact-stack flags above for more detail. Query and MCP output share interned function identities, source-map diagnostics, and operation-specific rows rather than repeated empty fields.
 
 Idle timer wakeups are separated from expensive frames. Function identity includes columns, so minified same-line functions stay distinct. Source maps show original and generated locations together; file-level module grouping keeps plugin bundles separate. Use `--module-grouping parent-directory` only when you want a directory roll-up.
 
@@ -266,6 +273,8 @@ Source maps resolve locations without borrowing parameter names for function lab
 Flame JSON uses compact `wkperf-flame/v2` frame and node tables. Folded stacks use standard integer microseconds and load without custom escaping rules. Function focus merges all calling contexts; normalized differential views retain raw before/after measurements and warn about mismatched captures.
 
 Ownership reports distinguish unknown bundle code from known app, library, native, and injected work. Supply source maps or `--app-url` / `--library-url` rules when ownership is known. Findings separate observed APIs from proven flush behavior, distinguish React traversal from recursion, and expose alternatives when a hot path is not decisive.
+
+Finding confidence separates measured evidence, sampled estimates, and hypotheses. Audit replication counts the runs that actually contain each finding and discloses failed inputs. Severity describes impact; confidence describes support. A severe single-run lead is still a lead, not proof.
 
 For tool-based agents, `wkperf mcp` exposes the query engine through MCP over stdio. It writes protocol messages—not logging—to stdout. See the [reference](docs/REFERENCE.md) for formats, query operations, source maps, and JSON schemas.
 

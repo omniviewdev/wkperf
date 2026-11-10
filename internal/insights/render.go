@@ -147,7 +147,7 @@ func (v *markdownRenderer) findings() []string {
 		return append(rows, "_No issues detected by the available instruments._\n")
 	}
 	for _, f := range v.r.Findings {
-		rows = append(rows, fmt.Sprintf("- [%s] %s: %s; impact %.6gms (%.6g%%). %s\n", strings.ToUpper(string(f.Severity)), code(f.ID), mdEscape(f.Title), f.ImpactMs, f.ImpactPct, numericRef("metrics", "findings."+f.ID+".impact_ms")))
+		rows = append(rows, fmt.Sprintf("- [%s] %s: %s; impact %.6gms (%.6g%%); confidence %s; basis %s; seen %d of %d runs (%d parsed). %s\n", strings.ToUpper(string(f.Severity)), code(f.ID), mdEscape(f.Title), f.ImpactMs, f.ImpactPct, f.Confidence, f.EvidenceBasis, f.Replication.RunsWithFinding, f.Replication.Runs, f.Replication.ParsedRuns, numericRef("metrics", "findings."+f.ID+".impact_ms")))
 	}
 	return rows
 }
@@ -292,7 +292,7 @@ func (v *markdownRenderer) functions() string {
 				edges []metrics.CallEdge
 			}{{"caller", f.Callers}, {"callee", f.Callees}} {
 				for _, edge := range relation.edges {
-					key := prefix + "." + relation.name + "s." + url.PathEscape(edge.Function.Key()) + ".weight_ms"
+					key := prefix + "." + relation.name + "s." + functionFrameID(edge.Function) + ".weight_ms"
 					fmt.Fprintf(&b, "| ↳ %s: %s | | %.6g | %d | %s |\n", relation.name, codeCell(functionFrameLabel(edge.Function)), edge.WeightMs, edge.Samples, codeCell(key))
 				}
 			}
@@ -377,7 +377,7 @@ func (v *markdownRenderer) findingDetails() []string {
 		if i == 0 {
 			b.WriteString("\n## Finding details\n\n")
 		}
-		fmt.Fprintf(&b, "### [%s] %s — %s\n\nConfidence: %s. **Suggestion:** %s\n", strings.ToUpper(string(f.Severity)), mdEscape(f.Title), code(f.ID), mdEscape(f.Confidence), mdEscape(f.Suggestion))
+		fmt.Fprintf(&b, "### [%s] %s — %s\n\nConfidence: %s. Evidence basis: %s. Replication: seen in %d of %d runs (%d parsed). **Suggestion:** %s\n", strings.ToUpper(string(f.Severity)), mdEscape(f.Title), code(f.ID), f.Confidence, f.EvidenceBasis, f.Replication.RunsWithFinding, f.Replication.Runs, f.Replication.ParsedRuns, mdEscape(f.Suggestion))
 		if !v.brief {
 			for _, e := range f.NumericEvidence {
 				fmt.Fprintf(&b, "- %s: %.6g %s (%s). %s\n", mdEscape(e.Description), e.Value, e.Unit, mdEscape(e.Basis), numericRef("metrics", e.MetricKey))

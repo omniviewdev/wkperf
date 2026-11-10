@@ -12,6 +12,7 @@ import (
 	"github.com/omniviewdev/wkperf/internal/query"
 	flamereport "github.com/omniviewdev/wkperf/internal/report/flame"
 	"github.com/omniviewdev/wkperf/internal/rootcause"
+	"github.com/omniviewdev/wkperf/internal/sourcemap"
 	"github.com/omniviewdev/wkperf/internal/testgen"
 )
 
@@ -20,7 +21,6 @@ func TestUntimedSchemaFieldsAndNullTimes(t *testing.T) {
 	defs := doc["$defs"].(map[string]any)
 	for name, fields := range map[string][]string{
 		"insights_SampleCoverage": {"timedSampleCount", "untimedSampleCount", "untimedMs", "untimedExcluded", "untimedSpans"},
-		"query_Source":            {"untimed_samples", "untimed_ms", "untimed_excluded", "untimed_spans"},
 		"report_flame_WireChart":  {"untimedSamples", "untimedMs", "untimedExcluded", "empty", "emptyReason"},
 		"rootcause_Stack":         {"firstSec", "lastSec", "untimedSamples"},
 	} {
@@ -54,7 +54,9 @@ func TestUntimedSchemaFieldsAndNullTimes(t *testing.T) {
 
 func TestUntimedSchemaValidatesSurfaceOutputs(t *testing.T) {
 	rec := testgen.UntimedSamples()
-	engine := &query.Engine{Loader: func(context.Context, string, query.SourceOptions) (*model.Recording, error) { return rec, nil }}
+	engine := &query.Engine{Loader: func(context.Context, string, query.SourceOptions) (*model.Recording, sourcemap.Diagnostics, error) {
+		return rec, sourcemap.Diagnostics{}, nil
+	}}
 	result, err := engine.Run(context.Background(), query.Request{File: "fixture.json", Operation: "top", From: .1, To: .4})
 	if err != nil {
 		t.Fatal(err)

@@ -30,30 +30,31 @@ func Document() map[string]any {
 		{SummaryDocument{}, SummaryVersion},
 		{ErrorDocument{}, ErrorVersion},
 		{flamereport.Document{}, flamereport.Schema},
-		{query.Result{}, query.Schema},
 	}
 	branches := make([]any, 0, len(outputs))
 	for _, output := range outputs {
 		t := reflect.TypeOf(output.value)
 		ref := b.describe(t)
 		definition := b.definitions[definitionName(t)].(map[string]any)
-		definition["properties"].(map[string]any)["schema"] = map[string]any{"const": output.version, "type": "string"}
+		definition["properties"].(map[string]any)["schema"] = map[string]any{"const": output.version, "type": "string", "description": "Versioned discriminator selecting this command output contract."}
 		properties := definition["properties"].(map[string]any)
 		if _, exists := properties["errors"]; !exists {
 			properties["errors"] = b.describe(reflect.TypeOf([]Error{}))
 		}
 		branches = append(branches, ref)
 	}
+	branches = append(branches, query.ResultSchema())
 	speedscopeType := reflect.TypeOf(flamereport.Speedscope{})
 	speedscopeReference := b.describe(speedscopeType)
 	speedscopeDefinition := b.definitions[definitionName(speedscopeType)].(map[string]any)
-	speedscopeDefinition["properties"].(map[string]any)["$schema"] = map[string]any{"type": "string", "const": "https://www.speedscope.app/file-format-schema.json"}
+	speedscopeDefinition["properties"].(map[string]any)["$schema"] = map[string]any{"type": "string", "const": "https://www.speedscope.app/file-format-schema.json", "description": "Canonical schema URL identifying the speedscope file format."}
 	branches = append(branches, speedscopeReference)
-	if definition, ok := b.definitions["insights_Report"].(map[string]any); ok {
-		definition["properties"].(map[string]any)["schemaVersion"] = map[string]any{"type": "string", "const": InsightsVersion}
+	for _, name := range []string{"insights_Report", "schema_Analysis"} {
+		definition := b.definitions[name].(map[string]any)
+		definition["properties"].(map[string]any)["schemaVersion"] = map[string]any{"type": "string", "const": InsightsVersion, "description": "Versioned discriminator for the interned single-recording analysis contract."}
 	}
 	if definition, ok := b.definitions["insights_WireRootReport"].(map[string]any); ok {
-		definition["properties"].(map[string]any)["schemaVersion"] = map[string]any{"type": "string", "const": "2"}
+		definition["properties"].(map[string]any)["schemaVersion"] = map[string]any{"type": "string", "const": "2", "description": "Version of root-cause evidence embedded in the enclosing analysis."}
 	}
 	errorDefinition := b.definitions[definitionName(reflect.TypeOf(ErrorDocument{}))].(map[string]any)
 	errorDefinition["properties"].(map[string]any)["errors"] = map[string]any{"type": "array", "minItems": 1, "items": b.describe(reflect.TypeOf(Error{}))}
@@ -224,12 +225,6 @@ func Document() map[string]any {
 			"afterActiveMs":  "Candidate selected active clock duration in milliseconds.",
 			"warnings":       "Explicit duration-mismatch (>10%), sample-sparse (<200), and unavailable-normalization evidence warnings.",
 		},
-		"query_Source": {
-			"untimed_samples":  "Whole-recording untimed sample count, preserved for partial windows.",
-			"untimed_ms":       "Whole-recording untimed sample weight in milliseconds.",
-			"untimed_excluded": "True when this selection excludes untimed sample weight.",
-			"untimed_spans":    "Recording-relative export-order spans, inferred only for labels.",
-		},
 		"rootcause_Stack": {
 			"stackId":        "Canonical exact path selector in the enclosing analysis report's stacks table.",
 			"firstSec":       "First timed sample in recording-relative seconds, or null for an untimed-only stack.",
@@ -253,6 +248,7 @@ func Document() map[string]any {
 	cardProperties := b.definitions["scorecard_Scorecard"].(map[string]any)["properties"].(map[string]any)
 	coverage := cardProperties["coverage"].(map[string]any)
 	coverage["minimum"], coverage["maximum"] = float64(0), float64(1)
+	applySemantics(b.definitions)
 	return map[string]any{
 		"$schema":     "https://json-schema.org/draft/2020-12/schema",
 		"$id":         "https://wkperf.dev/schema/output.json",
@@ -297,15 +293,8 @@ func (b *definitionBuilder) describe(t reflect.Type) map[string]any {
 		return nullable(map[string]any{"type": "object", "additionalProperties": b.describe(t.Elem())})
 	case reflect.String:
 		spec := map[string]any{"type": "string"}
-		switch t.PkgPath() + "." + t.Name() {
-		case "github.com/omniviewdev/wkperf/internal/insights.Severity":
-			spec["enum"] = []string{"high", "medium", "low", "info"}
-		case "github.com/omniviewdev/wkperf/internal/scorecard.Rating":
-			spec["enum"] = []string{"good", "needs-improvement", "poor", "n/a"}
-		case "github.com/omniviewdev/wkperf/internal/compare.Verdict":
-			spec["enum"] = []string{"improved", "regressed", "unchanged", "noisy", "info", "new", "removed"}
-		case "github.com/omniviewdev/wkperf/internal/flame.DiffMode":
-			spec["enum"] = []string{"auto", "none", "per-second", "share"}
+		if vocabulary, ok := stringVocabularies[t.PkgPath()+"."+t.Name()]; ok {
+			spec["enum"] = vocabulary
 		}
 		return spec
 	case reflect.Bool:

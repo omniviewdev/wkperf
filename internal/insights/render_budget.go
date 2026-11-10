@@ -200,6 +200,20 @@ func truncationFooter(shown, total, blocks, recordings, cap int) string {
 	return fmt.Sprintf("[truncated: %d of %d bytes shown; %d blocks omitted; %d recordings omitted]\n", shown, total, blocks, recordings) + marker
 }
 
+// compactPreamble preserves the leading mandatory diagnostic when a complete
+// error line cannot fit. A shorter explicit marker leaves room for its code.
+func compactPreamble(preamble string, cap int) string {
+	const marker = "[truncated: use JSON]\n"
+	if cap <= len(marker) {
+		return marker[:max(0, cap)]
+	}
+	n := min(len(preamble), cap-len(marker)-1)
+	for n > 0 && n < len(preamble) && !utf8.RuneStart(preamble[n]) {
+		n--
+	}
+	return strings.TrimRight(preamble[:n], " \t\n") + "\n" + marker
+}
+
 func packDocuments(documents []renderDocument, preamble string, cap int) string {
 	total := completeLength(documents, preamble)
 	bounded := cap > 0 && total > cap
@@ -231,6 +245,12 @@ func packDocuments(documents []renderDocument, preamble string, cap int) string 
 	remaining := cap - reserve
 	errors := renderBlock{text: preamble}
 	remaining -= takeLines(&errors, remaining)
+	if preamble != "" && errors.shown < len(preamble) {
+		headingEnd := strings.Index(preamble, "\n\n")
+		if errors.shown == 0 || (headingEnd >= 0 && errors.shown <= headingEnd+2) {
+			return compactPreamble(preamble, cap)
+		}
+	}
 	// Recording identity outranks every detail and every other recording's
 	// findings. This is a global reservation, not front truncation.
 	for i := range documents {

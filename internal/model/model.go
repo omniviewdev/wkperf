@@ -9,6 +9,8 @@ import (
 	"os"
 	"sort"
 	"strings"
+
+	"github.com/omniviewdev/wkperf/internal/diagnostic"
 )
 
 // Record type identifiers as emitted in Record.Type.
@@ -240,19 +242,19 @@ func objectKeys(data []byte) string {
 func Load(path string) (*Recording, error) {
 	info, err := os.Stat(path)
 	if err != nil {
-		return nil, err
+		return nil, diagnostic.Wrap(diagnostic.LoadError, path, err)
 	}
 	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s: not a regular file", path)
+		return nil, diagnostic.Wrap(diagnostic.InputError, path, fmt.Errorf("not a regular file"))
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, diagnostic.Wrap(diagnostic.LoadError, path, err)
 	}
 	defer f.Close()
 	rec, err := Parse(f)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, diagnostic.Wrap(diagnostic.LoadError, path, err)
 	}
 	return rec, nil
 }

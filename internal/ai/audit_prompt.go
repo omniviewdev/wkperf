@@ -24,6 +24,7 @@ Rules:
 - The scorecard standards are adapted from Core Web Vitals, Lighthouse and RAIL, and from frame-budget targets. They are approximations for a long-lived webview app, not page-load measurements. Say so where it affects a conclusion, and do not over-claim.
 - Give concrete, code-level changes rather than generic advice. Consider: React memoization (React.memo, useMemo, useCallback, stable props), list virtualization, avoiding layout thrash (batching DOM reads before writes, no forced synchronous layout), throttling/debouncing handlers, requestAnimationFrame batching, reducing allocations and garbage-collection pressure, moving work to Web Workers, CSS containment (contain, content-visibility), and lazy loading / code splitting.
 - If results are marked noisy, low-confidence or single-run, say so explicitly. A scene with one run has no variance estimate.
+- Use evidenceBasis and replication to qualify finding support. Replication counts finding IDs, not proof of the same cause; missing captures are incomplete evidence. Sampled findings cannot have high confidence.
 - Verification plan: for each recommendation name the scorecard standard IDs and metric keys that must move, in which direction and roughly by how much, and which scenes to re-capture (name them) before re-running the audit.
 - If the data was truncated, say which conclusions may be affected.
 - A grade of n/a or a partial score means insufficient evidence, not a healthy scene. State coverage and unavailable-standard reasons. GC collector intervals are not measured main-thread pauses; input-stall intervals are not measured blocking work.
@@ -151,14 +152,14 @@ func auditSections(a *audit.Report, c Context) []section {
 					gaps = append(gaps, fmt.Sprintf("%s=%s(%s)", g.ID, num(g.Value), g.Rating))
 				}
 			}
-			fmt.Fprintf(&b, "- %s: grade %s, %s %s, %s, %d run(s), %ss", clip(oneLine(s.Name), 80), grade, scoreLabel, score, coverage, s.Runs, num(s.DurationSec))
+			fmt.Fprintf(&b, "- %s: grade %s, %s %s, %s, %d parsed run(s) of %d attempted (%d missing), %ss", clip(oneLine(s.Name), 80), grade, scoreLabel, score, coverage, s.Runs, s.AttemptedRuns, s.MissingRuns, num(s.DurationSec))
 			if s.TopFinding != "" {
 				fmt.Fprintf(&b, ", top finding: %s", clip(oneLine(s.TopFinding), 120))
 			}
 			if len(gaps) > 0 {
 				fmt.Fprintf(&b, ", worst standards: %s", strings.Join(gaps, ", "))
 			}
-			if s.Runs == 1 {
+			if s.AttemptedRuns == 1 && s.Runs == 1 {
 				b.WriteString(" [single run]")
 			}
 			b.WriteByte('\n')

@@ -40,7 +40,7 @@ func TestAnalyzeThresholdEvidenceReproducesThroughQuery(t *testing.T) {
 			}
 			args := outputCommandArgs(t, evidence.Command)
 			reproduced, stderr, err := runPipeline(t, args[1:]...)
-			var result query.Result
+			var result queryOutput[query.ValueRow]
 			if err != nil || json.Unmarshal([]byte(reproduced), &result) != nil || len(result.Rows) != 1 || math.Abs(result.Rows[0].Value-evidence.Value) > 1e-6 {
 				t.Errorf("threshold query does not reproduce: %s: %v %s %.400s", evidence.Command, err, stderr, reproduced)
 			}
@@ -51,7 +51,7 @@ func TestAnalyzeThresholdEvidenceReproducesThroughQuery(t *testing.T) {
 		t.Fatalf("missing explicit threshold evidence: %v", want)
 	}
 	fixed, _, err := runPipeline(t, "query", file, "metrics", "frames.jank_ratio", "--format", "json", "--jank-ms", "325")
-	var result query.Result
+	var result queryOutput[query.ValueRow]
 	if err != nil || json.Unmarshal([]byte(fixed), &result) != nil || len(result.Rows) != 1 || result.Rows[0].Value != 1 {
 		t.Fatalf("custom finding threshold changed fixed60Hz standard: %v %s", err, fixed)
 	}

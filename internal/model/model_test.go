@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -81,7 +82,7 @@ func TestLoadRegularRecording(t *testing.T) {
 			}
 		})
 	}
-	if _, err := Load(path + ".missing"); !os.IsNotExist(err) {
+	if _, err := Load(path + ".missing"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing recording error changed: %v", err)
 	}
 }

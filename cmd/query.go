@@ -9,8 +9,10 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"github.com/omniviewdev/wkperf/internal/diagnostic"
 	"github.com/omniviewdev/wkperf/internal/model"
 	"github.com/omniviewdev/wkperf/internal/query"
+	"github.com/omniviewdev/wkperf/internal/sourcemap"
 )
 
 func newQueryCmd() *cobra.Command {
@@ -36,6 +38,11 @@ func newQueryCmd() *cobra.Command {
 				return err
 			}
 			req.Limit, _ = cmd.Flags().GetInt("limit")
+			req.Offset, _ = cmd.Flags().GetInt("offset")
+			req.MaxBytes, _ = cmd.Flags().GetInt("max-bytes")
+			req.MaxStackFrames, _ = cmd.Flags().GetInt("max-stack-frames")
+			req.MaxStackFramesSet = cmd.Flags().Changed("max-stack-frames")
+			req.Normalize, _ = cmd.Flags().GetString("normalize")
 			req.By, _ = cmd.Flags().GetString("by")
 			req.RootCauseTop, _ = cmd.Flags().GetInt("top")
 			req.Module, _ = cmd.Flags().GetString("module")
@@ -62,12 +69,11 @@ func newQueryCmd() *cobra.Command {
 			req.Sourcemaps = viper.GetStringSlice("sourcemap")
 			rules := ownershipRules()
 			req.AppURLs, req.LibraryURLs = rules.AppURLs, rules.LibraryURLs
-			engine := &query.Engine{Loader: func(ctx context.Context, file string, _ query.SourceOptions) (*model.Recording, error) {
+			engine := &query.Engine{Loader: func(ctx context.Context, file string, _ query.SourceOptions) (*model.Recording, sourcemap.Diagnostics, error) {
 				if err := ctx.Err(); err != nil {
-					return nil, err
+					return nil, sourcemap.Diagnostics{}, err
 				}
-				rec, _, err := loadRecording(cmd, file)
-				return rec, err
+				return loadRecording(cmd, file)
 			}}
 			result, err := engine.Run(cmd.Context(), req)
 			if err != nil {
@@ -77,13 +83,17 @@ func newQueryCmd() *cobra.Command {
 				return err
 			}
 			if result.Status == "ambiguous" {
-				return &ExitError{Code: 1, Msg: "ambiguous selector; choose an ID from returned candidates"}
+				return diagnostic.Wrap(diagnostic.AmbiguousSelector, req.File, fmt.Errorf("selector matches multiple functions; choose a function or node ID"))
 			}
 			return nil
 		},
 	}
 	c.Flags().String("format", "json", "output format: json|md|tsv")
 	c.Flags().Int("limit", query.DefaultLimit, "maximum rows (1..1000; 0 uses bounded default 50)")
+	c.Flags().Int("offset", 0, "zero-based row offset for deterministic pagination")
+	c.Flags().Int("max-bytes", query.DefaultMaxBytes, "maximum encoded output bytes (default 128 KiB; maximum 4 MiB)")
+	c.Flags().Int("max-stack-frames", query.DefaultMaxStackFrames, "maximum stack preview frames (0 preserves exact stacks when byte budget permits)")
+	c.Flags().String("normalize", "auto", "diff normalization: auto|none|per-second|share")
 	c.Flags().Int("top", 10, "root-cause detail size, separate from row limit (0 uses 10)")
 	c.Flags().String("by", "self", "rank or diff by self|total milliseconds")
 	c.Flags().String("module", "", "top/diff module URL substring filter")
@@ -117,14 +127,14 @@ func parseQueryArgs(args []string) (query.Request, error) {
 		var err error
 		req.From, err = strconv.ParseFloat(rest[0], 64)
 		if err != nil {
-			return req, fmt.Errorf("invalid window FROM %q: %w", rest[0], err)
+			return req, diagnostic.Wrap(diagnostic.WindowError, req.File, fmt.Errorf("invalid window FROM %q: %w", rest[0], err))
 		}
 		req.To, err = strconv.ParseFloat(rest[1], 64)
 		if err != nil {
-			return req, fmt.Errorf("invalid window TO %q: %w", rest[1], err)
+			return req, diagnostic.Wrap(diagnostic.WindowError, req.File, fmt.Errorf("invalid window TO %q: %w", rest[1], err))
 		}
 		if req.To <= req.From {
-			return req, fmt.Errorf("window TO must be after FROM")
+			return req, diagnostic.Wrap(diagnostic.WindowError, req.File, fmt.Errorf("window TO must be after FROM"))
 		}
 		rest = rest[2:]
 		req.Operation = "top"
@@ -144,9 +154,9 @@ func parseQueryArgs(args []string) (query.Request, error) {
 		return req, fmt.Errorf("diff requires a candidate file: query BASELINE diff CANDIDATE")
 	}
 	needsSelector := req.Operation == "callers" || req.Operation == "callees" || req.Operation == "paths" || req.Operation == "subtree" || req.Operation == "find"
-	allowsSelector := needsSelector || req.Operation == "top" || req.Operation == "stacks" || req.Operation == "metrics" || req.Operation == "events" || req.Operation == "rootcause"
+	allowsSelector := needsSelector || req.Operation == "top" || req.Operation == "stacks" || req.Operation == "keys" || req.Operation == "metrics" || req.Operation == "events" || req.Operation == "rootcause"
 	if needsSelector && len(rest) != 1 {
-		return req, fmt.Errorf("%s requires one selector", req.Operation)
+		return req, diagnostic.Wrap(diagnostic.SelectorError, req.File, fmt.Errorf("%s requires one selector", req.Operation))
 	}
 	if len(rest) > 1 || (len(rest) > 0 && !allowsSelector) {
 		return req, fmt.Errorf("unexpected arguments for %s", req.Operation)

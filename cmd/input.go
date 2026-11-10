@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"github.com/omniviewdev/wkperf/internal/diagnostic"
 	"github.com/omniviewdev/wkperf/internal/flame"
 	"github.com/omniviewdev/wkperf/internal/model"
 	"github.com/omniviewdev/wkperf/internal/schema"
@@ -49,11 +50,11 @@ func loadRecording(cmd *cobra.Command, path string) (*model.Recording, sourcemap
 	var diagnostics sourcemap.Diagnostics
 	rec, err := model.Load(path)
 	if err != nil {
-		return nil, diagnostics, &inputError{File: path, Code: "load_error", Err: err}
+		return nil, diagnostics, diagnostic.Wrap(diagnostic.LoadError, path, err)
 	}
 	diagnostics, err = sourcemap.Resolve(rec, viper.GetStringSlice("sourcemap"), path)
 	if err != nil {
-		return nil, diagnostics, &inputError{File: path, Code: "source_map_error", Err: err}
+		return nil, diagnostics, diagnostic.Wrap(diagnostic.SourceMapError, path, err)
 	}
 	for _, warning := range diagnostics.Warnings {
 		fmt.Fprintf(cmd.ErrOrStderr(), "%s: %s\n", path, warning)
@@ -67,7 +68,7 @@ func expandPathsContinuing(paths []string) ([]string, []schema.Error) {
 	for _, path := range paths {
 		expanded, err := expandPaths([]string{path})
 		if err != nil {
-			failures = append(failures, failuresFor(&inputError{File: path, Code: "input_error", Err: err})...)
+			failures = append(failures, failuresFor(diagnostic.Wrap(diagnostic.InputError, path, err))...)
 			continue
 		}
 		files = append(files, expanded...)
@@ -82,7 +83,7 @@ func discoverScenesContinuing(paths []string, groupByPrefix bool) ([]sceneFiles,
 	for _, path := range paths {
 		found, err := discoverScenes([]string{path}, groupByPrefix)
 		if err != nil {
-			failures = append(failures, failuresFor(&inputError{File: path, Code: "input_error", Err: err})...)
+			failures = append(failures, failuresFor(diagnostic.Wrap(diagnostic.InputError, path, err))...)
 			continue
 		}
 		for _, scene := range found {

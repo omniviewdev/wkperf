@@ -6,10 +6,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
 
+	"github.com/omniviewdev/wkperf/internal/diagnostic"
 	"github.com/omniviewdev/wkperf/internal/query"
 )
 
@@ -45,14 +47,20 @@ type textContent struct {
 	Text string `json:"text"`
 }
 type callResult struct {
-	Content           []textContent `json:"content"`
-	StructuredContent *query.Result `json:"structuredContent,omitempty"`
-	IsError           bool          `json:"isError"`
+	Content           []textContent   `json:"content"`
+	StructuredContent json.RawMessage `json:"structuredContent,omitempty"`
+	IsError           bool            `json:"isError"`
 }
 
 type rpcError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
+}
+
+type rpcResult struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id"`
+	Result  any             `json:"result"`
 }
 
 // Serve writes only protocol messages to output. Notifications have no reply.
@@ -114,6 +122,7 @@ func (s *Server) Serve(ctx context.Context, input io.Reader, output io.Writer) e
 			continue
 		}
 		var result any
+		var payload []byte
 		switch req.Method {
 		case "ping":
 			result = struct{}{}
@@ -186,19 +195,20 @@ func (s *Server) Serve(ctx context.Context, input io.Reader, output io.Writer) e
 			var queryRequest query.Request
 			arguments := struct {
 				*query.Request
-				MinShare   *float64 `json:"min_share"`
-				Depth      *int     `json:"depth"`
-				MinSamples *int     `json:"min_samples"`
-				TieRatio   *float64 `json:"tie_ratio"`
+				MinShare       *float64 `json:"min_share"`
+				Depth          *int     `json:"depth"`
+				MinSamples     *int     `json:"min_samples"`
+				TieRatio       *float64 `json:"tie_ratio"`
+				MaxStackFrames *int     `json:"max_stack_frames"`
 			}{Request: &queryRequest}
 			decoder := json.NewDecoder(bytes.NewReader(params.Arguments))
 			decoder.DisallowUnknownFields()
 			if err := decoder.Decode(&arguments); err != nil {
-				result = failedCall("Invalid tool arguments: " + err.Error())
+				result = failedCall(params.Name, diagnostic.Wrap(diagnostic.UsageError, "", fmt.Errorf("invalid tool arguments: %w", err)))
 				break
 			}
 			if queryRequest.Operation != "" {
-				result = failedCall("operation is selected by the tool name")
+				result = failedCall(params.Name, diagnostic.Wrap(diagnostic.UsageError, "", fmt.Errorf("operation is selected by the tool name")))
 				break
 			}
 			if arguments.MinShare != nil {
@@ -213,6 +223,9 @@ func (s *Server) Serve(ctx context.Context, input io.Reader, output io.Writer) e
 			if arguments.TieRatio != nil {
 				queryRequest.TieRatio, queryRequest.TieRatioSet = *arguments.TieRatio, true
 			}
+			if arguments.MaxStackFrames != nil {
+				queryRequest.MaxStackFrames, queryRequest.MaxStackFramesSet = *arguments.MaxStackFrames, true
+			}
 			if queryRequest.Sourcemaps == nil {
 				queryRequest.Sourcemaps = s.Sources.Sourcemaps
 			}
@@ -225,17 +238,33 @@ func (s *Server) Serve(ctx context.Context, input io.Reader, output io.Writer) e
 			queryRequest.Operation = params.Name
 			queryResult, err := engine.Run(ctx, queryRequest)
 			if err != nil {
-				result = failedCall(err.Error())
+				result = failedCall(params.Name, err)
 				break
 			}
-			data, err := json.Marshal(queryResult)
+			cap := min(2*queryResult.MaxBytes+1024, MaxResponseBytes)
+			_, payload, err = query.Bound(queryResult, cap, func(value *query.Result) ([]byte, error) {
+				call, err := queryCall(value)
+				if err != nil {
+					return nil, err
+				}
+				data, err := json.Marshal(rpcResult{JSONRPC: "2.0", ID: req.ID, Result: call})
+				if err != nil {
+					return nil, err
+				}
+				return append(data, '\n'), nil
+			})
 			if err != nil {
-				result = failedCall(err.Error())
-				break
+				result = failedCall(params.Name, err)
+				payload = nil
 			}
-			result = callResult{Content: []textContent{{Type: "text", Text: string(data)}}, StructuredContent: queryResult, IsError: queryResult.Status == "ambiguous"}
 		default:
 			if err := writeError(encoder, req.ID, -32601, "Method not found"); err != nil {
+				return err
+			}
+			continue
+		}
+		if payload != nil {
+			if _, err := output.Write(payload); err != nil {
 				return err
 			}
 			continue
@@ -324,23 +353,57 @@ func validID(id json.RawMessage) bool {
 }
 
 func writeError(encoder *json.Encoder, id json.RawMessage, code int, message string) error {
-	return encoder.Encode(map[string]any{"jsonrpc": "2.0", "id": id, "error": rpcError{Code: code, Message: message}})
+	return encoder.Encode(struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Error   rpcError        `json:"error"`
+	}{JSONRPC: "2.0", ID: id, Error: rpcError{Code: code, Message: message}})
 }
 
-func failedCall(message string) callResult {
-	if len(message) > 4096 {
-		message = message[:4096] + " [TRUNCATED error message]"
+func queryCall(result *query.Result) (callResult, error) {
+	data, err := json.Marshal(result)
+	if err != nil {
+		return callResult{}, err
 	}
-	return callResult{Content: []textContent{{Type: "text", Text: message}}, IsError: true}
+	return callResult{Content: []textContent{{Type: "text", Text: string(data)}}, StructuredContent: data, IsError: result.Status != "ok"}, nil
+}
+
+func failedCall(operation string, err error) callResult {
+	failure := query.Error{Code: diagnostic.UsageError, Message: err.Error()}
+	var typed *diagnostic.Error
+	if errors.As(err, &typed) {
+		failure.File, failure.Code, failure.Message = typed.File, typed.Code, typed.Message()
+		failure.Candidates = typed.Candidates
+	}
+	if len(failure.Message) > 4096 {
+		failure.Message = failure.Message[:4096] + " [TRUNCATED error message]"
+	}
+	if len(failure.File) > 4096 {
+		failure.File = failure.File[:4096] + " [TRUNCATED file path]"
+	}
+	copiedCandidates := false
+	for i, candidate := range failure.Candidates {
+		if len(candidate) > 1024 {
+			if !copiedCandidates {
+				failure.Candidates = append([]string(nil), failure.Candidates...)
+				copiedCandidates = true
+			}
+			failure.Candidates[i] = candidate[:1024] + " [TRUNCATED candidate]"
+		}
+	}
+	result := &query.Result{Schema: query.Schema, Operation: operation, Status: "error", Limit: query.DefaultLimit, MaxBytes: query.DefaultMaxBytes, Errors: []query.Error{failure}}
+	// The failure document contains only finite zero values and bounded strings.
+	call, _ := queryCall(result)
+	return call
 }
 
 func writeResult(output io.Writer, id json.RawMessage, result any) error {
-	payload, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "result": result})
+	payload, err := json.Marshal(rpcResult{JSONRPC: "2.0", ID: id, Result: result})
 	if err != nil {
 		return err
 	}
-	if len(payload) >= MaxResponseBytes {
-		payload, err = json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "result": failedCall("Query response exceeds the 4 MiB protocol bound; reduce limit or narrow the window/selector. No rows were returned.")})
+	if len(payload)+1 > MaxResponseBytes {
+		payload, err = json.Marshal(rpcResult{JSONRPC: "2.0", ID: id, Result: failedCall("", diagnostic.Wrap(diagnostic.UsageError, "", fmt.Errorf("response metadata exceeds the 4 MiB protocol bound; narrow the request")))})
 		if err != nil {
 			return err
 		}
@@ -371,9 +434,10 @@ func description(operation string) string {
 		"diff":      "Candidate-minus-baseline self and inclusive deltas, sorted by absolute delta.",
 		"depth":     "Weighted stack-depth distribution and deterministic deepest full stack.",
 		"window":    "Run a query_operation (default top) inside an explicit recording-relative from/to interval.",
-		"metrics":   "Scalar analyzer and insight metrics; optionally select an exact metric key.",
+		"keys":      "Discover metric and root-cause keys with units, descriptions, evidence basis, prefix/regex filtering and pagination.",
+		"metrics":   "Scalar analyzer and insight metrics; select an exact key, trailing .* prefix, or /regex/.",
 		"events":    "Trigger counts and total, mean, p95, and maximum instrumented durations.",
-		"rootcause": "Typed root-cause measurements; optionally select an exact statistic key.",
+		"rootcause": "Typed root-cause measurements; select an exact key, trailing .* prefix, or /regex/.",
 	}
 	return strings.TrimSpace(descriptions[operation])
 }

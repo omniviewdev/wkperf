@@ -307,7 +307,7 @@ var pageTmpl = template.Must(template.New("page").Funcs(template.FuncMap{
 {{range .Facets}}<p>{{.}}</p>{{end}}
 {{if .MetricKeys}}<div><b>Metric keys:</b> {{range .MetricKeys}}<code>{{.}}</code> {{end}}</div>{{end}}
 {{if .NumericEvidence}}<table><tr><th>Numeric evidence</th><th class="n">Value</th><th>Basis / description</th><th>Reproduce</th></tr>{{range .NumericEvidence}}<tr><td><code>{{.MetricKey}}</code></td><td class="n">{{printf "%.3f" .Value}} {{.Unit}}</td><td>{{.Basis}} · {{.Description}}</td><td><code>{{.Command}}</code></td></tr>{{end}}</table>{{end}}
-{{if .Confidence}}<div><b>Confidence:</b> {{.Confidence}}{{range .ConfidenceReasons}} · {{.}}{{end}}</div>{{end}}
+{{if .Confidence}}<div><b>Confidence:</b> {{.Confidence}} · <b>Evidence basis:</b> {{.EvidenceBasis}} · <b>Replication:</b> seen in {{.Replication.RunsWithFinding}} of {{.Replication.Runs}} runs ({{.Replication.ParsedRuns}} parsed){{range .ConfidenceReasons}} · {{.}}{{end}}</div>{{end}}
 {{if .Verify}}<h4>Verify</h4><table><tr><th>Metric key</th><th>Direction</th><th class="n">Target</th><th>Check</th><th>Reproduce</th></tr>{{range .Verify}}<tr><td><code>{{.MetricKey}}</code></td><td>{{.Direction}}</td><td class="n">{{printf "%.3f" .Target}} {{.Unit}}</td><td>{{.Description}}</td><td><code>{{.Command}}</code></td></tr>{{end}}</table>{{end}}
 {{if .SuggestedWindows}}<h4>Suggested windows</h4><ul>{{range .SuggestedWindows}}<li>{{printf "%.3f" .FromSec}}–{{printf "%.3f" .ToSec}} s: {{.Reason}} <code>{{range .Flags}}{{.}} {{end}}</code></li>{{end}}</ul>{{end}}
 {{if .Functions}}<div><b>Functions:</b> {{range .Functions}}<code>{{.}}</code> {{end}}</div>{{end}}

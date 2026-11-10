@@ -6,6 +6,7 @@ import (
 
 	"github.com/omniviewdev/wkperf/internal/audit"
 	"github.com/omniviewdev/wkperf/internal/compare"
+	"github.com/omniviewdev/wkperf/internal/diagnostic"
 	"github.com/omniviewdev/wkperf/internal/insights"
 	"github.com/omniviewdev/wkperf/internal/metrics"
 	"github.com/omniviewdev/wkperf/internal/scorecard"
@@ -15,16 +16,17 @@ import (
 const (
 	InsightsVersion   = "wkperf-insights/v3"
 	AuditVersion      = "wkperf-audit/v2"
-	ComparisonVersion = "wkperf/v1"
+	ComparisonVersion = "wkperf/v2"
 	SummaryVersion    = "wkperf-summary/v1"
 	ErrorVersion      = "wkperf-error/v1"
 )
 
 // Error is one failed input or command. File is empty for command-level failures.
 type Error struct {
-	File    string `json:"file"`
-	Message string `json:"message"`
-	Code    string `json:"code"`
+	File       string          `json:"file"`
+	Message    string          `json:"message"`
+	Code       diagnostic.Code `json:"code"`
+	Candidates []string        `json:"candidates,omitempty"`
 }
 
 // SourceMapMetadata records mapping coverage without changing generated identities.

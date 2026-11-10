@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/omniviewdev/wkperf/internal/model"
+	"github.com/omniviewdev/wkperf/internal/sourcemap"
 )
 
 func fixture() *model.Recording {
@@ -28,7 +29,9 @@ func fixture() *model.Recording {
 }
 
 func engineFor(rec *model.Recording) *Engine {
-	return &Engine{Loader: func(_ context.Context, _ string, _ SourceOptions) (*model.Recording, error) { return rec, nil }}
+	return &Engine{Loader: func(_ context.Context, _ string, _ SourceOptions) (*model.Recording, sourcemap.Diagnostics, error) {
+		return rec, sourcemap.Diagnostics{}, nil
+	}}
 }
 
 func run(t *testing.T, engine *Engine, req Request) *Result {
@@ -82,11 +85,11 @@ func TestWeightedQueryGoldens(t *testing.T) {
 func TestDiffAbsoluteDeltaAndLimit(t *testing.T) {
 	a, b := fixture(), fixture()
 	b.Samples[0].Durations = []float64{.005, .06, .01, .02}
-	engine := &Engine{Loader: func(_ context.Context, file string, _ SourceOptions) (*model.Recording, error) {
+	engine := &Engine{Loader: func(_ context.Context, file string, _ SourceOptions) (*model.Recording, sourcemap.Diagnostics, error) {
 		if file == "a.json" {
-			return a, nil
+			return a, sourcemap.Diagnostics{}, nil
 		}
-		return b, nil
+		return b, sourcemap.Diagnostics{}, nil
 	}}
 	result := run(t, engine, Request{Operation: "diff", Baseline: "a.json", Candidate: "b.json", By: "self", Limit: 1})
 	if result.TotalCount != 4 || !result.Truncated || len(result.Rows) != 1 || result.Rows[0].Name != "leaf" || result.Rows[0].DeltaSelfMS != -35 {

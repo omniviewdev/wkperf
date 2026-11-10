@@ -339,7 +339,7 @@ func TestOutputReproduceCommands(t *testing.T) {
 					}
 					continue
 				}
-				var queryResult query.Result
+				var queryResult queryOutput[query.ValueRow]
 				if err := json.Unmarshal([]byte(result), &queryResult); err != nil {
 					t.Errorf("printed query returned invalid JSON: %s: %v", command, err)
 					continue
@@ -360,7 +360,7 @@ func TestOutputReproduceCommands(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				var functions query.Result
+				var functions queryOutput[query.FunctionRow]
 				if err := json.Unmarshal([]byte(top), &functions); err != nil {
 					t.Fatal(err)
 				}
@@ -368,10 +368,10 @@ func TestOutputReproduceCommands(t *testing.T) {
 					t.Fatalf("expected duplicate-name and anonymous functions: %s", top)
 				}
 				for _, function := range functions.Rows {
-					result, _, err := runPipeline(t, "query", file, "paths", function.ID)
-					var paths query.Result
+					result, _, err := runPipeline(t, "query", file, "paths", function.FunctionID)
+					var paths queryOutput[json.RawMessage]
 					if err != nil || json.Unmarshal([]byte(result), &paths) != nil || paths.Status != "ok" || len(paths.Rows) != 1 {
-						t.Errorf("stable selector does not resolve paths: %s: %v %s", function.ID, err, result)
+						t.Errorf("stable selector does not resolve paths: %s: %v %s", function.FunctionID, err, result)
 					}
 				}
 			}

@@ -11,7 +11,6 @@ import (
 	"github.com/omniviewdev/wkperf/internal/metrics"
 	"github.com/omniviewdev/wkperf/internal/model"
 	"github.com/omniviewdev/wkperf/internal/profile"
-	"github.com/omniviewdev/wkperf/internal/rootcause"
 )
 
 func functionLabel(f metrics.FuncStat) string {
@@ -227,27 +226,8 @@ func enrichFindings(c *ruleCtx, findings []Finding) {
 		f.Nodes = []NodeClue{}
 		context := contextForFinding(c, *f)
 		addNodeClues(c, f, context)
-		f.Confidence = "low"
-		f.ConfidenceReasons = []string{"Single-run observation; repeat the same scene to estimate variance."}
-		if c.rep.DurationSec < 10 {
-			f.ConfidenceReasons = append(f.ConfidenceReasons, "Short capture: fewer than 10 active seconds.")
-		}
+		SetFindingConfidence(f, []*Report{c.rep}, 1, 1)
 		coverage := c.rep.SampleCoverage
-		if coverage.SampleCount < 100 {
-			f.ConfidenceReasons = append(f.ConfidenceReasons, "Sparse JavaScript samples: fewer than 100 weighted samples.")
-		}
-		if coverage.Available && coverage.Ratio < 0.5 {
-			f.ConfidenceReasons = append(f.ConfidenceReasons, "Sample weights cover less than half the measured script time.")
-		}
-		if temporalFinding(f.ID) {
-			sampledMs := coverage.SampledMs
-			if coverage.UntimedExcluded {
-				sampledMs += coverage.UntimedMs
-			}
-			if note := rootcause.UntimedAttributionNote(coverage.UntimedMs, sampledMs); note != "" {
-				f.ConfidenceReasons = append(f.ConfidenceReasons, note)
-			}
-		}
 		for _, e := range preset {
 			f.NumericEvidence = append(f.NumericEvidence, e)
 			f.MetricKeys = appendUnique(f.MetricKeys, e.MetricKey)

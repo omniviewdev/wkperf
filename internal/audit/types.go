@@ -27,14 +27,17 @@ type Scene struct {
 
 // SceneResult is a scene after aggregating its runs.
 type SceneResult struct {
-	Name        string               `json:"name"`
-	Sources     []string             `json:"sources"`
-	Runs        int                  `json:"runs"`
-	DurationSec float64              `json:"durationSec"`        // median
-	Card        *scorecard.Scorecard `json:"card"`               // scorecard of per-metric medians across runs
-	Breakdown   []insights.Slice     `json:"breakdown"`          // median share per slice
-	TopFinding  string               `json:"topFinding"`         // title of highest-impact finding
-	Rep         *insights.Report     `json:"analysis,omitempty"` // representative run, closest to median frame p95
+	Name          string               `json:"name"`
+	Sources       []string             `json:"sources"`
+	Runs          int                  `json:"runs"`
+	AttemptedRuns int                  `json:"attemptedRuns"`
+	MissingRuns   int                  `json:"missingRuns"`
+	DurationSec   float64              `json:"durationSec"`        // median
+	Card          *scorecard.Scorecard `json:"card"`               // scorecard of per-metric medians across runs
+	Breakdown     []insights.Slice     `json:"breakdown"`          // median share per slice
+	TopFinding    string               `json:"topFinding"`         // title of highest-impact finding
+	Rep           *insights.Report     `json:"analysis,omitempty"` // representative run, closest to median frame p95
+	runs          []Run
 }
 
 // Priority is a cross-scene finding rollup, the "fix this first" list.
@@ -54,7 +57,9 @@ type Priority struct {
 	NumericEvidence    []insights.Evidence        `json:"numericEvidence,omitempty"`
 	MetricKeys         []string                   `json:"metricKeys,omitempty"`
 	Verify             []insights.Verification    `json:"verify,omitempty"`
-	Confidence         string                     `json:"confidence,omitempty"`
+	EvidenceBasis      insights.EvidenceBasis     `json:"evidenceBasis"`
+	Replication        insights.Replication       `json:"replication"`
+	Confidence         insights.Confidence        `json:"confidence,omitempty"`
 	ConfidenceReasons  []string                   `json:"confidenceReasons,omitempty"`
 	SuggestedWindows   []insights.SuggestedWindow `json:"suggestedWindows,omitempty"`
 	Functions          []string                   `json:"functions,omitempty"`

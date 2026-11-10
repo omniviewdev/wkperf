@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/omniviewdev/wkperf/internal/diagnostic"
 	"github.com/omniviewdev/wkperf/internal/model"
 	"github.com/omniviewdev/wkperf/internal/schema"
 )
@@ -36,7 +37,7 @@ func TestSummaryAndCompareRejectEmptyActiveWindows(t *testing.T) {
 						args = append(args, tc.args...)
 						args = append(args, "--format", format)
 						out, stderr, err := runPipeline(t, args...)
-						var input *inputError
+						var input *diagnostic.Error
 						if !errors.As(err, &input) || input.Code != "window_error" || input.File != file {
 							t.Fatalf("want typed exit-1 window error; got %v, stdout %.300s", err, out)
 						}

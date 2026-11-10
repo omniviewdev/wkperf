@@ -56,7 +56,7 @@ func Build(rec *model.Recording, tree *flame.Tree, o Options) *Report {
 	}
 	b := builder{rec: rec, tree: tree, o: o, from: from, to: to}
 	r.FromSec, r.ToSec = b.exportTime(from), b.exportTime(to)
-	r.Sourcemaps = append([]string(nil), o.Sourcemaps...)
+	r.SourceMapPaths = append([]string(nil), o.Sourcemaps...)
 	b.pathIDs = make(map[string]string)
 	b.pathKeys = make(map[string]string)
 	b.pathByID = make(map[string]flame.Path)

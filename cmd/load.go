@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/omniviewdev/wkperf/internal/analyze"
+	"github.com/omniviewdev/wkperf/internal/diagnostic"
 	"github.com/omniviewdev/wkperf/internal/metrics"
 	"github.com/omniviewdev/wkperf/internal/model"
 	"github.com/omniviewdev/wkperf/internal/profile"
@@ -23,7 +24,7 @@ func expandPaths(paths []string) ([]string, error) {
 	for _, p := range paths {
 		st, err := os.Stat(p)
 		if err != nil {
-			return nil, err
+			return nil, diagnostic.Wrap(diagnostic.LoadError, p, err)
 		}
 		if !st.IsDir() {
 			files = append(files, p)
@@ -42,7 +43,7 @@ func expandPaths(paths []string) ([]string, error) {
 			}
 		}
 		if n == 0 {
-			return nil, fmt.Errorf("%s: directory contains no .json files", p)
+			return nil, diagnostic.Wrap(diagnostic.InputError, p, fmt.Errorf("directory contains no .json files"))
 		}
 	}
 	return files, nil
@@ -73,7 +74,7 @@ func loadGroup(cmd *cobra.Command, paths []string, wo analyze.Options) ([]*loade
 			return nil, nil, err
 		}
 		if _, _, err := windowBounds(rec, wo); err != nil {
-			return nil, nil, &inputError{File: f, Code: "window_error", Err: err}
+			return nil, nil, diagnostic.Wrap(diagnostic.WindowError, f, err)
 		}
 		out = append(out, &loaded{Sum: analyze.SummarizeWith(rec, f, wo), Rec: rec, SourceMap: diagnostics})
 	}

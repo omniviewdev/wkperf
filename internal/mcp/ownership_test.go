@@ -10,12 +10,16 @@ import (
 	"github.com/omniviewdev/wkperf/internal/flame"
 	"github.com/omniviewdev/wkperf/internal/model"
 	"github.com/omniviewdev/wkperf/internal/query"
+	"github.com/omniviewdev/wkperf/internal/sourcemap"
 )
 
 func TestMCPOwnershipDefaultsOverridesAndValidation(t *testing.T) {
 	rec := &model.Recording{StartTime: 0, EndTime: 1, Samples: []model.TargetSamples{{StackTraces: []model.StackTrace{{Timestamp: .1, StackFrames: []model.StackFrame{{Name: "utility", URL: "bundle.js", Line: 1}}}}, Durations: []float64{.02}}}}
 	loads := 0
-	engine := &query.Engine{Loader: func(context.Context, string, query.SourceOptions) (*model.Recording, error) { loads++; return rec, nil }}
+	engine := &query.Engine{Loader: func(context.Context, string, query.SourceOptions) (*model.Recording, sourcemap.Diagnostics, error) {
+		loads++
+		return rec, sourcemap.Diagnostics{}, nil
+	}}
 	input := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`,
 		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
@@ -35,12 +39,12 @@ func TestMCPOwnershipDefaultsOverridesAndValidation(t *testing.T) {
 	}
 	for i, want := range []string{"app", "framework"} {
 		var response struct {
-			Result callResult `json:"result"`
+			Result wireCall[query.FunctionRow] `json:"result"`
 		}
 		if err := json.Unmarshal([]byte(lines[i+1]), &response); err != nil {
 			t.Fatal(err)
 		}
-		if response.Result.IsError || response.Result.StructuredContent == nil || len(response.Result.StructuredContent.Rows) != 1 || response.Result.StructuredContent.Rows[0].Category != want {
+		if response.Result.IsError || response.Result.StructuredContent == nil || len(response.Result.StructuredContent.Rows) != 1 || string(response.Result.StructuredContent.Functions[response.Result.StructuredContent.Rows[0].FunctionID].Category) != want {
 			t.Fatalf("MCP owner lost: %s", lines[i+1])
 		}
 		if !strings.Contains(response.Result.Content[0].Text, "--"+map[string]string{"app": "app-url", "framework": "library-url"}[want]) {
@@ -48,7 +52,7 @@ func TestMCPOwnershipDefaultsOverridesAndValidation(t *testing.T) {
 		}
 	}
 	var failed, raw struct {
-		Result callResult `json:"result"`
+		Result wireCall[query.FunctionRow] `json:"result"`
 	}
 	if err := json.Unmarshal([]byte(lines[3]), &failed); err != nil {
 		t.Fatal(err)

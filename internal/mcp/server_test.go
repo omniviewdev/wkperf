@@ -9,18 +9,19 @@ import (
 
 	"github.com/omniviewdev/wkperf/internal/model"
 	"github.com/omniviewdev/wkperf/internal/query"
+	"github.com/omniviewdev/wkperf/internal/sourcemap"
 )
 
 func TestProtocolConversationInMemory(t *testing.T) {
 	rec := &model.Recording{StartTime: 1, EndTime: 2, Samples: []model.TargetSamples{{StackTraces: []model.StackTrace{{Timestamp: 1.1, StackFrames: []model.StackFrame{{Name: "work", URL: "app.js", Line: 1}}}}, Durations: []float64{.025}}}}
-	engine := &query.Engine{Loader: func(_ context.Context, file string, options query.SourceOptions) (*model.Recording, error) {
+	engine := &query.Engine{Loader: func(_ context.Context, file string, options query.SourceOptions) (*model.Recording, sourcemap.Diagnostics, error) {
 		if file != "local input.json" {
 			t.Fatalf("file changed: %q", file)
 		}
 		if len(options.Sourcemaps) != 1 || options.Sourcemaps[0] != "app.js.map" {
 			t.Fatalf("sourcemaps lost: %+v", options)
 		}
-		return rec, nil
+		return rec, sourcemap.Diagnostics{}, nil
 	}}
 	input := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}`,

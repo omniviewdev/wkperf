@@ -59,6 +59,7 @@ type sceneView struct {
 	Partial                    bool
 	Coverage                   string
 	Runs                       int
+	AttemptedRuns, MissingRuns int
 	Duration                   string
 	FrameP95, Jank, TBT        string
 	TopFinding                 string
@@ -149,7 +150,7 @@ func buildView(r *audit.Report, ai string) pageView {
 		pv.SceneRows = append(pv.SceneRows, sceneView{
 			Name: s.Name, Grade: s.Card.Grade, Score: fmt.Sprintf("%.0f", s.Card.Score), ScoreW: f1(clampPct(s.Card.Score)),
 			Partial: s.Card.Partial, Coverage: fmt.Sprintf("%.0f%% coverage", 100*s.Card.Coverage),
-			Runs: s.Runs, Duration: fmt.Sprintf("%.1fs", s.DurationSec),
+			Runs: s.Runs, AttemptedRuns: s.AttemptedRuns, MissingRuns: s.MissingRuns, Duration: fmt.Sprintf("%.1fs", s.DurationSec),
 			FrameP95: audit.CardCell(s.Card, "frame-p95"), Jank: audit.CardCell(s.Card, "jank-ratio"), TBT: audit.CardCell(s.Card, "tbt"),
 			TopFinding: s.TopFinding,
 		})
@@ -311,7 +312,7 @@ var pageTmpl = template.Must(template.New("page").Parse(`<!DOCTYPE html>
 
 <h2>Scene leaderboard</h2>
 <div class="card">{{if .SceneRows}}<table><tr><th>Scene</th><th>Grade</th><th class="n">Score</th><th></th><th class="n">Frame p95</th><th class="n">Jank</th><th class="n">TBT</th><th>Top finding</th></tr>
-{{range .SceneRows}}<tr><td>{{.Name}}<div class="mut">{{.Runs}} run(s) &middot; {{.Duration}}</div></td><td><span class="grade g{{.Grade}}">{{.Grade}}</span>{{if .Partial}}<div class="mut">insufficient data</div>{{end}}</td><td class="n">{{.Score}}<div class="mut">{{if .Partial}}Partial score · {{end}}{{.Coverage}}</div></td><td><div class="bar score"><i class="g{{.Grade}}" style="width:{{.ScoreW}}%"></i></div></td><td class="n">{{.FrameP95}}</td><td class="n">{{.Jank}}</td><td class="n">{{.TBT}}</td><td>{{.TopFinding}}</td></tr>{{end}}</table>
+{{range .SceneRows}}<tr><td>{{.Name}}<div class="mut">{{.Runs}} parsed of {{.AttemptedRuns}} attempted run(s) · {{.MissingRuns}} missing &middot; {{.Duration}}</div></td><td><span class="grade g{{.Grade}}">{{.Grade}}</span>{{if .Partial}}<div class="mut">insufficient data</div>{{end}}</td><td class="n">{{.Score}}<div class="mut">{{if .Partial}}Partial score · {{end}}{{.Coverage}}</div></td><td><div class="bar score"><i class="g{{.Grade}}" style="width:{{.ScoreW}}%"></i></div></td><td class="n">{{.FrameP95}}</td><td class="n">{{.Jank}}</td><td class="n">{{.TBT}}</td><td>{{.TopFinding}}</td></tr>{{end}}</table>
 {{else}}<span class="mut">No scenes.</span>{{end}}</div>
 
 <h2>Where the time goes</h2>
@@ -333,7 +334,7 @@ var pageTmpl = template.Must(template.New("page").Parse(`<!DOCTYPE html>
 {{if .EvidenceScene}}<div class="mut">Evidence scene: {{.EvidenceScene}}</div>{{end}}
 {{if .MetricKeys}}<div><b>Metric keys:</b> {{range .MetricKeys}}<code>{{.}}</code> {{end}}</div>{{end}}
 {{if .NumericEvidence}}<table><tr><th>Numeric evidence</th><th class="n">Value</th><th>Basis / description</th><th>Reproduce</th></tr>{{range .NumericEvidence}}<tr><td><code>{{.MetricKey}}</code></td><td class="n">{{printf "%.3f" .Value}} {{.Unit}}</td><td>{{.Basis}} · {{.Description}}</td><td><code>{{.Command}}</code></td></tr>{{end}}</table>{{end}}
-{{if .Confidence}}<div><b>Confidence:</b> {{.Confidence}}{{range .ConfidenceReasons}} · {{.}}{{end}}</div>{{end}}
+{{if .Confidence}}<div><b>Confidence:</b> {{.Confidence}} · <b>Evidence basis:</b> {{.EvidenceBasis}} · <b>Replication:</b> seen in {{.Replication.RunsWithFinding}} of {{.Replication.Runs}} runs ({{.Replication.ParsedRuns}} parsed){{range .ConfidenceReasons}} · {{.}}{{end}}</div>{{end}}
 {{if .Verify}}<h4>Verify</h4><table><tr><th>Metric key</th><th>Direction</th><th class="n">Target</th><th>Check / reproduce</th></tr>{{range .Verify}}<tr><td><code>{{.MetricKey}}</code></td><td>{{.Direction}}</td><td class="n">{{printf "%.3f" .Target}} {{.Unit}}</td><td>{{.Description}} <code>{{.Command}}</code></td></tr>{{end}}</table>{{end}}
 {{if .SuggestedWindows}}<h4>Suggested windows</h4><ul>{{range .SuggestedWindows}}<li>{{printf "%.3f" .FromSec}}–{{printf "%.3f" .ToSec}} s: {{.Reason}} <code>{{range .Flags}}{{.}} {{end}}</code></li>{{end}}</ul>{{end}}
 {{if .Functions}}<div><b>Functions:</b> {{range .Functions}}<code>{{.}}</code> {{end}}</div>{{end}}

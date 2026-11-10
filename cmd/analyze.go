@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -12,6 +13,7 @@ import (
 	"github.com/spf13/viper"
 
 	"github.com/omniviewdev/wkperf/internal/ai"
+	"github.com/omniviewdev/wkperf/internal/diagnostic"
 	core "github.com/omniviewdev/wkperf/internal/flame"
 	"github.com/omniviewdev/wkperf/internal/insights"
 	flamereport "github.com/omniviewdev/wkperf/internal/report/flame"
@@ -131,7 +133,7 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		originalStart := rec.StartTime
 		rec, err = clipRecording(rec, wo)
 		if err != nil {
-			failures = append(failures, failuresFor(&inputError{File: f, Code: "window_error", Err: err})...)
+			failures = append(failures, failuresFor(diagnostic.Wrap(diagnostic.WindowError, f, err))...)
 			continue
 		}
 		if format == "folded" {
@@ -199,7 +201,7 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 
 	// stdout text formats
 	if format == "term" || format == "all" {
-		if err := insights.RenderTermDocuments(stdout, documents, "", useColor(), markdownOptions); err != nil {
+		if err := insights.RenderTermDocuments(stdout, documents, failureMarkdown(failures), useColor(), markdownOptions); err != nil {
 			return err
 		}
 		if err := runModel(); err != nil {
@@ -208,7 +210,9 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		printAI(cmd, "term", aiText)
 	}
 	if format == "md" {
-		render := func(w io.Writer) error { return insights.RenderMarkdownDocuments(w, documents, "", markdownOptions) }
+		render := func(w io.Writer) error {
+			return insights.RenderMarkdownDocuments(w, documents, failureMarkdown(failures), markdownOptions)
+		}
 		if out == "" || out == "-" {
 			if err := render(stdout); err != nil {
 				return err
@@ -225,7 +229,9 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	}
 	if format == "all" {
 		p := reportPathBase(out, format, ".md", defaultAnalyzeBase)
-		if err := writeFileNote(cmd, p, func(w io.Writer) error { return insights.RenderMarkdownDocuments(w, documents, "", markdownOptions) }); err != nil {
+		if err := writeFileNote(cmd, p, func(w io.Writer) error {
+			return insights.RenderMarkdownDocuments(w, documents, failureMarkdown(failures), markdownOptions)
+		}); err != nil {
 			return err
 		}
 	}
@@ -276,6 +282,8 @@ func writeFileNote(cmd *cobra.Command, path string, render func(io.Writer) error
 	if err := writeFile(path, render); err != nil {
 		return err
 	}
+	root := cmd.Root()
+	root.SetContext(context.WithValue(root.Context(), reportWrittenKey{}, true))
 	fmt.Fprintln(cmd.ErrOrStderr(), "wrote", path)
 	return nil
 }

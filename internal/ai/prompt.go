@@ -71,6 +71,7 @@ Rules:
 - Rank recommendations by expected impact and by effort (e.g. high impact / low effort first).
 - Give concrete, code-level changes rather than generic advice. Consider: React memoization (React.memo, useMemo, useCallback, stable props), list virtualization, avoiding layout thrash (batching DOM reads before writes, no forced synchronous layout), throttling/debouncing handlers, requestAnimationFrame batching, reducing allocations and garbage-collection pressure, moving work to Web Workers, CSS containment (contain, content-visibility), and lazy loading / code splitting.
 - If comparability warnings are listed, or results are marked noisy, low-confidence or single-run, say so explicitly and do not over-claim. A metric that moved within noise is not a finding.
+- Finding confidence rates measured, sampled or hypothesis support with explicit replication. Comparison confidence rates separation of run ranges; it uses a different vocabulary. Neither is proof of causation.
 - For each recommendation, say how to verify it with wkperf: which metric key (or function) should move, in which direction, and roughly by how much; capture again with the same scenario and compare.
 - If the data was truncated, say which conclusions may be affected.
 - GC collector intervals are overlays, not measured main-thread pauses. Input-stall intervals are observed latency, not measured blocking work. Do not infer either cause from interval length.
