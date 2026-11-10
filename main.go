@@ -2,7 +2,6 @@
 package main
 
 import (
-	"fmt"
 	"os"
 
 	"github.com/omniviewdev/wkperf/cmd"
@@ -13,9 +12,6 @@ func main() {
 		code := 1
 		if ee, ok := err.(*cmd.ExitError); ok {
 			code = ee.Code
-		}
-		if err.Error() != "" {
-			fmt.Fprintln(os.Stderr, "wkperf:", err)
 		}
 		os.Exit(code)
 	}

@@ -23,10 +23,10 @@ func newRootCmd() *cobra.Command {
 		Use:           "wkperf",
 		Short:         "Compare and analyze WebKit Web Inspector Timelines exports",
 		Long:          "wkperf compares two groups of WebKit Web Inspector Timelines exports (baseline vs candidate) and reports regressions and improvements.",
-		SilenceUsage:  false,
+		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(newCompareCmd(), newAnalyzeCmd(), newAuditCmd(), newSummaryCmd(), newSampleCmd(), newVersionCmd())
+	root.AddCommand(newCompareCmd(), newAnalyzeCmd(), newAuditCmd(), newSummaryCmd(), newSampleCmd(), newVersionCmd(), newSchemaCmd(), newFlameCmd(), newQueryCmd(), newMCPCmd())
 	return root
 }
 
@@ -34,8 +34,7 @@ func newRootCmd() *cobra.Command {
 func Execute(args []string) error {
 	initConfig()
 	root := newRootCmd()
-	root.SetArgs(expandEmitPrompt(expandVS(args)))
-	return root.Execute()
+	return executeCommand(root, args)
 }
 
 // initConfig wires env vars (WKPERF_*) and the optional config file.

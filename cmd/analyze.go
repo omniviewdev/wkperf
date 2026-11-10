@@ -12,16 +12,19 @@ import (
 	"github.com/spf13/viper"
 
 	"github.com/omniviewdev/wkperf/internal/ai"
+	"github.com/omniviewdev/wkperf/internal/analyze"
 	"github.com/omniviewdev/wkperf/internal/insights"
 	"github.com/omniviewdev/wkperf/internal/model"
 	"github.com/omniviewdev/wkperf/internal/report/insightshtml"
+	"github.com/omniviewdev/wkperf/internal/schema"
 	"github.com/omniviewdev/wkperf/internal/scorecard"
+	"github.com/omniviewdev/wkperf/internal/sourcemap"
 )
 
 const defaultAnalyzeBase = "wkperf-analysis"
 
 // insightsSchema identifies the analyze --format json document.
-const insightsSchema = "wkperf-insights/v1"
+const insightsSchema = schema.InsightsVersion
 
 func newAnalyzeCmd() *cobra.Command {
 	c := &cobra.Command{
@@ -37,10 +40,13 @@ or --emit-prompt to get the prompt for pasting into another agent.`,
   wkperf analyze recording.json --emit-prompt=prompt.md`,
 		Args: cobra.MinimumNArgs(1),
 		PreRunE: func(cmd *cobra.Command, _ []string) error {
-			if err := bindFlags(cmd, "format", "out", "top", "jank-ms", "long-task-ms", "no-color", "open", "no-scorecard"); err != nil {
+			if err := bindFlags(cmd, "format", "out", "top", "jank-ms", "long-task-ms", "no-color", "open", "no-scorecard", "brief", "max-bytes", "module-grouping"); err != nil {
 				return err
 			}
 			if err := bindFlags(cmd, windowKeys...); err != nil {
+				return err
+			}
+			if err := bindSourceMapFlags(cmd); err != nil {
 				return err
 			}
 			return bindAIFlags(cmd)
@@ -48,60 +54,108 @@ or --emit-prompt to get the prompt for pasting into another agent.`,
 		RunE: runAnalyze,
 	}
 	f := c.Flags()
-	f.String("format", "term", "output format: term|md|json|html|all")
-	f.String("out", "", "output file (md/json/html) or directory/prefix with --format all (default "+defaultAnalyzeBase+".html)")
+	f.String("format", "term", "output format: term|md|json|html|folded|all")
+	f.String("out", "", "output file (md/json/html/folded) or directory/prefix with --format all (default "+defaultAnalyzeBase+".html)")
 	f.Int("top", 10, "list length for hotspots, modules, slow frames and long tasks")
 	f.Float64("jank-ms", 16.7, "frame duration above which a frame is slow")
 	f.Float64("long-task-ms", 50, "script duration above which a task is long")
 	f.Bool("no-color", false, "disable colored output (NO_COLOR is also respected)")
 	f.Bool("open", false, "open the HTML report after writing it")
 	f.Bool("no-scorecard", false, "skip the performance scorecard for each recording")
+	f.Bool("brief", false, "emit concise Markdown findings, hot functions and verification")
+	f.Int("max-bytes", 0, "maximum total Markdown bytes including truncation marker (0 = unlimited; JSON is never truncated)")
+	addSourceMapFlags(c)
+	addModuleGroupingFlag(c)
 	addWindowFlags(c)
 	addAIFlags(c)
 	return c
 }
 
 func runAnalyze(cmd *cobra.Command, args []string) error {
-	format := strings.ToLower(viper.GetString("format"))
+	format := formatName(viper.GetString("format"))
 	switch format {
-	case "term", "md", "json", "html", "all":
+	case "term", "md", "json", "html", "folded", "all":
 	default:
-		return fmt.Errorf("unknown --format %q (want term|md|json|html|all)", format)
+		return fmt.Errorf("unknown --format %q (want term|md|json|html|folded|all)", format)
 	}
 	cmd.SilenceUsage = true
-
-	files, err := expandPaths(args)
+	grouping, err := moduleGrouping()
 	if err != nil {
 		return err
 	}
+	markdownOptions := insights.MarkdownOptions{Brief: viper.GetBool("brief"), MaxBytes: viper.GetInt("max-bytes")}
+	if err := validateMarkdownOptions(format, markdownOptions.MaxBytes, viper.GetBool("ai")); err != nil {
+		return err
+	}
+	if viper.GetBool("open") && format != "html" && format != "all" {
+		return fmt.Errorf("--open requires --format html or all")
+	}
+	if format == "folded" && (viper.GetBool("ai") || viper.GetString("emit-prompt") != "") {
+		return fmt.Errorf("--format folded cannot be combined with --ai or --emit-prompt")
+	}
+	files, failures := expandPathsContinuing(args)
 	wo := windowOpts()
 	iopts := insights.Options{
-		Top:        viper.GetInt("top"),
-		JankMs:     viper.GetFloat64("jank-ms"),
-		LongTaskMs: viper.GetFloat64("long-task-ms"),
+		Top:            viper.GetInt("top"),
+		JankMs:         viper.GetFloat64("jank-ms"),
+		LongTaskMs:     viper.GetFloat64("long-task-ms"),
+		Sourcemaps:     viper.GetStringSlice("sourcemap"),
+		ModuleGrouping: grouping,
 	}
-	reps := make([]*insights.Report, 0, len(files))
-	cards := make([]*scorecard.Scorecard, 0, len(files))
+	var reps []*insights.Report
+	var cards []*scorecard.Scorecard
+	var sourceMaps []sourcemap.Diagnostics
+	var foldedRecordings []*model.Recording
+	if format == "folded" {
+		foldedRecordings = make([]*model.Recording, 0, len(files))
+	} else {
+		reps = make([]*insights.Report, 0, len(files))
+		cards = make([]*scorecard.Scorecard, 0, len(files))
+		sourceMaps = make([]sourcemap.Diagnostics, 0, len(files))
+	}
 	withCard := !viper.GetBool("no-scorecard")
 	for _, f := range files {
-		rec, err := model.Load(f)
+		rec, diagnostics, err := loadRecording(cmd, f)
 		if err != nil {
-			if !strings.Contains(err.Error(), f) {
-				err = fmt.Errorf("%s: %w", f, err)
-			}
-			return err
+			failures = append(failures, failuresFor(err)...)
+			continue
 		}
+		originalStart := rec.StartTime
 		rec, err = clipRecording(rec, wo)
 		if err != nil {
-			return fmt.Errorf("%s: %w", f, err)
+			failures = append(failures, failuresFor(&inputError{File: f, Code: "window_error", Err: err})...)
+			continue
 		}
-		rep := insights.Analyze(rec, f, iopts)
+		if format == "folded" {
+			foldedRecordings = append(foldedRecordings, rec)
+			continue
+		}
+		options := iopts
+		options.WindowStartSec = rec.StartTime - originalStart
+		rep := insights.Analyze(rec, f, options)
 		reps = append(reps, rep)
+		sourceMaps = append(sourceMaps, diagnostics)
 		if withCard {
 			cards = append(cards, scorecard.Evaluate(rec, rep))
 		} else {
 			cards = append(cards, nil)
 		}
+	}
+	if format == "folded" {
+		render := func(w io.Writer) error {
+			for _, rec := range foldedRecordings {
+				if err := analyze.RenderFolded(w, rec); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		if out := viper.GetString("out"); out != "" {
+			err = writeFileNote(cmd, out, render)
+		} else {
+			err = render(cmd.OutOrStdout())
+		}
+		return combineFailures(failures, err)
 	}
 
 	emit := viper.GetString("emit-prompt")
@@ -112,7 +166,7 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	}
 	stdout := cmd.OutOrStdout()
 	if emit != "" {
-		return emitPrompt(stdout, cmd.ErrOrStderr(), emit, prompt)
+		return combineFailures(failures, emitPrompt(stdout, cmd.ErrOrStderr(), emit, prompt))
 	}
 
 	out := viper.GetString("out")
@@ -149,7 +203,7 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		printAI(cmd, "term", aiText)
 	}
 	if format == "md" {
-		render := func(w io.Writer) error { return renderMarkdownAll(w, reps, cards) }
+		render := func(w io.Writer) error { return renderMarkdownAll(w, reps, cards, markdownOptions) }
 		if out == "" {
 			if err := render(stdout); err != nil {
 				return err
@@ -166,12 +220,12 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	}
 	if format == "all" {
 		p := reportPathBase(out, format, ".md", defaultAnalyzeBase)
-		if err := writeFileNote(cmd, p, func(w io.Writer) error { return renderMarkdownAll(w, reps, cards) }); err != nil {
+		if err := writeFileNote(cmd, p, func(w io.Writer) error { return renderMarkdownAll(w, reps, cards, markdownOptions) }); err != nil {
 			return err
 		}
 	}
 	if format == "json" || format == "all" {
-		render := func(w io.Writer) error { return renderInsightsJSON(w, reps, cards, aiText) }
+		render := func(w io.Writer) error { return renderInsightsJSON(w, reps, cards, sourceMaps, failures, aiText) }
 		if format == "json" {
 			if err := runModel(); err != nil {
 				return err
@@ -204,7 +258,7 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	} else if viper.GetBool("open") {
 		return fmt.Errorf("--open requires --format html or all")
 	}
-	return nil
+	return partialError(failures)
 }
 
 func writeFileNote(cmd *cobra.Command, path string, render func(io.Writer) error) error {
@@ -215,44 +269,47 @@ func writeFileNote(cmd *cobra.Command, path string, render func(io.Writer) error
 	return nil
 }
 
-func renderMarkdownAll(w io.Writer, reps []*insights.Report, cards []*scorecard.Scorecard) error {
+func renderMarkdownAll(w io.Writer, reps []*insights.Report, cards []*scorecard.Scorecard, options insights.MarkdownOptions) error {
+	var output bytes.Buffer
+	target := w
+	if options.MaxBytes > 0 {
+		target = &output
+	}
 	for i, r := range reps {
 		if i > 0 {
-			if _, err := io.WriteString(w, "\n---\n\n"); err != nil {
+			if _, err := io.WriteString(target, "\n---\n\n"); err != nil {
 				return err
 			}
 		}
-		if err := insights.RenderMarkdown(w, r); err != nil {
+		if err := insights.RenderMarkdownWithOptions(target, r, options); err != nil {
 			return err
 		}
-		if cards[i] != nil {
-			if _, err := io.WriteString(w, "\n"); err != nil {
+		if cards[i] != nil && !options.Brief {
+			if _, err := io.WriteString(target, "\n"); err != nil {
 				return err
 			}
-			if err := scorecard.RenderMarkdown(w, cards[i]); err != nil {
+			if err := scorecard.RenderMarkdown(target, cards[i]); err != nil {
 				return err
 			}
 		}
+	}
+	if options.MaxBytes > 0 {
+		return writeBoundedMarkdown(w, output.String(), options.MaxBytes)
 	}
 	return nil
 }
 
-func renderInsightsJSON(w io.Writer, reps []*insights.Report, cards []*scorecard.Scorecard, aiText string) error {
-	type entry struct {
-		*insights.Report
-		Scorecard *scorecard.Scorecard `json:"scorecard,omitempty"`
-	}
-	entries := make([]entry, len(reps))
+func renderInsightsJSON(w io.Writer, reps []*insights.Report, cards []*scorecard.Scorecard, sourceMaps []sourcemap.Diagnostics, failures []schema.Error, aiText string) error {
+	entries := make([]schema.Analysis, len(reps))
 	for i, r := range reps {
-		entries[i] = entry{r, cards[i]}
+		entries[i] = schema.Analysis{Report: r, Scorecard: cards[i]}
+		if hasSourceMapMetadata(sourceMaps[i]) {
+			entries[i].SourceMap = &sourceMaps[i]
+		}
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	return enc.Encode(struct {
-		Schema  string  `json:"schema"`
-		Reports []entry `json:"reports"`
-		AI      string  `json:"ai,omitempty"`
-	}{insightsSchema, entries, aiText})
+	return enc.Encode(schema.InsightsDocument{Schema: insightsSchema, Reports: entries, Errors: failures, AI: aiText})
 }
 
 // renderInsightsHTML renders the insights page and appends each recording's

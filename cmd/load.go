@@ -6,11 +6,13 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
+
+	"github.com/spf13/cobra"
 
 	"github.com/omniviewdev/wkperf/internal/analyze"
 	"github.com/omniviewdev/wkperf/internal/metrics"
 	"github.com/omniviewdev/wkperf/internal/model"
+	"github.com/omniviewdev/wkperf/internal/sourcemap"
 )
 
 // expandPaths turns files and directories into a flat list of recording
@@ -48,13 +50,14 @@ func expandPaths(paths []string) ([]string, error) {
 // loaded is one summarized recording plus the (unwindowed) recording itself,
 // kept so insights can be built later for the representative runs.
 type loaded struct {
-	Sum *metrics.Summary
-	Rec *model.Recording
+	Sum       *metrics.Summary
+	Rec       *model.Recording
+	SourceMap sourcemap.Diagnostics
 }
 
 // loadGroup loads every file (or directory of files) and summarizes it
 // within the window wo. Errors name the offending file.
-func loadGroup(paths []string, wo analyze.Options) ([]*loaded, []string, error) {
+func loadGroup(cmd *cobra.Command, paths []string, wo analyze.Options) ([]*loaded, []string, error) {
 	files, err := expandPaths(paths)
 	if err != nil {
 		return nil, nil, err
@@ -64,14 +67,11 @@ func loadGroup(paths []string, wo analyze.Options) ([]*loaded, []string, error) 
 	}
 	out := make([]*loaded, 0, len(files))
 	for _, f := range files {
-		rec, err := model.Load(f)
+		rec, diagnostics, err := loadRecording(cmd, f)
 		if err != nil {
-			if !strings.Contains(err.Error(), f) {
-				err = fmt.Errorf("%s: %w", f, err)
-			}
 			return nil, nil, err
 		}
-		out = append(out, &loaded{Sum: analyze.SummarizeWith(rec, f, wo), Rec: rec})
+		out = append(out, &loaded{Sum: analyze.SummarizeWith(rec, f, wo), Rec: rec, SourceMap: diagnostics})
 	}
 	return out, files, nil
 }

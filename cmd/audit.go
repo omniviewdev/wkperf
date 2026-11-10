@@ -16,15 +16,15 @@ import (
 	"github.com/omniviewdev/wkperf/internal/ai"
 	"github.com/omniviewdev/wkperf/internal/audit"
 	"github.com/omniviewdev/wkperf/internal/insights"
-	"github.com/omniviewdev/wkperf/internal/model"
 	"github.com/omniviewdev/wkperf/internal/report/audithtml"
+	"github.com/omniviewdev/wkperf/internal/schema"
 	"github.com/omniviewdev/wkperf/internal/scorecard"
 )
 
 const defaultAuditBase = "wkperf-audit"
 
 // auditSchema identifies the audit --format json document.
-const auditSchema = "wkperf-audit/v1"
+const auditSchema = schema.AuditVersion
 
 // exitMinScore is the exit code when the overall score is below --min-score.
 const exitMinScore = 4
@@ -47,10 +47,13 @@ aggregated: per-scene scores, an overall grade, cross-scene priorities
   wkperf audit captures/ --group-by-prefix --emit-prompt=prompt.md`,
 		Args: cobra.MinimumNArgs(1),
 		PreRunE: func(cmd *cobra.Command, _ []string) error {
-			if err := bindFlags(cmd, "format", "out", "top", "jank-ms", "long-task-ms", "no-color", "open", "group-by-prefix", "min-score"); err != nil {
+			if err := bindFlags(cmd, "format", "out", "top", "jank-ms", "long-task-ms", "no-color", "open", "group-by-prefix", "min-score", "module-grouping"); err != nil {
 				return err
 			}
 			if err := bindFlags(cmd, windowKeys...); err != nil {
+				return err
+			}
+			if err := bindSourceMapFlags(cmd); err != nil {
 				return err
 			}
 			return bindAIFlags(cmd)
@@ -67,6 +70,8 @@ aggregated: per-scene scores, an overall grade, cross-scene priorities
 	f.Bool("open", false, "open the HTML report after writing it")
 	f.Bool("group-by-prefix", false, "group loose files named <scene>-<n>.json or <scene>_<n>.json into one scene")
 	f.Float64("min-score", 0, "exit with code 4 when the overall score is below N (0-100; 0 = off)")
+	addSourceMapFlags(c)
+	addModuleGroupingFlag(c)
 	addWindowFlags(c)
 	addAIFlags(c)
 	return c
@@ -167,42 +172,51 @@ func discoverScenes(paths []string, groupByPrefix bool) ([]sceneFiles, error) {
 }
 
 func runAudit(cmd *cobra.Command, args []string) error {
-	format := strings.ToLower(viper.GetString("format"))
+	format := formatName(viper.GetString("format"))
 	switch format {
 	case "term", "md", "json", "html", "all":
 	default:
 		return fmt.Errorf("unknown --format %q (want term|md|json|html|all)", format)
 	}
 	cmd.SilenceUsage = true
-
-	sf, err := discoverScenes(args, viper.GetBool("group-by-prefix"))
+	grouping, err := moduleGrouping()
 	if err != nil {
 		return err
 	}
+
+	sf, failures := discoverScenesContinuing(args, viper.GetBool("group-by-prefix"))
 	wo := windowOpts()
 	top := viper.GetInt("top")
 	iopts := insights.Options{
-		Top:        top,
-		JankMs:     viper.GetFloat64("jank-ms"),
-		LongTaskMs: viper.GetFloat64("long-task-ms"),
+		Top:            top,
+		JankMs:         viper.GetFloat64("jank-ms"),
+		LongTaskMs:     viper.GetFloat64("long-task-ms"),
+		Sourcemaps:     viper.GetStringSlice("sourcemap"),
+		ModuleGrouping: grouping,
 	}
 	scenes := make([]audit.Scene, 0, len(sf))
+	var sourceMaps []schema.SourceMapMetadata
 	for _, s := range sf {
 		sc := audit.Scene{Name: s.Name}
 		for _, f := range s.Files {
-			rec, err := model.Load(f)
+			rec, diagnostics, err := loadRecording(cmd, f)
 			if err != nil {
-				if !strings.Contains(err.Error(), f) {
-					err = fmt.Errorf("%s: %w", f, err)
-				}
-				return err
+				failures = append(failures, failuresFor(err)...)
+				continue
 			}
+			originalStart := rec.StartTime
 			rec, err = clipRecording(rec, wo)
 			if err != nil {
-				return fmt.Errorf("%s: %w", f, err)
+				failures = append(failures, failuresFor(&inputError{File: f, Code: "window_error", Err: err})...)
+				continue
 			}
-			rep := insights.Analyze(rec, f, iopts)
+			options := iopts
+			options.WindowStartSec = rec.StartTime - originalStart
+			rep := insights.Analyze(rec, f, options)
 			sc.Runs = append(sc.Runs, audit.Run{Source: f, Report: rep, Card: scorecard.Evaluate(rec, rep)})
+			if hasSourceMapMetadata(diagnostics) {
+				sourceMaps = append(sourceMaps, schema.SourceMapMetadata{File: f, Diagnostics: diagnostics})
+			}
 		}
 		scenes = append(scenes, sc)
 	}
@@ -216,7 +230,7 @@ func runAudit(cmd *cobra.Command, args []string) error {
 	}
 	stdout := cmd.OutOrStdout()
 	if emit != "" {
-		return emitPrompt(stdout, cmd.ErrOrStderr(), emit, prompt)
+		return combineFailures(failures, emitPrompt(stdout, cmd.ErrOrStderr(), emit, prompt))
 	}
 
 	out := viper.GetString("out")
@@ -261,7 +275,7 @@ func runAudit(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if format == "json" || format == "all" {
-		render := func(w io.Writer) error { return renderAuditJSON(w, rpt, aiText) }
+		render := func(w io.Writer) error { return renderAuditJSON(w, rpt, sourceMaps, failures, aiText) }
 		if format == "json" {
 			if err := runModel(); err != nil {
 				return err
@@ -295,18 +309,17 @@ func runAudit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--open requires --format html or all")
 	}
 
+	if err := partialError(failures); err != nil {
+		return err
+	}
 	if min := viper.GetFloat64("min-score"); min > 0 && rpt.Overall != nil && rpt.Overall.Score < min {
 		return &ExitError{Code: exitMinScore, Msg: fmt.Sprintf("overall score %.0f (%s) is below --min-score %.0f", rpt.Overall.Score, rpt.Overall.Grade, min)}
 	}
 	return nil
 }
 
-func renderAuditJSON(w io.Writer, r *audit.Report, aiText string) error {
+func renderAuditJSON(w io.Writer, r *audit.Report, sourceMaps []schema.SourceMapMetadata, failures []schema.Error, aiText string) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	return enc.Encode(struct {
-		Schema string        `json:"schema"`
-		Report *audit.Report `json:"report"`
-		AI     string        `json:"ai,omitempty"`
-	}{auditSchema, r, aiText})
+	return enc.Encode(schema.AuditDocument{Schema: auditSchema, Report: r, SourceMaps: sourceMaps, Errors: failures, AI: aiText})
 }

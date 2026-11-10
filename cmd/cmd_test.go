@@ -71,8 +71,7 @@ func run(t *testing.T, args ...string) (string, error) {
 	var out, errb bytes.Buffer
 	root.SetOut(&out)
 	root.SetErr(&errb)
-	root.SetArgs(expandEmitPrompt(expandVS(args)))
-	err := root.Execute()
+	err := executeCommand(root, args)
 	return out.String(), err
 }
 
@@ -141,7 +140,7 @@ func TestAnalyzeJSONSchema(t *testing.T) {
 		Schema  string            `json:"schema"`
 		Reports []json.RawMessage `json:"reports"`
 	}
-	if err := json.Unmarshal([]byte(out), &doc); err != nil || doc.Schema != "wkperf-insights/v1" || len(doc.Reports) != 1 {
+	if err := json.Unmarshal([]byte(out), &doc); err != nil || doc.Schema != "wkperf-insights/v2" || len(doc.Reports) != 1 {
 		t.Fatalf("bad json: %v %+v", err, doc)
 	}
 }

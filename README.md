@@ -20,9 +20,9 @@
   <a href="docs/REFERENCE.md">Reference</a>
 </p>
 
-**Did that change actually make the UI faster?** `wkperf` answers that from WebKit Web Inspector timeline recordings.
+**Find what makes your WebKit UI slow—and give your coding agent enough evidence to fix it.**
 
-Safari's Web Inspector (and any WKWebView app, like Omniview) can export a Timelines recording as JSON. The inspector can open that file, but it can't compare two of them or tell you what to fix. `wkperf` does both:
+`wkperf` reads Safari and WKWebView Web Inspector Timelines exports, including Safari's wrapped export format.
 
 - **`compare`**: put a *before* and an *after* side by side. See what got faster, what got slower, and what is just noise.
 - **`analyze`**: look at one recording and see where the time goes, which functions are hot, which frames were slow and why, plus concrete suggestions.
@@ -51,9 +51,9 @@ export PATH="$(go env GOPATH)/bin:$PATH"
 wkperf version
 ```
 
-If you set `GOBIN`, add that directory instead. On Windows, add `%USERPROFILE%\\go\\bin` to your user `Path`.
+If you set `GOBIN`, add that directory instead. On Windows, add `%USERPROFILE%\go\bin` to your user `Path`.
 
-For a reproducible install, replace `@latest` with a tag, such as `@v0.3.0`.
+For a reproducible install, replace `@latest` with a tag, such as `@v0.4.0`.
 
 <details>
 <summary>Build from source</summary>
@@ -72,23 +72,14 @@ GOWORK=off go build -o wkperf .
 No recording needed. Generate some fake ones:
 
 ```bash
-wkperf sample --out demo
+wkperf sample --wrapped --out demo
 wkperf compare demo/baseline-*.json --vs demo/candidate-*.json
 wkperf analyze demo/baseline-1.json
+wkperf query demo/regressions/get-animations.json hot-path
+wkperf flame demo/regressions/get-animations.json --format html --out flame.html
 ```
 
-A comparison looks like this:
-
-```
-35 improved · 1 regressed · 3 noisy · 25 unchanged
-Overall: IMPROVED
-
-FRAMES
-  Metric                Baseline  Candidate          Δ      Δ%
-  Average FPS           56.1 fps   71.6 fps  +15.5 fps  +27.7%  ▲ improved
-  Frame time p95        24.09 ms   17.31 ms   -6.78 ms  -28.1%  ▼ improved
-  Jank ratio (>16.7ms)     61.9%       8.3%     -53.6%  -86.6%  ▼ improved
-```
+Terminal output highlights improved, regressed, unchanged, and noisy metrics. Several runs per side are needed to estimate variability.
 
 Add `--format html --out report.html --open` for the shareable version with charts.
 
@@ -106,6 +97,18 @@ wkperf audit demo/scenes --format html --out audit.html --open
 ```
 
 Reports are standalone HTML files. Share the file directly; recipients do not need wkperf or a server.
+
+### Interactive flame graphs
+
+![Actual wkperf flame graph showing app, React, and native getAnimations work with source-aware tooltips](docs/assets/flame-report.png)
+
+*Synthetic stack fixture. Widths represent sampled time, not elapsed recording time.*
+
+```bash
+wkperf flame demo/regressions/get-animations.json --out flame.html
+```
+
+Click to zoom, search with a regex, invert the call view, or export SVG, folded stacks, Speedscope, and JSON.
 
 ## The real workflow
 
@@ -129,8 +132,8 @@ You get:
 
 - **Where the time goes**: script, style, layout, paint, GC, as a share of the recording.
 - **Hot functions and modules**: what the sampling profiler spent time in.
-- **Slow frames**: each one broken down into script / layout / paint / GC, with the likely culprit.
-- **Findings**: plain-English problems with evidence and a suggested fix, e.g. layout thrashing, an un-throttled `mousemove` handler, steady memory growth, or one library eating a quarter of your CPU time.
+- **Slow frames and idle wakeups**: separate expensive rendering from periodic timers waking an otherwise idle app.
+- **Checkable findings**: evidence, implicated functions, confidence, metric targets, and windows to inspect next—not proof of causation.
 
 ### 3. Get help fixing it
 
@@ -161,7 +164,7 @@ wkperf compare baseline/ --vs candidate/
 wkperf compare baseline/ --vs candidate/ --fail-on-regression --strict-fixture
 ```
 
-Exit code `2` means a real regression, `3` means the two captures weren't comparable enough to trust. Details in the [reference](docs/REFERENCE.md#exit-codes).
+Exit code `2` means a threshold-exceeding regression in a gated metric; it is not statistical proof. Code `3` means the comparability gate failed. Details are in the [reference](docs/REFERENCE.md#exit-codes).
 
 ## Audit one build across many scenes
 
@@ -185,27 +188,11 @@ wkperf audit captures/ --group-by-prefix   # home-1.json, home-2.json -> scene "
 
 Each subdirectory is a scene (its files are repeat runs, medians are used); loose files are one scene each. You get a scene leaderboard, an overall grade, where the time goes, a cross-scene **Fix first** list (ranked by how many scenes a problem hits times how much it costs), hot functions, and the worst scene per standard. `--ai` / `--emit-prompt` work as in `analyze`.
 
-```
-4 scenes · 12 runs · 120.0s recorded
-Overall (typical scene): grade B · score 86/100
-
-Scene leaderboard (worst first)
-  scene                    grade score    frame p95      jank        TBT  top finding
-  table-scroll             D        49      53.5 ms     98.1%     0.0 ms  One module dominates CPU time: https://…
-  settings                 C        72      17.1 ms      8.0%  1317.4 ms  One module dominates CPU time: https://…
-  log-stream               C        74      21.8 ms     54.1%     0.0 ms  One module dominates CPU time: https://…
-  home                     A        97      17.4 ms      9.0%     0.0 ms  One module dominates CPU time: https://…
-
-Fix first
- 3.  HIGH  Layout thrashing (forced synchronous layout)
-    forced-layout · layout · 4 scenes · 8304.1ms total · 20.9% avg impact · rank 215.9
-    • table-scroll: 241 forced-layout records, 4888.9ms total
-    → Fix: Batch DOM reads and writes: read all layout properties first, then apply all writes...
-```
+Reports retain per-scene details so a healthy median cannot hide a bad scene. Failed files are listed individually; valid recordings are still analyzed, and the command exits nonzero.
 
 ## How far from a performant UI?
 
-`analyze` and `audit` rate every recording against a small set of published targets and show the distance to "good" (for example "jank ratio is 12.4x the 5% target"). Scores run 0 to 100, graded A (90+), B (75+), C (60+), D (40+), F. `analyze --no-scorecard` hides it for single recordings.
+`analyze` and `audit` rate recordings against adapted published targets and wkperf-specific heuristics. They show the distance to "good". Scores run 0 to 100, graded A (90+), B (75+), C (60+), D (40+), F. `analyze --no-scorecard` hides the scorecard.
 
 An honest note: this is **not Lighthouse and not Core Web Vitals scoring**. Those tools measure page loads in a browser; wkperf reads Web Inspector timelines of a long-lived app.
 
@@ -240,10 +227,40 @@ That's common, and `wkperf` deals with it instead of silently lying:
 
 Normalization is a safety net. The best fix is still recording the same scenario.
 
+## Agent workflow
+
+Keep the complete JSON as the evidence artifact; use bounded Markdown or targeted queries for a coding agent's context.
+
+```bash
+# Resolve bundled code back to source and get a compact diagnosis.
+wkperf analyze recording.json --sourcemap ./dist --format md --brief
+wkperf analyze recording.json --sourcemap ./dist --format json > analysis.json
+
+# Follow the expensive chain, then inspect the exact function or stack.
+wkperf query recording.json hot-path
+wkperf query recording.json top --by total --limit 10
+wkperf query recording.json callers performSyncWorkOnRoot
+wkperf query recording.json paths getAnimations --limit 5
+
+# Explore the same evidence visually.
+wkperf flame recording.json --format html --out flame.html
+
+# After a source change, record the same scenario at least five times per side.
+wkperf compare baseline/ --vs candidate/ --format md --fail-on-regression
+```
+
+Ambiguous function names produce candidate IDs instead of silently choosing a function. Use an ID or `url:line:col` to select precisely. Findings include suggested time windows and commands to reproduce their supporting measurements.
+
+Analysis JSON now uses `wkperf-insights/v2`. Run `wkperf schema` for the complete machine-readable contract. Bad files do not discard valid analyze/audit results: failures appear in `errors` and stderr, and the command exits nonzero.
+
+Idle timer wakeups are separated from expensive frames. Function identity includes columns, so minified same-line functions stay distinct. Source maps show original and generated locations together; file-level module grouping keeps plugin bundles separate. Use `--module-grouping parent-directory` only when you want a directory roll-up.
+
+For tool-based agents, `wkperf mcp` exposes the query engine through MCP over stdio. It writes protocol messages—not logging—to stdout. See the [reference](docs/REFERENCE.md) for formats, query operations, source maps, and JSON schemas.
+
 ## What it will and won't tell you
 
 - Findings are **heuristics**, not proof. Treat them as leads and confirm with a second capture.
-- A single run has no noise estimate, so `wkperf` flags those comparisons as low confidence. Use several runs.
+- A single run has no noise estimate. Comparisons explicitly identify single-run confidence; capture at least five runs per side.
 - AI answers are only as good as the data in the prompt. Check the suggestions before shipping them.
 
 ## More

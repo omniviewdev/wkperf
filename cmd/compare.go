@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -9,7 +10,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -21,8 +21,8 @@ import (
 	"github.com/omniviewdev/wkperf/internal/metrics"
 	"github.com/omniviewdev/wkperf/internal/report/html"
 	"github.com/omniviewdev/wkperf/internal/report/insightshtml"
-	"github.com/omniviewdev/wkperf/internal/report/jsonout"
 	"github.com/omniviewdev/wkperf/internal/report/term"
+	"github.com/omniviewdev/wkperf/internal/schema"
 )
 
 const defaultReportBase = "wkperf-report"
@@ -39,10 +39,13 @@ positional args and no --vs, the two files are compared 1v1.`,
   wkperf compare ./baseline --vs ./candidate --format all --out reports/`,
 		PreRunE: func(cmd *cobra.Command, _ []string) error {
 			if err := bindFlags(cmd, "format", "out", "threshold", "top", "verbose", "no-color", "fail-on-regression", "open", "title",
-				"normalize", "strict-fixture", "min-comparability"); err != nil {
+				"normalize", "strict-fixture", "min-comparability", "module-grouping"); err != nil {
 				return err
 			}
 			if err := bindFlags(cmd, windowKeys...); err != nil {
+				return err
+			}
+			if err := bindSourceMapFlags(cmd); err != nil {
 				return err
 			}
 			return bindAIFlags(cmd)
@@ -51,8 +54,8 @@ positional args and no --vs, the two files are compared 1v1.`,
 	}
 	f := c.Flags()
 	f.StringSlice("vs", nil, "candidate files or directories (repeatable, comma separated, or several values after one --vs)")
-	f.String("format", "term", "output format: term|html|json|all")
-	f.String("out", "", "output file (html/json) or directory/prefix with --format all (default "+defaultReportBase+".html)")
+	f.String("format", "term", "output format: term|md|html|json|all")
+	f.String("out", "", "output file (md/html/json) or directory/prefix with --format all (default "+defaultReportBase+".html)")
 	f.Float64("threshold", 0.05, "relative change below which a metric is unchanged")
 	f.Int("top", 10, "number of functions to list per direction")
 	f.Bool("verbose", false, "show all metrics, including unchanged ones")
@@ -63,6 +66,8 @@ positional args and no --vs, the two files are compared 1v1.`,
 	f.String("normalize", "auto", "normalize totals for different recording lengths: auto|per-second|none")
 	f.Bool("strict-fixture", false, "exit with code 3 when the comparability score is below --min-comparability")
 	f.Float64("min-comparability", 0.6, "minimum comparability score (0..1) for --strict-fixture")
+	addSourceMapFlags(c)
+	addModuleGroupingFlag(c)
 	addWindowFlags(c)
 	addAIFlags(c)
 	return c
@@ -90,11 +95,15 @@ func runCompare(cmd *cobra.Command, args []string) error {
 	}
 	cmd.SilenceUsage = true
 
-	format := strings.ToLower(viper.GetString("format"))
+	format := formatName(viper.GetString("format"))
 	switch format {
-	case "term", "html", "json", "all":
+	case "term", "md", "html", "json", "all":
 	default:
-		return fmt.Errorf("unknown --format %q (want term|html|json|all)", format)
+		return fmt.Errorf("unknown --format %q (want term|md|html|json|all)", format)
+	}
+	grouping, err := moduleGrouping()
+	if err != nil {
+		return err
 	}
 
 	norm := strings.ToLower(viper.GetString("normalize"))
@@ -105,11 +114,11 @@ func runCompare(cmd *cobra.Command, args []string) error {
 	}
 
 	wo := windowOpts()
-	baseL, baseFiles, err := loadGroup(baseP, wo)
+	baseL, baseFiles, err := loadGroup(cmd, baseP, wo)
 	if err != nil {
 		return fmt.Errorf("baseline: %w", err)
 	}
-	candL, candFiles, err := loadGroup(candP, wo)
+	candL, candFiles, err := loadGroup(cmd, candP, wo)
 	if err != nil {
 		return fmt.Errorf("candidate: %w", err)
 	}
@@ -135,11 +144,11 @@ func runCompare(cmd *cobra.Command, args []string) error {
 	var prompt ai.Prompt
 	if emit != "" || wantAI {
 		top := viper.GetInt("top")
-		bRep, err := repReport(baseL, res.BaseRep, wo, top)
+		bRep, err := repReport(baseL, res.BaseRep, wo, top, grouping)
 		if err != nil {
 			return err
 		}
-		cRep, err := repReport(candL, res.CandRep, wo, top)
+		cRep, err := repReport(candL, res.CandRep, wo, top, grouping)
 		if err != nil {
 			return err
 		}
@@ -168,9 +177,19 @@ func runCompare(cmd *cobra.Command, args []string) error {
 		}
 		printAI(cmd, format, aiText)
 	}
+	if format == "md" || format == "all" {
+		render := func(w io.Writer) error { return compare.RenderMarkdown(w, res) }
+		if format == "md" && out == "" {
+			if err := render(stdout); err != nil {
+				return err
+			}
+		} else if err := writeFileNote(cmd, reportPath(out, format, ".md"), render); err != nil {
+			return err
+		}
+	}
 	if format == "html" || format == "all" {
 		htmlPath = reportPath(out, format, ".html")
-		o := html.Options{Title: viper.GetString("title"), Generated: time.Now()}
+		o := html.Options{Title: viper.GetString("title")}
 		if err := writeFile(htmlPath, func(w io.Writer) error {
 			if aiText == "" {
 				return html.Render(w, res, o)
@@ -187,16 +206,18 @@ func runCompare(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(cmd.ErrOrStderr(), "wrote", htmlPath)
 	}
 	if format == "json" || format == "all" {
-		p := reportPath(out, format, ".json")
+		document := schema.ComparisonDocument{Schema: schema.ComparisonVersion, Result: res, SourceMaps: append(sourceMapMetadata(baseL), sourceMapMetadata(candL)...)}
+		render := func(w io.Writer) error {
+			enc := json.NewEncoder(w)
+			enc.SetIndent("", "  ")
+			return enc.Encode(document)
+		}
 		if format == "json" && out == "" {
-			if err := jsonout.Render(stdout, res); err != nil {
+			if err := render(stdout); err != nil {
 				return err
 			}
-		} else {
-			if err := writeFile(p, func(w io.Writer) error { return jsonout.Render(w, res) }); err != nil {
-				return err
-			}
-			fmt.Fprintln(cmd.ErrOrStderr(), "wrote", p)
+		} else if err := writeFileNote(cmd, reportPath(out, format, ".json"), render); err != nil {
+			return err
 		}
 	}
 
@@ -265,7 +286,7 @@ func reportPathBase(out, format, ext, base string) string {
 
 // repReport builds the insights report for the loaded recording whose
 // summary is rep (the representative run), honoring the window.
-func repReport(group []*loaded, rep *metrics.Summary, wo analyze.Options, top int) (*insights.Report, error) {
+func repReport(group []*loaded, rep *metrics.Summary, wo analyze.Options, top int, grouping string) (*insights.Report, error) {
 	if rep == nil {
 		return nil, nil
 	}
@@ -275,7 +296,7 @@ func repReport(group []*loaded, rep *metrics.Summary, wo analyze.Options, top in
 			if err != nil {
 				return nil, fmt.Errorf("%s: %w", rep.Source, err)
 			}
-			return insights.Analyze(rec, rep.Source, insights.Options{Top: top}), nil
+			return insights.Analyze(rec, rep.Source, insights.Options{Top: top, WindowStartSec: rec.StartTime - l.Rec.StartTime, Sourcemaps: viper.GetStringSlice("sourcemap"), ModuleGrouping: grouping}), nil
 		}
 	}
 	return nil, nil

@@ -1,13 +1,14 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
 
+	"github.com/omniviewdev/wkperf/internal/model"
 	"github.com/omniviewdev/wkperf/internal/testgen"
 )
 
@@ -18,6 +19,7 @@ func newSampleCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			dir, _ := cmd.Flags().GetString("out")
+			wrapped, _ := cmd.Flags().GetBool("wrapped")
 			cmd.SilenceUsage = true
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				return err
@@ -32,14 +34,9 @@ func newSampleCmd() *cobra.Command {
 					{"candidate", int64(200 + i), testgen.Improved()},
 				} {
 					path := filepath.Join(dir, fmt.Sprintf("%s-%d.json", g.name, i))
-					data, err := json.Marshal(testgen.Generate(g.seed, g.p))
-					if err != nil {
+					if err := writeSample(cmd, path, g.seed, g.p, wrapped); err != nil {
 						return err
 					}
-					if err := os.WriteFile(path, data, 0o644); err != nil {
-						return err
-					}
-					fmt.Fprintln(cmd.OutOrStdout(), "wrote", path)
 				}
 			}
 			// A deliberately different-length pair to try --normalize / windowing.
@@ -54,16 +51,14 @@ func newSampleCmd() *cobra.Command {
 				{"different-length-candidate", 302, long},
 			} {
 				path := filepath.Join(dir, g.name+".json")
-				data, err := json.Marshal(testgen.Generate(g.seed, g.p))
-				if err != nil {
+				if err := writeSample(cmd, path, g.seed, g.p, wrapped); err != nil {
 					return err
 				}
-				if err := os.WriteFile(path, data, 0o644); err != nil {
-					return err
-				}
-				fmt.Fprintln(cmd.OutOrStdout(), "wrote", path)
 			}
-			if err := writeSampleScenes(cmd, dir); err != nil {
+			if err := writeSampleScenes(cmd, dir, wrapped); err != nil {
+				return err
+			}
+			if err := writeSampleRegressions(cmd, dir, wrapped); err != nil {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "\ntry: wkperf audit %s/scenes\n", dir)
@@ -74,12 +69,13 @@ func newSampleCmd() *cobra.Command {
 		},
 	}
 	c.Flags().String("out", "wkperf-sample", "output directory")
+	c.Flags().Bool("wrapped", false, "write Safari version:1 wrapped recording exports")
 	return c
 }
 
 // writeSampleScenes writes a demo audit tree: dir/scenes/<scene>/run-<n>.json.
 // The scenes differ on purpose so the audit has something to find.
-func writeSampleScenes(cmd *cobra.Command, dir string) error {
+func writeSampleScenes(cmd *cobra.Command, dir string, wrapped bool) error {
 	fns := func(fs ...testgen.FuncWeight) []testgen.FuncWeight { return fs }
 	fw := func(n, f string, line int, w float64) testgen.FuncWeight {
 		return testgen.FuncWeight{Name: n, URL: "https://app.test/" + f, Line: line, Weight: w}
@@ -118,15 +114,46 @@ func writeSampleScenes(cmd *cobra.Command, dir string) error {
 			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 				return err
 			}
-			data, err := json.Marshal(testgen.Generate(int64(400+si*10+run), p))
-			if err != nil {
+			if err := writeSample(cmd, path, int64(400+si*10+run), p, wrapped); err != nil {
 				return err
 			}
-			if err := os.WriteFile(path, data, 0o644); err != nil {
-				return err
-			}
-			fmt.Fprintln(cmd.OutOrStdout(), "wrote", path)
 		}
 	}
+	return nil
+}
+
+func writeSample(cmd *cobra.Command, path string, seed int64, params testgen.Params, wrapped bool) error {
+	return writeSampleRecording(cmd, path, testgen.Generate(seed, params), wrapped)
+}
+
+func writeSampleRecording(cmd *cobra.Command, path string, rec *model.Recording, wrapped bool) error {
+	if err := writeFile(path, func(w io.Writer) error { return testgen.Write(w, rec, wrapped) }); err != nil {
+		return err
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), "wrote", path)
+	return nil
+}
+
+func writeSampleRegressions(cmd *cobra.Command, dir string, wrapped bool) error {
+	for _, fixture := range []struct {
+		name     string
+		generate func() *model.Recording
+	}{
+		{"idle-gap", testgen.IdleMinified},
+		{"stack-evidence", testgen.DeepMinified},
+		{"get-animations", testgen.GetAnimations},
+		{"react-microtask", testgen.React},
+		{"periodic-background", testgen.Periodic},
+		{"paused-minified", testgen.PausedMinified},
+	} {
+		if err := writeSampleRecording(cmd, filepath.Join(dir, "regressions", fixture.name+".json"), fixture.generate(), wrapped); err != nil {
+			return err
+		}
+	}
+	path := filepath.Join(dir, "regressions", "maps", "bundle.js.map")
+	if err := writeFile(path, func(w io.Writer) error { _, err := io.WriteString(w, testgen.MinifiedSourceMap()+"\n"); return err }); err != nil {
+		return err
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), "wrote", path)
 	return nil
 }

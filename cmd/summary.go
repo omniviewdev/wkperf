@@ -8,8 +8,10 @@ import (
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 
 	"github.com/omniviewdev/wkperf/internal/metrics"
+	"github.com/omniviewdev/wkperf/internal/schema"
 )
 
 func newSummaryCmd() *cobra.Command {
@@ -18,15 +20,21 @@ func newSummaryCmd() *cobra.Command {
 		Short: "Print key metrics for one group of recordings (median across runs)",
 		Args:  cobra.MinimumNArgs(1),
 		PreRunE: func(cmd *cobra.Command, _ []string) error {
-			return bindFlags(cmd, windowKeys...)
+			if err := bindFlags(cmd, "format"); err != nil {
+				return err
+			}
+			if err := bindFlags(cmd, windowKeys...); err != nil {
+				return err
+			}
+			return bindSourceMapFlags(cmd)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			format, _ := cmd.Flags().GetString("format")
+			format := formatName(viper.GetString("format"))
 			if format != "term" && format != "json" {
 				return fmt.Errorf("unknown --format %q (want term|json)", format)
 			}
 			cmd.SilenceUsage = true
-			loaded, files, err := loadGroup(args, windowOpts())
+			loaded, files, err := loadGroup(cmd, args, windowOpts())
 			sums := summaries(loaded)
 			if err != nil {
 				return err
@@ -36,11 +44,7 @@ func newSummaryCmd() *cobra.Command {
 			if format == "json" {
 				enc := json.NewEncoder(w)
 				enc.SetIndent("", "  ")
-				return enc.Encode(struct {
-					Sources []string         `json:"sources"`
-					Runs    int              `json:"runs"`
-					Metrics []metrics.Metric `json:"metrics"`
-				}{files, len(sums), rows})
+				return enc.Encode(schema.SummaryDocument{Schema: schema.SummaryVersion, Sources: files, Runs: len(sums), Metrics: rows, SourceMaps: sourceMapMetadata(loaded)})
 			}
 			fmt.Fprintf(w, "%d run(s): %s\n\n", len(files), strings.Join(files, ", "))
 			tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
@@ -56,6 +60,7 @@ func newSummaryCmd() *cobra.Command {
 		},
 	}
 	c.Flags().String("format", "term", "output format: term|json")
+	addSourceMapFlags(c)
 	addWindowFlags(c)
 	return c
 }
