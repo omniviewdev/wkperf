@@ -350,39 +350,3 @@ func frameName(frame core.Frame) string {
 func location(frame core.Frame) string {
 	return fmt.Sprintf("%s:%d:%d", frame.URL, frame.Line, frame.Column)
 }
-
-func tooltip(node, root *viewNode, diff bool) string {
-	text := frameName(node.Frame) + "\nGenerated: " + node.Frame.Name + " · " + location(node.Frame)
-	if node.Original != nil {
-		text += fmt.Sprintf("\nOriginal: %s · %s:%d:%d", node.Original.Name, node.Original.URL, node.Original.Line, node.Original.Column)
-	}
-	text += "\nCategory: " + string(node.Category)
-	text += "\nSelf: " + milliseconds(node.SelfMS) + " ms (" + percent(node.SelfMS, root.TotalMS) + ")"
-	text += "\nTotal: " + milliseconds(node.TotalMS) + " ms (" + percent(node.TotalMS, root.TotalMS) + ")"
-	if diff {
-		text += fmt.Sprintf("\nBaseline: %s ms\nCurrent: %s ms\nDelta: %+.3f ms", milliseconds(node.BaselineMS), milliseconds(node.CurrentMS), node.DeltaMS)
-	}
-	return text
-}
-
-func fill(node *viewNode, diff bool) string {
-	if diff {
-		if node.DeltaMS > 0 {
-			return "#dc3c41"
-		}
-		if node.DeltaMS < 0 {
-			return "#239669"
-		}
-		return "#718096"
-	}
-	switch node.Category {
-	case core.CategoryFramework:
-		return "#a78bfa"
-	case core.CategoryNative:
-		return "#94a3b8"
-	case core.CategoryGC:
-		return "#fbbf24"
-	default:
-		return "#60a5fa"
-	}
-}
