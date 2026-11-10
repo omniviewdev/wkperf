@@ -92,18 +92,18 @@ func TestUntimedPipelineRankingsAndMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var total float64
+	var total int64
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	for _, line := range lines {
 		fields := strings.Fields(line)
-		weight, err := strconv.ParseFloat(fields[len(fields)-1], 64)
+		weight, err := strconv.ParseInt(fields[len(fields)-1], 10, 64)
 		if err != nil {
 			t.Fatal(err)
 		}
 		total += weight
 	}
-	if len(lines) != 2 || total != 80 {
-		t.Errorf("folded total=%v: %q", total, out)
+	if len(lines) != 2 || total != 80000 {
+		t.Errorf("folded microseconds=%v: %q", total, out)
 	}
 }
 

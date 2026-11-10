@@ -58,6 +58,9 @@ func Document() map[string]any {
 	errorDefinition["properties"].(map[string]any)["errors"] = map[string]any{"type": "array", "minItems": 1, "items": b.describe(reflect.TypeOf(Error{}))}
 	flameDefinition := b.definitions[definitionName(reflect.TypeOf(flamereport.Document{}))].(map[string]any)
 	flameDefinition["properties"].(map[string]any)["mode"] = map[string]any{"type": "string", "enum": []string{"profile", "diff"}}
+	normalization := b.definitions["flame_DiffNormalization"].(map[string]any)["properties"].(map[string]any)
+	normalization["mode"] = map[string]any{"type": "string", "enum": []string{"none", "per-second", "share"}}
+	normalization["unit"] = map[string]any{"type": "string", "enum": []string{"ms", "ms/s", "percentage-points"}}
 	for name, fields := range map[string]map[string]string{
 		"insights_Report": {
 			"frames":              "Canonical generated function catalog, ordered by name, URL, line and column. Frame indices are zero-based within this report.",
@@ -135,11 +138,67 @@ func Document() map[string]any {
 			"children":      "Selected sorted unique nested event types within this maximal overlapping script task. The shared evidence limit applies; nested records do not count as separate tasks.",
 			"childrenTotal": "Complete count of unique nested event types before the shared evidence limit.",
 		},
-		"flame_Tree": {
-			"untimed":         "Included samples without usable timestamps; timestamp values in this separate array must not be interpreted as times.",
-			"untimedTotal":    "Untimed sample count and weight for the whole original recording, including excluded samples.",
-			"untimedIncluded": "True when untimed sample weight contributes to this aggregate.",
-			"untimed_spans":   "Selected-recording-relative export-order spans, inferred only for labels.",
+		"report_flame_Document": {
+			"frames": "Generated functions interned once across all charts, ordered by generated identity. Every frame reference is a zero-based index into this array. IDs remain stable f_ selectors.",
+			"view":   "Visual layout options only; exported samples and nodes always retain exact canonical root-to-leaf evidence.",
+		},
+		"report_flame_WireTree": {
+			"root":             "Zero-based index of the synthetic root in nodes.",
+			"nodes":            "Flat canonical root-to-leaf calling-context tree in deterministic preorder. Reconstruct paths using parent indices; no children or frame objects are repeated.",
+			"samples":          "Timed samples with recording-relative seconds (t), original statistical milliseconds (w), exact terminal node ID (path), and optional target ID. No depth truncation or weight rounding.",
+			"untimed":          "Included samples without usable timestamps, represented by exact path and weight with no t field. Never interpret array order as clock time.",
+			"untimedTotal":     "Untimed sample count and weight for the whole original recording, including excluded samples.",
+			"untimedIncluded":  "True when untimed sample weight contributes to this aggregate.",
+			"untimed_spans":    "Recording-relative export-order spans, inferred only for labels.",
+			"startTime":        "Selected wall-clock window start in recording-relative seconds.",
+			"endTime":          "Selected half-open wall-clock window end in recording-relative seconds.",
+			"activeDurationMs": "Selected active clock duration in milliseconds, not the sum of statistical sample weights.",
+			"activeIntervals":  "Exact selected half-open active clock intervals in recording-relative seconds, including any interval selection.",
+			"discontinuities":  "Recording-relative clock intervals excluded by recorder pauses.",
+		},
+		"report_flame_WireNode": {
+			"id":      "Stable n_ calling-context selector, or root for the synthetic root.",
+			"parent":  "Zero-based parent index in this tree's nodes array; -1 only for the synthetic root.",
+			"frame":   "Zero-based document frames index; -1 only for the synthetic root.",
+			"selfMs":  "Raw milliseconds from samples ending at this exact context.",
+			"totalMs": "Raw milliseconds from samples traversing this context.",
+		},
+		"report_flame_WireSampleRef": {
+			"path": "Terminal n_ node ID in this tree, referencing a complete exact canonical stack.",
+			"w":    "Original statistical sample weight in milliseconds; not an elapsed wall-clock span.",
+		},
+		"report_flame_WireSample": {
+			"path": "Terminal n_ node ID in this tree, referencing a complete exact canonical stack.",
+			"w":    "Original statistical sample weight in milliseconds; not an elapsed wall-clock span.",
+			"t":    "Usable recording-relative sample timestamp in seconds, preserved without inventing times for untimed evidence.",
+		},
+		"report_flame_WireNodeDelta": {
+			"parent":  "Zero-based parent index in this comparison's nodes array; -1 only for the synthetic root.",
+			"frame":   "Zero-based document frames index; -1 only for the synthetic root.",
+			"selfMs":  "Normalized after-minus-before self delta in comparison.normalization.unit; raw beforeSelfMs and afterSelfMs remain milliseconds.",
+			"totalMs": "Normalized after-minus-before inclusive delta in comparison.normalization.unit; raw beforeTotalMs and afterTotalMs remain milliseconds.",
+		},
+		"report_flame_WireFunctionDelta": {
+			"frame":   "Zero-based document frames index for this stable function ID.",
+			"selfMs":  "Normalized after-minus-before self delta in comparison.normalization.unit.",
+			"totalMs": "Normalized inclusive function delta in comparison.normalization.unit, counting recursion once per sample.",
+		},
+		"report_flame_WireComparison": {
+			"root":          "Zero-based synthetic root index in this comparison's flat nodes array.",
+			"beforeTotalMs": "Unmodified baseline sampled weight in milliseconds.",
+			"afterTotalMs":  "Unmodified candidate sampled weight in milliseconds.",
+			"totalMs":       "Normalized after-minus-before root delta in normalization.unit.",
+			"normalization": "Requested and resolved modes, delta unit, raw totals, active durations and explicit comparability warnings.",
+		},
+		"flame_DiffNormalization": {
+			"requestedMode":  "Requested auto, none, per-second or share mode.",
+			"mode":           "Resolved mode. Auto selects per-second only when both positive active durations differ by more than 10% of baseline. Missing denominators retain none with an explicit warning.",
+			"unit":           "Delta unit only: ms for none, ms/s for per-second, percentage-points for share. Raw values always remain milliseconds.",
+			"beforeTotalMs":  "Raw baseline selected statistical sample weight in milliseconds.",
+			"afterTotalMs":   "Raw candidate selected statistical sample weight in milliseconds.",
+			"beforeActiveMs": "Baseline selected active clock duration in milliseconds.",
+			"afterActiveMs":  "Candidate selected active clock duration in milliseconds.",
+			"warnings":       "Explicit duration-mismatch (>10%), sample-sparse (<200), and unavailable-normalization evidence warnings.",
 		},
 		"query_Source": {
 			"untimed_samples":  "Whole-recording untimed sample count, preserved for partial windows.",
@@ -153,7 +212,7 @@ func Document() map[string]any {
 			"lastSec":        "Last timed sample in recording-relative seconds, or null for an untimed-only stack.",
 			"untimedSamples": "Included untimed samples contributing to this exact stack.",
 		},
-		"report_flame_Chart": {
+		"report_flame_WireChart": {
 			"untimedSamples":  "Untimed sample count across the chart inputs, including excluded samples.",
 			"untimedMs":       "Untimed sample weight across the chart inputs in milliseconds.",
 			"untimedExcluded": "True when a chart input excludes untimed sample weight.",
@@ -221,6 +280,8 @@ func (b *definitionBuilder) describe(t reflect.Type) map[string]any {
 			spec["enum"] = []string{"good", "needs-improvement", "poor", "n/a"}
 		case "github.com/omniviewdev/wkperf/internal/compare.Verdict":
 			spec["enum"] = []string{"improved", "regressed", "unchanged", "noisy", "info", "new", "removed"}
+		case "github.com/omniviewdev/wkperf/internal/flame.DiffMode":
+			spec["enum"] = []string{"auto", "none", "per-second", "share"}
 		}
 		return spec
 	case reflect.Bool:

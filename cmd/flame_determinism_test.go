@@ -95,7 +95,7 @@ func TestFlameAroundLongTaskSharesAnalyzeClassificationAndWindow(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &doc); err != nil {
 		t.Fatal(err)
 	}
-	if doc.Charts[0].Tree.Root.TotalMs != 6 {
+	if doc.Charts[0].Tree.Nodes[doc.Charts[0].Tree.Root].TotalMs != 6 {
 		t.Fatalf("GC/count-only events displaced longest script task: %s", out)
 	}
 	out, err = runFlame(t, path, "--format", "json", "--from", "0.1", "--to", "0.25", "--around-long-task", "1")
@@ -105,7 +105,7 @@ func TestFlameAroundLongTaskSharesAnalyzeClassificationAndWindow(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &doc); err != nil {
 		t.Fatal(err)
 	}
-	if doc.Charts[0].Tree.Root.TotalMs != 4 {
+	if doc.Charts[0].Tree.Nodes[doc.Charts[0].Tree.Root].TotalMs != 4 {
 		t.Fatalf("selected-window task rank differs from analyze: %s", out)
 	}
 	if _, err := runFlame(t, path, "--format", "json", "--from", "0.1", "--to", "0.25", "--around-long-task", "2"); err == nil {
@@ -129,7 +129,7 @@ func TestFlameAroundLongTaskUnionsNestedRecords(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &doc); err != nil {
 		t.Fatal(err)
 	}
-	if doc.Charts[0].Tree.Root.TotalMs != 4 {
+	if doc.Charts[0].Tree.Nodes[doc.Charts[0].Tree.Root].TotalMs != 4 {
 		t.Fatalf("nested microtask displaced second maximal task: %s", out)
 	}
 	if _, err := runFlame(t, path, "--format", "json", "--around-long-task", "3"); err == nil {
@@ -161,12 +161,10 @@ func TestFlameFocusGeneratedMappedSelectorsAndCandidates(t *testing.T) {
 		t.Fatal(err)
 	}
 	var mapped *model.SourceLocation
-	for _, child := range doc.Charts[0].Tree.Root.Children {
-		for _, leaf := range child.Children {
-			if leaf.Frame.Original != nil {
-				loc := leaf.Frame.Original
-				mapped = &model.SourceLocation{Name: loc.Name, URL: loc.URL, Line: loc.Line, Column: loc.Column}
-			}
+	for _, frame := range doc.Frames {
+		if frame.Original != nil {
+			loc := frame.Original
+			mapped = &model.SourceLocation{Name: loc.Name, URL: loc.URL, Line: loc.Line, Column: loc.Column}
 		}
 	}
 	if mapped == nil {
@@ -180,20 +178,16 @@ func TestFlameFocusGeneratedMappedSelectorsAndCandidates(t *testing.T) {
 		if err := json.Unmarshal([]byte(out), &doc); err != nil {
 			t.Fatal(err)
 		}
-		if doc.Charts[0].Tree.Root.TotalMs != 4 {
+		if doc.Charts[0].Tree.Nodes[doc.Charts[0].Tree.Root].TotalMs != 4 {
 			t.Fatalf("%s focused wrong samples", selector)
 		}
 	}
-	rec, err := model.Load(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := range rec.Samples[0].StackTraces {
-		leaf := &rec.Samples[0].StackTraces[i].StackFrames[0]
+	for i := range capture.Samples[0].StackTraces {
+		leaf := &capture.Samples[0].StackTraces[i].StackFrames[0]
 		leaf.Name, leaf.URL, leaf.Line, leaf.Column = "same", "app.js", 1, i+1
 	}
-	writeFlameJSON(t, path, rec)
-	if _, err := runFlame(t, path, "--format", "json", "--focus", "same"); err == nil || !strings.Contains(err.Error(), "ambiguous selector") || !strings.Contains(err.Error(), "app.js:1:1") || !strings.Contains(err.Error(), "app.js:1:2") {
+	writeFlameJSON(t, path, capture)
+	if _, err := runFlame(t, path, "--format", "json", "--focus", "same"); err == nil || !strings.Contains(err.Error(), "2 functions") || !strings.Contains(err.Error(), "app.js:1:1") || !strings.Contains(err.Error(), "app.js:1:2") {
 		t.Fatalf("ambiguous selector must expose both candidates: %v", err)
 	}
 }
@@ -219,7 +213,7 @@ func TestFlameDiffPreservesArgumentOrderAndAbsentFocusSide(t *testing.T) {
 		if err := json.Unmarshal([]byte(out), &doc); err != nil {
 			t.Fatal(err)
 		}
-		if doc.Charts[0].Comparison.Root.TotalMs != tc.delta {
+		if doc.Charts[0].Comparison.Nodes[doc.Charts[0].Comparison.Root].TotalMs != tc.delta {
 			t.Fatalf("diff argument order changed sign: %s", out)
 		}
 	}
@@ -234,7 +228,7 @@ func TestFlameDiffPreservesArgumentOrderAndAbsentFocusSide(t *testing.T) {
 		t.Fatal(err)
 	}
 	chart := doc.Charts[0]
-	if chart.Before.Root.TotalMs != 0 || chart.After.Root.TotalMs != 8 || chart.Comparison.Root.TotalMs != 8 {
+	if chart.Before.Nodes[chart.Before.Root].TotalMs != 0 || chart.After.Nodes[chart.After.Root].TotalMs != 8 || chart.Comparison.Nodes[chart.Comparison.Root].TotalMs != 8 {
 		t.Fatalf("new context focus must preserve empty baseline: %s", out)
 	}
 }

@@ -64,7 +64,7 @@ func TestFlameFormatsAcceptWrappedRecordings(t *testing.T) {
 			}
 			if format == "json" {
 				var doc flamereport.Document
-				if err := json.Unmarshal([]byte(out), &doc); err != nil || doc.Schema != flamereport.Schema || doc.Charts[0].Tree.Root.TotalMs != 10 {
+				if err := json.Unmarshal([]byte(out), &doc); err != nil || doc.Schema != flamereport.Schema || doc.Charts[0].Tree.Nodes[doc.Charts[0].Tree.Root].TotalMs != 10 {
 					t.Fatalf("bad tree: %v %s", err, out)
 				}
 			}
@@ -99,8 +99,8 @@ func TestFlameWindowFocusAndTask(t *testing.T) {
 			t.Fatal(err)
 		}
 		tree := doc.Charts[0].Tree
-		if tree.Root.TotalMs != tc.total {
-			t.Fatalf("%v total=%v want %v", tc.args, tree.Root.TotalMs, tc.total)
+		if tree.Nodes[tree.Root].TotalMs != tc.total {
+			t.Fatalf("%v total=%v want %v", tc.args, tree.Nodes[tree.Root].TotalMs, tc.total)
 		}
 		if !strings.Contains(out, tc.leaf) {
 			t.Fatalf("focus leaf missing: %s", out)
@@ -123,10 +123,10 @@ func TestFlameMultipleAndDifferentialInputs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal([]byte(out), &doc); err != nil || doc.Mode != "diff" || len(doc.Charts) != 1 || doc.Charts[0].Comparison.Root.TotalMs != 0 {
+	if err := json.Unmarshal([]byte(out), &doc); err != nil || doc.Mode != "diff" || len(doc.Charts) != 1 || doc.Charts[0].Comparison.Nodes[doc.Charts[0].Comparison.Root].TotalMs != 0 {
 		t.Fatalf("invalid delta: %v %s", err, out)
 	}
-	if doc.Charts[0].Before.Root.TotalMs != 4 || doc.Charts[0].After.Root.TotalMs != 4 {
+	if doc.Charts[0].Before.Nodes[doc.Charts[0].Before.Root].TotalMs != 4 || doc.Charts[0].After.Nodes[doc.Charts[0].After.Root].TotalMs != 4 {
 		t.Fatal("diff ignored focus")
 	}
 	if !doc.View.Invert || doc.View.MinMS != 1 {
@@ -176,13 +176,14 @@ func TestFlameWritesRequestedFile(t *testing.T) {
 	}
 }
 
-func TestFlameFocusAmbiguousContextsReportsNodeIDs(t *testing.T) {
+func TestFlameFocusMergesRepeatedContexts(t *testing.T) {
 	rec := &model.Recording{EndTime: 1, Samples: []model.TargetSamples{{StackTraces: []model.StackTrace{
 		{StackFrames: []model.StackFrame{{Name: "work"}, {Name: "a"}}},
 		{StackFrames: []model.StackFrame{{Name: "work"}, {Name: "b"}}},
 	}, Durations: []float64{.001, .002}}}}
 	tree := core.Build(rec)
-	if _, err := focusFlameTree(tree, "work"); err == nil || !strings.Contains(err.Error(), "node") {
-		t.Fatalf("must report context ambiguity: %v", err)
+	focused, err := focusFlameTree(tree, "work")
+	if err != nil || focused.Root.TotalMs != 3 || len(focused.Root.Children) != 1 {
+		t.Fatalf("function focus must merge both contexts: %v", err)
 	}
 }

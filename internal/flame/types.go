@@ -120,6 +120,7 @@ type Tree struct {
 	edges            []Edge
 	paths            []Path
 	samplePathIDs    []string
+	untimedPathIDs   []string
 	byID             map[string]*Node
 	recordingEnd     float64
 	recordingActive  []Interval
@@ -158,6 +159,8 @@ type Path struct {
 }
 
 // FunctionDelta is an after-minus-before aggregate keyed by stable function ID.
+// SelfMs and TotalMs use Comparison.Normalization.Unit. Before/After values
+// remain raw milliseconds; sample counts are never normalized.
 type FunctionDelta struct {
 	ID            string  `json:"id"`
 	Frame         Frame   `json:"frame"`
@@ -174,6 +177,7 @@ type FunctionDelta struct {
 
 // NodeDelta is an after-minus-before calling-context delta. Its ID matches the
 // corresponding Node ID in either tree. Children follow deterministic order.
+// SelfMs and TotalMs use Comparison.Normalization.Unit; Before/After retain ms.
 type NodeDelta struct {
 	ID            string       `json:"id"`
 	Frame         Frame        `json:"frame"`
@@ -190,9 +194,10 @@ type NodeDelta struct {
 }
 
 type Comparison struct {
-	Root          *NodeDelta      `json:"root"`
-	Functions     []FunctionDelta `json:"functions"`
-	BeforeTotalMs float64         `json:"beforeTotalMs"`
-	AfterTotalMs  float64         `json:"afterTotalMs"`
-	TotalMs       float64         `json:"totalMs"`
+	Root          *NodeDelta        `json:"root"`
+	Functions     []FunctionDelta   `json:"functions"`
+	BeforeTotalMs float64           `json:"beforeTotalMs"`
+	AfterTotalMs  float64           `json:"afterTotalMs"`
+	TotalMs       float64           `json:"totalMs"`
+	Normalization DiffNormalization `json:"normalization"`
 }

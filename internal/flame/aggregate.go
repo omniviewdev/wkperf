@@ -150,6 +150,23 @@ func (tree *Tree) SamplePathIDs() []string {
 	return tree.samplePathIDs
 }
 
+// UntimedPathIDs returns read-only canonical path IDs aligned with Untimed.
+func (tree *Tree) UntimedPathIDs() []string {
+	if tree == nil {
+		return []string{}
+	}
+	return tree.untimedPathIDs
+}
+
+// ActiveIntervals returns the selected read-only recording-relative clock spans.
+// Sample weights are statistical evidence, not occupied spans on this clock.
+func (tree *Tree) ActiveIntervals() []Interval {
+	if tree == nil {
+		return []Interval{}
+	}
+	return tree.active
+}
+
 // SampleCount counts timed samples and untimed samples retained by this view.
 func (tree *Tree) SampleCount() int {
 	if tree == nil {

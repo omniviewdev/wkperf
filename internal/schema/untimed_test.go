@@ -21,7 +21,7 @@ func TestUntimedSchemaFieldsAndNullTimes(t *testing.T) {
 	for name, fields := range map[string][]string{
 		"insights_SampleCoverage": {"timedSampleCount", "untimedSampleCount", "untimedMs", "untimedExcluded", "untimedSpans"},
 		"query_Source":            {"untimed_samples", "untimed_ms", "untimed_excluded", "untimed_spans"},
-		"report_flame_Chart":      {"untimedSamples", "untimedMs", "untimedExcluded", "empty", "emptyReason"},
+		"report_flame_WireChart":  {"untimedSamples", "untimedMs", "untimedExcluded", "empty", "emptyReason"},
 		"rootcause_Stack":         {"firstSec", "lastSec", "untimedSamples"},
 	} {
 		properties := defs[name].(map[string]any)["properties"].(map[string]any)

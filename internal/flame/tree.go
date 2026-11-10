@@ -200,6 +200,20 @@ func (tree *Tree) Inverted() *Tree {
 	return &out
 }
 
+// Canonical returns root-to-leaf contexts without changing samples or weights.
+func (tree *Tree) Canonical() *Tree {
+	if tree == nil {
+		return assemble(&Tree{})
+	}
+	if !tree.inverted {
+		return tree
+	}
+	out := *tree
+	out.inverted = false
+	out.Root, out.byID, _ = buildNodes(tree, false)
+	return &out
+}
+
 // FocusNode filters one exact context and makes that frame the stack root.
 // Unknown IDs select an empty tree. Selector ambiguity is handled by query.
 func (tree *Tree) FocusNode(nodeID string) *Tree {
@@ -242,6 +256,45 @@ func (tree *Tree) FocusNode(nodeID string) *Tree {
 			}
 		})
 	}
+	out := *tree
+	out.Samples, out.Untimed = samples, untimed
+	return assemble(&out)
+}
+
+// FocusFunction merges every calling context of a generated function. Each
+// sample contributes once, cut at its outermost matching frame. Inverted views
+// keep the canonical prefix through the last occurrence (nearest the leaf).
+// Unknown IDs select an empty tree; recording-wide clock metadata is retained.
+func (tree *Tree) FocusFunction(functionID string) *Tree {
+	if tree == nil {
+		return assemble(&Tree{})
+	}
+	var samples, untimed []Sample
+	tree.EachSample(func(sample Sample) {
+		index := -1
+		for i, frame := range sample.Frames {
+			if frame.ID != functionID {
+				continue
+			}
+			index = i
+			if !tree.inverted {
+				break
+			}
+		}
+		if index < 0 {
+			return
+		}
+		if tree.inverted {
+			sample.Frames = sample.Frames[:index+1]
+		} else {
+			sample.Frames = sample.Frames[index:]
+		}
+		if sample.Untimed {
+			untimed = append(untimed, sample)
+		} else {
+			samples = append(samples, sample)
+		}
+	})
 	out := *tree
 	out.Samples, out.Untimed = samples, untimed
 	return assemble(&out)
@@ -556,6 +609,7 @@ func assemble(tree *Tree) *Tree {
 	var leafIDs []string
 	tree.Root, tree.byID, leafIDs = buildNodes(tree, false)
 	tree.samplePathIDs = leafIDs[len(tree.Untimed):]
+	tree.untimedPathIDs = leafIDs[:len(tree.Untimed)]
 	tree.aggregate(leafIDs)
 	if tree.inverted {
 		tree.Root, tree.byID, _ = buildNodes(tree, true)

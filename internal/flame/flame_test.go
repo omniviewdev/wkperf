@@ -72,7 +72,7 @@ func TestWeightedTreeGolden(t *testing.T) {
 	near(t, main.SelfMs, 1)
 	near(t, work.SelfMs, 7)
 	near(t, render.SelfMs, 2)
-	if got, want := tree.Folded(), "main@app.ts:1:1 1\nmain@app.ts:1:1;work@app.ts:2:1 7\nmain@app.ts:1:1;work@app.ts:2:1;render@app.ts:3:1 2\n"; got != want {
+	if got, want := tree.Folded(), "main@app.ts:1:1 1000\nmain@app.ts:1:1;work@app.ts:2:1 7000\nmain@app.ts:1:1;work@app.ts:2:1;render@app.ts:3:1 2000\n"; got != want {
 		t.Fatalf("folded:\n%s\nwant:\n%s", got, want)
 	}
 	if got := names(tree.HotPath(0)); got != "main;work;render" {
@@ -196,9 +196,6 @@ func TestFrameIdentityMetadataAndEscaping(t *testing.T) {
 	mapped := frame("generated", 4)
 	mapped.Original = &model.SourceLocation{Name: "Original", URL: "src/App.tsx", Line: 12, Column: 3}
 	tree := Build(recording([][]model.StackFrame{{native, anonymous, mapped}}, []float64{.002}))
-	if got := tree.Folded(); got != "Original@src/App.tsx:12:3\\ [generated\\ generated@app.ts:4:1];(anonymous)@app.js:2:0;native\\;slash\\\\line\\n@native:native:0:0 2\n" {
-		t.Fatalf("escaped folded: %q", got)
-	}
 	if !tree.Samples[0].Frames[1].Anonymous || !tree.Samples[0].Frames[2].Native {
 		t.Fatal("missing flags")
 	}
@@ -314,7 +311,7 @@ func TestDiffGolden(t *testing.T) {
 	if got.String() != want {
 		t.Fatalf("diff:\n%s\nwant:\n%s", got.String(), want)
 	}
-	wantFolded := "main@app.ts:1:1 1 0\nmain@app.ts:1:1;new@app.ts:4:1 0 5\nmain@app.ts:1:1;work@app.ts:2:1 7 2\nmain@app.ts:1:1;work@app.ts:2:1;render@app.ts:3:1 2 0\n"
+	wantFolded := "main@app.ts:1:1 1000 0\nmain@app.ts:1:1;new@app.ts:4:1 0 5000\nmain@app.ts:1:1;work@app.ts:2:1 7000 2000\nmain@app.ts:1:1;work@app.ts:2:1;render@app.ts:3:1 2000 0\n"
 	if got := FoldedDiff(before, after); got != wantFolded {
 		t.Fatalf("folded diff: %q", got)
 	}

@@ -94,7 +94,7 @@ func TestDocumentValidatesRealPipelineOutputs(t *testing.T) {
 				AuditDocument{Schema: AuditVersion, Report: audit.Build([]audit.Scene{{Name: "fixture", Runs: []audit.Run{{Source: "fixture.json", Report: report, Card: card}}}}, audit.Options{})},
 				ComparisonDocument{Schema: ComparisonVersion, Result: compare.Compare([]*metrics.Summary{summary}, []*metrics.Summary{summary}, compare.DefaultOptions())},
 				SummaryDocument{Schema: SummaryVersion, Sources: []string{"fixture.json"}, Runs: 1, Metrics: summary.Metrics},
-				flamereport.Document{Schema: flamereport.Schema, Mode: "profile", Charts: []flamereport.Chart{{Label: "fixture", Tree: flame.Build(rec)}}},
+				flamereport.NewDocument([]flamereport.Chart{{Label: "fixture", Tree: flame.Build(rec)}}, flamereport.Options{}),
 				query.Result{Schema: query.Schema, Operation: "top", Status: "ok", Sources: []query.Source{{File: "fixture.json"}}, Command: []string{"wkperf", "query", "fixture.json", "top"}, Rows: []query.Row{}},
 			}
 			for _, output := range outputs {

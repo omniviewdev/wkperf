@@ -1,12 +1,11 @@
 // Package flame renders shared flame trees without combining unrelated recordings.
-// JSON documents use schema wkperf-flame/v1 and mode profile or diff. Every chart
-// is one recording; differential charts retain both inputs and their context delta.
-// Durations are milliseconds. Tree samples and folded stacks remain root-to-leaf.
+// JSON documents use compact, interned schema wkperf-flame/v2. Every chart keeps
+// one recording; differential charts retain raw inputs and normalized deltas.
+// Raw durations are milliseconds. Folded weights use integer microseconds.
 // Invert and MinMS affect visual layout only, never exported sample weights.
 package flame
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -15,8 +14,6 @@ import (
 
 	core "github.com/omniviewdev/wkperf/internal/flame"
 )
-
-const Schema = "wkperf-flame/v1"
 
 // Chart keeps each recording separate. A differential chart supplies Before,
 // After, and Comparison instead of Tree. Labels identify original inputs.
@@ -40,16 +37,6 @@ type Options struct {
 	MinMS  float64 `json:"minMs"`
 }
 
-// Document is the versioned JSON tree export. Mode discriminates profile charts
-// (tree) from differential charts (before, after, comparison). Parent references
-// are excluded by the shared engine, so every tree is an acyclic JSON value.
-type Document struct {
-	Schema string  `json:"schema"`
-	Mode   string  `json:"mode"`
-	Charts []Chart `json:"charts"`
-	View   Options `json:"view"`
-}
-
 // Render writes one of html, svg, folded, speedscope, or json.
 func Render(w io.Writer, format string, charts []Chart, opts Options) error {
 	if err := validate(charts, opts); err != nil {
@@ -65,13 +52,7 @@ func Render(w io.Writer, format string, charts []Chart, opts Options) error {
 	case "speedscope":
 		return renderSpeedscope(w, charts)
 	case "json":
-		encodedCharts := make([]Chart, len(charts))
-		for i, chart := range charts {
-			encodedCharts[i] = chartMetadata(chart)
-		}
-		enc := json.NewEncoder(w)
-		enc.SetIndent("", "  ")
-		return enc.Encode(Document{Schema: Schema, Mode: mode(charts), Charts: encodedCharts, View: opts})
+		return renderJSON(w, charts, opts)
 	default:
 		return fmt.Errorf("unknown flame format %q (want html|svg|folded|speedscope|json)", format)
 	}
@@ -139,6 +120,11 @@ func WriteNotes(w io.Writer, charts []Chart) error {
 	}
 	for _, chart := range charts {
 		if chart.Comparison != nil {
+			for _, warning := range chart.Comparison.Normalization.Warnings {
+				if _, err := fmt.Fprintf(w, "wkperf: %s: [%s] %s\n", chart.Label, warning.Code, warning.Message); err != nil {
+					return err
+				}
+			}
 			if err := write(chart.Label+" · baseline", chart.Before); err != nil {
 				return err
 			}
@@ -167,6 +153,9 @@ func validate(charts []Chart, opts Options) error {
 		if diff {
 			if chart.Comparison.Root == nil || chart.Before == nil || chart.After == nil || chart.Before.Root == nil || chart.After.Root == nil {
 				return fmt.Errorf("differential chart %q requires before and after trees", chart.Label)
+			}
+			if _, err := core.ParseDiffMode(string(chart.Comparison.Normalization.RequestedMode)); err != nil {
+				return fmt.Errorf("differential chart %q: %w", chart.Label, err)
 			}
 		} else if chart.Tree == nil || chart.Tree.Root == nil {
 			return fmt.Errorf("chart %q has no tree", chart.Label)
@@ -203,8 +192,6 @@ func percent(v, total float64) string {
 	return strconv.FormatFloat(100*v/total, 'f', 2, 64) + "%"
 }
 
-var foldedLabelEscapes = strings.NewReplacer("\\", "\\\\", ";", "\\;", " ", "\\ ", "\t", "\\t", "\n", "\\n", "\r", "\\r")
-
 func renderFolded(w io.Writer, charts []Chart) error {
 	for _, chart := range charts {
 		var folded string
@@ -214,7 +201,7 @@ func renderFolded(w io.Writer, charts []Chart) error {
 			folded = chart.Tree.Folded()
 		}
 		if len(charts) > 1 {
-			prefix := foldedLabelEscapes.Replace(chart.Label) + ";"
+			prefix := core.FoldedLabel(chart.Label) + ";"
 			for _, line := range strings.Split(strings.TrimSuffix(folded, "\n"), "\n") {
 				if line == "" {
 					continue
@@ -310,7 +297,8 @@ func diffNodeView(node *core.NodeDelta, inverted bool) *viewNode {
 func chartView(chart Chart, invert bool) *viewNode {
 	if chart.Comparison != nil {
 		if invert {
-			return diffNodeView(core.Diff(chart.Before.Inverted(), chart.After.Inverted()).Root, true)
+			comparison, _ := core.DiffNormalized(chart.Before.Inverted(), chart.After.Inverted(), chart.Comparison.Normalization.RequestedMode)
+			return diffNodeView(comparison.Root, true)
 		}
 		return diffView(chart.Comparison.Root)
 	}
