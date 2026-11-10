@@ -395,14 +395,14 @@ func (v *markdownRenderer) rootDetails() string {
 	fmt.Fprintf(&b, "Outliers: %d of %d shown.\n", len(root.Depth.Outliers), root.Depth.OutliersTotal)
 	b.WriteString("\n## Timeline windows and sampled stack references\n\n")
 	for _, window := range allRootWindows(root) {
-		fmt.Fprintf(&b, "### %s\n\n", mdEscape(window.Label))
+		fmt.Fprintf(&b, "### %s — %s\n\n", mdEscape(window.Kind), mdEscape(window.Label))
 		renderRootStats(&b, window.Stats)
 		if window.TopStack != nil {
 			v.renderStack(&b, *window.TopStack)
 		}
 		fmt.Fprintf(&b, "%s\nReproduce window: %s\n", mdEscape(window.SampleStatus), code(window.Command))
 	}
-	fmt.Fprintf(&b, "Timeline lists shown/total: long tasks %d/%d; slow frames %d/%d; event bursts %d/%d.\n", len(root.LongTasks), root.LongTasksTotal, len(root.SlowFrames), root.SlowFramesTotal, len(root.EventBursts), root.EventBurstsTotal)
+	fmt.Fprintf(&b, "Timeline lists shown/total: long tasks %d/%d; slow frames %d/%d; input stalls %d/%d; event bursts %d/%d.\n", len(root.LongTasks), root.LongTasksTotal, len(root.SlowFrames), root.SlowFramesTotal, len(root.InputStalls), root.InputStallsTotal, len(root.EventBursts), root.EventBurstsTotal)
 	return b.String()
 }
 
@@ -422,6 +422,7 @@ func (v *markdownRenderer) otherDetails() string {
 		prefix := "breakdown." + url.PathEscape(s.Name)
 		fmt.Fprintf(&b, "| %s | %.6g | %.6g | %s / %s |\n", mdEscape(s.Name), s.Ms, s.Pct, codeCell(prefix+".ms"), codeCell(prefix+".pct"))
 	}
+	fmt.Fprintf(&b, "\nCollector overlay: %.6gms; %.6gms overlaps instrumented main-thread work. Collector intervals are not necessarily main-thread time and are excluded from the exclusive breakdown. %s; %s\n", r.GCMs, r.GCOverlapWithWorkMs, numericRef("metrics", "gc.total_ms"), numericRef("metrics", "gc.overlap_with_work_ms"))
 	b.WriteString("\n## Top modules\n\n| File / module | Self ms | Sample share % | Metric keys |\n|---|---:|---:|---|\n")
 	grouping := r.ModuleGrouping
 	if grouping == "" {
@@ -467,14 +468,31 @@ func (v *markdownRenderer) otherDetails() string {
 		for _, value := range []struct {
 			key, label string
 			value      float64
-		}{{"t", "Time from window start (s)", frame.T}, {"ms", "Frame ms", frame.Ms}, {"script_ms", "Script ms", frame.ScriptMs}, {"layout_ms", "Layout/style ms", frame.LayoutMs}, {"paint_ms", "Paint/composite ms", frame.PaintMs}, {"gc_ms", "GC ms", frame.GCMs}} {
+		}{{"t", "Time from window start (s)", frame.T}, {"ms", "Observed interval ms", frame.Ms}, {"work_ms", "Exclusive main-thread work ms", frame.WorkMs}, {"script_ms", "Script ms", frame.ScriptMs}, {"layout_ms", "Layout/style ms", frame.LayoutMs}, {"paint_ms", "Paint/composite ms", frame.PaintMs}, {"gc_ms", "Collector overlay ms", frame.GCMs}, {"gc_overlap_with_work_ms", "Collector overlap with work ms", frame.GCOverlapWithWorkMs}} {
 			fmt.Fprintf(&b, "  - %s: %.6g. %s\n", value.label, value.value, numericRef("metrics", prefix+"."+value.key))
 		}
 	}
+	fmt.Fprintf(&b, "Slow frames: %d of %d shown; configured finding threshold %.6gms. Fixed scorecard standards use 16.7ms.\n", len(r.SlowFrames), r.SlowFramesTotal, r.JankMs)
+	b.WriteString("\n## Input stalls\n\nInput-driven rendering intervals with at most one 16.7ms budget of measured work; excluded from work-bound jank. Observed interval length is not measured main-thread blocking time.\n\n")
+	for i, stall := range r.InputStalls {
+		prefix := "inputStalls." + strconv.Itoa(i)
+		fmt.Fprintf(&b, "- %s — %s. %s\n", mdEscape(stall.TopEvent), code(stall.TopFunc), mdEscape(stall.SampleStatus))
+		for _, value := range []struct {
+			key, label string
+			value      float64
+		}{{"t", "Time from window start (s)", stall.T}, {"ms", "Observed interval ms", stall.Ms}, {"work_ms", "Exclusive main-thread work ms", stall.WorkMs}} {
+			fmt.Fprintf(&b, "  - %s: %.6g. %s\n", value.label, value.value, numericRef("metrics", prefix+"."+value.key))
+		}
+	}
+	fmt.Fprintf(&b, "Input stalls: %d of %d shown.\n", len(r.InputStalls), r.InputStallsTotal)
 	b.WriteString("\n## Long tasks\n\n")
 	for i, task := range r.LongTasks {
 		fmt.Fprintf(&b, "- At %.6gs: %.6gms; %s %s — %s. %s %s\n", task.T, task.Ms, mdEscape(task.EventType), mdEscape(task.Detail), code(task.TopFunc), mdEscape(task.SampleStatus), numericRef("metrics", "longTasks."+strconv.Itoa(i)+".ms"))
+		if len(task.Children) > 0 {
+			fmt.Fprintf(&b, "  - Nested event types (%d of %d shown): %s.\n", len(task.Children), task.ChildrenTotal, code(strings.Join(task.Children, ", ")))
+		}
 	}
+	fmt.Fprintf(&b, "Long tasks: %d of %d shown; overlapping script records count once.\n", len(r.LongTasks), r.LongTasksTotal)
 	return b.String()
 }
 
@@ -501,15 +519,19 @@ func (v *markdownRenderer) appendix() string {
 }
 
 func allRootWindows(r *rootcause.Report) []rootcause.Window {
-	windows := make([]rootcause.Window, 0, len(r.LongTasks)+len(r.SlowFrames)+len(r.EventBursts))
+	windows := make([]rootcause.Window, 0, len(r.LongTasks)+len(r.SlowFrames)+len(r.InputStalls)+len(r.EventBursts))
 	windows = append(windows, r.LongTasks...)
 	windows = append(windows, r.SlowFrames...)
+	windows = append(windows, r.InputStalls...)
 	windows = append(windows, r.EventBursts...)
 	if len(windows) == 0 {
 		windows = append(windows, r.Windows...)
 	}
 	sort.Slice(windows, func(i, j int) bool {
 		a, b := windows[i], windows[j]
+		if a.ActiveMs != b.ActiveMs {
+			return a.ActiveMs > b.ActiveMs
+		}
 		if a.DurationMs != b.DurationMs {
 			return a.DurationMs > b.DurationMs
 		}

@@ -99,7 +99,7 @@ func Build(rec *model.Recording, tree *flame.Tree, o Options) *Report {
 	r.Depth = b.depth()
 	r.Findings = append(r.Findings, b.depthFindings(r.Depth)...)
 	r.GCOverlaps = b.gcOverlaps()
-	r.LongTasks, r.SlowFrames, r.EventBursts, r.Windows = b.windows()
+	r.LongTasks, r.SlowFrames, r.InputStalls, r.EventBursts, r.Windows = b.windows()
 	sampledMs := tree.Root.TotalMs
 	excludedMs := 0.0
 	if !tree.UntimedIncluded {
@@ -117,6 +117,7 @@ func Build(rec *model.Recording, tree *flame.Tree, o Options) *Report {
 		b.stat("window.to_sec", "Selected window end", r.ToSec, "s", timelineBasis),
 		b.stat("triage.long_tasks", "Retained long tasks", float64(len(r.LongTasks)), "count", timelineBasis),
 		b.stat("triage.slow_frames", "Active slow frames", float64(len(r.SlowFrames)), "count", timelineBasis),
+		b.stat("triage.input_stalls", "Input-driven rendering stalls with little measured work", float64(len(r.InputStalls)), "count", timelineBasis),
 		b.stat("triage.event_bursts", "Clustered script-event bursts", float64(len(r.EventBursts)), "count", timelineBasis),
 	}
 	sort.Slice(r.Findings, func(i, j int) bool {
@@ -147,7 +148,7 @@ func defaults(o Options) Options {
 		o.LongTaskMs = 50
 	}
 	if o.JankMs <= 0 {
-		o.JankMs = 16.7
+		o.JankMs = profile.FrameBudgetMs
 	}
 	o.Sourcemaps = append([]string(nil), o.Sourcemaps...)
 	maps := o.Sourcemaps[:0]

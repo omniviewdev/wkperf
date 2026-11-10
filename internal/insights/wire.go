@@ -69,6 +69,7 @@ type WireRootReport struct {
 	Windows        []WireWindow      `json:"windows"`
 	LongTasks      []WireWindow      `json:"longTasks"`
 	SlowFrames     []WireWindow      `json:"slowFrames"`
+	InputStalls    []WireWindow      `json:"inputStalls"`
 	EventBursts    []WireWindow      `json:"eventBursts"`
 }
 
@@ -125,7 +126,8 @@ func ToWire(report *Report) *WireReport {
 		w.RootCause = &WireRootReport{RootReportFields: RootReportFields(*root), HotPath: c.wirePath(root.HotPath),
 			AppAttribution: make([]WireAttribution, len(root.AppAttribution)), Findings: make([]WireRootFinding, len(root.Findings)),
 			PeriodicRoots: make([]WirePeriodic, len(root.PeriodicRoots)), Windows: c.wireWindows(root.Windows),
-			LongTasks: c.wireWindows(root.LongTasks), SlowFrames: c.wireWindows(root.SlowFrames), EventBursts: c.wireWindows(root.EventBursts)}
+			LongTasks: c.wireWindows(root.LongTasks), SlowFrames: c.wireWindows(root.SlowFrames),
+			InputStalls: c.wireWindows(root.InputStalls), EventBursts: c.wireWindows(root.EventBursts)}
 		for i, attribution := range root.AppAttribution {
 			w.RootCause.AppAttribution[i] = WireAttribution{AttributionFields: AttributionFields(attribution), App: c.indices[attribution.App.ID]}
 		}

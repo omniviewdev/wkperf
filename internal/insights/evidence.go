@@ -60,26 +60,26 @@ func primaryMetricKeys(id string) []string {
 	switch id {
 	case "jank":
 		return []string{"frames.p95_ms", "frames.jank_ratio"}
-	case "forced-layout":
-		return []string{"layout.forced-layout.total_ms", "layout.layout.total_ms"}
-	case "layout-after-script", "layout-heavy":
-		return []string{"layout.layout.total_ms", "layout.recalculate-styles.total_ms"}
+	case "input-stall":
+		return []string{"frames.input_stalls", "frames.input_stall_max_ms"}
+	case "layout-heavy":
+		return []string{"layout.layout.exclusive_ms", "layout.layout.total_ms"}
 	case "style-recalc-heavy":
-		return []string{"layout.recalculate-styles.total_ms"}
+		return []string{"layout.recalculate-styles.exclusive_ms", "layout.recalculate-styles.total_ms"}
 	case "paint-heavy":
-		return []string{"layout.paint.total_ms"}
+		return []string{"layout.paint.exclusive_ms", "layout.paint.total_ms"}
 	case "raf-load":
-		return []string{"script.animation-frame-fired.total_ms", "script.animation-frame-fired.max_ms"}
+		return []string{"script.animation-frame-fired.exclusive_ms", "script.animation-frame-fired.total_ms", "script.animation-frame-fired.max_ms"}
 	case "timer-storm":
 		return []string{"script.timer-fired.count", "script.timer-installed.count"}
 	case "event-handler-heavy":
-		return []string{"script.event-dispatched.total_ms", "script.event-dispatched.max_ms"}
+		return []string{"script.event-dispatched.exclusive_ms", "script.event-dispatched.total_ms", "script.event-dispatched.max_ms"}
 	case "microtask-heavy":
-		return []string{"script.microtask-fired.total_ms"}
+		return []string{"script.microtask-dispatched.exclusive_ms", "script.microtask-dispatched.total_ms"}
 	case "observer-callback-heavy":
-		return []string{"script.observer-callback-fired.total_ms"}
+		return []string{"script.observer-callback.exclusive_ms", "script.observer-callback.total_ms"}
 	case "gc-pressure":
-		return []string{"gc.total_ms", "gc.count"}
+		return []string{"gc.total_ms", "gc.overlap_with_work_ms", "gc.count"}
 	case "memory-growth":
 		return []string{"memory.peak_mb", "memory.final_mb"}
 	case "cpu-high":
@@ -96,7 +96,7 @@ func verificationTarget(id string, metric metrics.Metric) float64 {
 	switch metric.Key {
 	case "frames.p95_ms":
 		return 16.7
-	case "frames.jank_ratio":
+	case "frames.jank_ratio", "findings.jank.ratio":
 		return 0.05
 	case "cpu.mean_pct", "cpu.main.mean_pct":
 		return 50
@@ -136,6 +136,8 @@ func implicatedTriggers(id string, triggers []TriggerStat) []TriggerStat {
 			include = trigger.Kind == "dispatch"
 		case "microtask-heavy":
 			include = trigger.Kind == "microtask"
+		case "observer-callback-heavy":
+			include = trigger.Kind == "observer"
 		case "long-tasks", "forced-layout", "layout-after-script", "jank", "hot-function", "hot-module", "cpu-high":
 			include = true
 		}
@@ -174,6 +176,7 @@ func suggestedWindow(c *ruleCtx, context findingContext) SuggestedWindow {
 func enrichFindings(c *ruleCtx, findings []Finding) {
 	for i := range findings {
 		f := &findings[i]
+		preset := f.NumericEvidence
 		f.NumericEvidence = []Evidence{}
 		f.MetricKeys = []string{}
 		f.Verify = []Verification{}
@@ -206,6 +209,14 @@ func enrichFindings(c *ruleCtx, findings []Finding) {
 				f.ConfidenceReasons = append(f.ConfidenceReasons, note)
 			}
 		}
+		for _, e := range preset {
+			f.NumericEvidence = append(f.NumericEvidence, e)
+			f.MetricKeys = appendUnique(f.MetricKeys, e.MetricKey)
+			if len(f.Verify) == 0 {
+				target := verificationTarget(f.ID, metrics.Metric{Key: e.MetricKey, Value: e.Value})
+				f.Verify = append(f.Verify, Verification{MetricKey: e.MetricKey, Direction: "decrease", Target: target, Unit: e.Unit, Description: "Compare repeated captures with the same configured threshold.", Command: e.Command})
+			}
+		}
 		for _, key := range primaryMetricKeys(f.ID) {
 			metric, ok := c.sum.Lookup(key)
 			if !ok {
@@ -222,7 +233,16 @@ func enrichFindings(c *ruleCtx, findings []Finding) {
 		if f.ID == "hot-function" || f.ID == "hot-module" || f.ID == "cpu-high" {
 			basis = "estimated"
 		}
-		f.NumericEvidence = append(f.NumericEvidence, Evidence{MetricKey: impactKey, Value: f.ImpactMs, Unit: metrics.UnitMs, Description: "Attributed impact; overlapping findings are not additive.", Basis: basis, Command: metricCommand(c, impactKey)})
+		description := "Attributed impact; overlapping findings are not additive."
+		switch f.ID {
+		case "jank":
+			description = "Exclusive main-thread work excess above the configured threshold across active slow frames."
+		case "input-stall":
+			description = "Observed input-stall intervals; not measured main-thread blocking time."
+		case "gc-pressure":
+			description = "Collector-interval union; not measured main-thread blocking time."
+		}
+		f.NumericEvidence = append(f.NumericEvidence, Evidence{MetricKey: impactKey, Value: f.ImpactMs, Unit: metrics.UnitMs, Description: description, Basis: basis, Command: metricCommand(c, impactKey)})
 		f.MetricKeys = appendUnique(f.MetricKeys, impactKey)
 		if len(f.Verify) == 0 {
 			f.Verify = append(f.Verify, Verification{MetricKey: impactKey, Direction: "decrease", Target: f.ImpactMs * 0.8, Unit: metrics.UnitMs, Description: "Aim for roughly 20% less measured or sampled cost in repeated equivalent captures.", Command: metricCommand(c, impactKey)})
@@ -262,7 +282,7 @@ func enrichFindings(c *ruleCtx, findings []Finding) {
 
 func temporalFinding(id string) bool {
 	switch id {
-	case "jank", "long-tasks", "react-sync-in-trigger", "periodic-root", "suspected-layout-read",
+	case "jank", "input-stall", "long-tasks", "react-sync-in-trigger", "periodic-root", "suspected-layout-read",
 		"forced-layout", "layout-after-script", "layout-heavy", "style-recalc-heavy", "paint-heavy",
 		"raf-load", "timer-storm", "event-handler-heavy", "microtask-heavy", "observer-callback-heavy":
 		return true

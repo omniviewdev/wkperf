@@ -257,6 +257,8 @@ Use `wkperf analyze capture.json --brief --max-bytes 12000` for a bounded termin
 
 Idle timer wakeups are separated from expensive frames. Function identity includes columns, so minified same-line functions stay distinct. Source maps show original and generated locations together; file-level module grouping keeps plugin bundles separate. Use `--module-grouping parent-directory` only when you want a directory roll-up.
 
+Long tasks now share non-overlapping task boundaries across metrics, findings, and window selection. GC collector intervals stay separate from main-thread work. Input stalls stay visible without inflating work-bound jank. Sparse or mostly idle captures receive unavailable grades rather than a misleading healthy score; frame standards require 30 active frames and one second of active-frame observation.
+
 Source maps resolve locations without borrowing parameter names for function labels. Copied sidecars keep honest relative source paths when originals are unavailable, and directory scans skip unrelated unsupported maps with warnings. MCP reports the installed tool version, rejects non-file inputs, and recovers after oversized requests.
 
 For tool-based agents, `wkperf mcp` exposes the query engine through MCP over stdio. It writes protocol messages—not logging—to stdout. See the [reference](docs/REFERENCE.md) for formats, query operations, source maps, and JSON schemas.

@@ -34,26 +34,41 @@ type ModuleStat struct {
 	Pct    float64 `json:"pct"` // of total sampled self time
 }
 
-// SlowFrame is a rendering frame longer than the jank threshold, with what
-// overlapped it.
+// SlowFrame is a work-bound active rendering interval above the jank threshold.
+// GC is a collector overlay, not part of WorkMs.
 type SlowFrame struct {
-	T            float64 `json:"t"`  // seconds from recording start
-	Ms           float64 `json:"ms"` // frame duration
-	ScriptMs     float64 `json:"scriptMs"`
-	LayoutMs     float64 `json:"layoutMs"` // layout+style
-	PaintMs      float64 `json:"paintMs"`  // paint+composite
-	GCMs         float64 `json:"gcMs"`
-	TopEvent     string  `json:"topEvent"`          // dominant script eventType/details, e.g. "event-dispatched click"
-	TopFunc      string  `json:"topFunc,omitempty"` // hottest sampled function in the frame, if samples cover it
-	SampleStatus string  `json:"sampleStatus,omitempty"`
+	T                   float64 `json:"t"`  // seconds from recording start
+	Ms                  float64 `json:"ms"` // frame duration
+	WorkMs              float64 `json:"workMs"`
+	ScriptMs            float64 `json:"scriptMs"`
+	LayoutMs            float64 `json:"layoutMs"` // layout+style
+	PaintMs             float64 `json:"paintMs"`  // paint+composite
+	GCMs                float64 `json:"gcMs"`
+	GCOverlapWithWorkMs float64 `json:"gcOverlapWithWorkMs"`
+	TopEvent            string  `json:"topEvent"`          // dominant script eventType/details, e.g. "event-dispatched click"
+	TopFunc             string  `json:"topFunc,omitempty"` // hottest sampled function in the frame, if samples cover it
+	SampleStatus        string  `json:"sampleStatus,omitempty"`
 }
 
-// LongTask is a single script/event record longer than the long-task threshold (50ms).
+// LongTask is a maximal union of overlapping script records above the task threshold.
 type LongTask struct {
+	T             float64  `json:"t"`
+	Ms            float64  `json:"ms"`
+	EventType     string   `json:"eventType"`
+	Children      []string `json:"children"`
+	ChildrenTotal int      `json:"childrenTotal"`
+	Detail        string   `json:"detail,omitempty"` // e.g. event name, timer id, URL
+	TopFunc       string   `json:"topFunc,omitempty"`
+	SampleStatus  string   `json:"sampleStatus,omitempty"`
+}
+
+// InputStall retains input-driven rendering intervals with at most one budget of work.
+// Interval length is an observation, not measured main-thread blocking time.
+type InputStall struct {
 	T            float64 `json:"t"`
 	Ms           float64 `json:"ms"`
-	EventType    string  `json:"eventType"`
-	Detail       string  `json:"detail,omitempty"` // e.g. event name, timer id, URL
+	WorkMs       float64 `json:"workMs"`
+	TopEvent     string  `json:"topEvent"`
 	TopFunc      string  `json:"topFunc,omitempty"`
 	SampleStatus string  `json:"sampleStatus,omitempty"`
 }
@@ -169,6 +184,8 @@ type Report struct {
 	Name                string              `json:"name"`
 	DurationSec         float64             `json:"durationSec"`
 	Breakdown           []Slice             `json:"breakdown"`
+	GCMs                float64             `json:"gcMs"`
+	GCOverlapWithWorkMs float64             `json:"gcOverlapWithWorkMs"`
 	Hotspots            []metrics.FuncStat  `json:"hotspots"` // top N by self time
 	InclusiveHotspots   []metrics.FuncStat  `json:"inclusiveHotspots"`
 	CommonStacks        []metrics.StackStat `json:"commonStacks"`
@@ -176,9 +193,13 @@ type Report struct {
 	Wakeups             WakeupStats         `json:"wakeups"`
 	SampleCoverage      SampleCoverage      `json:"sampleCoverage"`
 	Modules             []ModuleStat        `json:"modules"`    // top N
-	SlowFrames          []SlowFrame         `json:"slowFrames"` // worst N by Ms
-	LongTasks           []LongTask          `json:"longTasks"`  // worst N by Ms
-	Findings            []Finding           `json:"findings"`   // sorted by severity then ImpactMs desc
+	SlowFrames          []SlowFrame         `json:"slowFrames"` // worst N active frames by measured work
+	SlowFramesTotal     int                 `json:"slowFramesTotal"`
+	InputStalls         []InputStall        `json:"inputStalls"` // longest N observed input stalls
+	InputStallsTotal    int                 `json:"inputStallsTotal"`
+	LongTasks           []LongTask          `json:"longTasks"` // worst N by duration
+	LongTasksTotal      int                 `json:"longTasksTotal"`
+	Findings            []Finding           `json:"findings"` // sorted by severity then ImpactMs desc
 	Summary             *metrics.Summary    `json:"-"`
 }
 

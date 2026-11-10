@@ -20,7 +20,6 @@ var palette = map[string]string{
 	"Layout":    "#4b8bd9",
 	"Paint":     "#2fa86b",
 	"Composite": "#17a2a2",
-	"GC":        "#d9534f",
 	"Other":     "#8a94a3",
 	"Idle":      "#cdd3db",
 }
@@ -297,6 +296,7 @@ var pageTmpl = template.Must(template.New("page").Funcs(template.FuncMap{
 <ul class="legend">{{range .Slices}}<li><span class="sw" style="background:{{.Color}}"></span>{{.Name}} <span class="mut">{{.Ms}} ms &middot; {{.Pct}}%</span></li>{{end}}</ul>
 {{else}}<span class="mut">No breakdown available.</span>{{end}}
 </div>
+{{if .R.GCMs}}<h3>GC collections</h3><div class="card"><p>GC collector interval overlay: {{printf "%.1f" .R.GCMs}} ms <code>{{numeric $r "gc.total_ms"}}</code>; GC overlap with work: {{printf "%.1f" .R.GCOverlapWithWorkMs}} ms <code>{{numeric $r "gc.overlap_with_work_ms"}}</code>.</p><p class="mut">Collector intervals may run concurrently. This is not a measured pause or an exclusive main-thread work slice.</p></div>{{end}}
 
 <h3>Findings</h3>
 {{range .Findings}}<div class="card finding">
@@ -352,13 +352,20 @@ var pageTmpl = template.Must(template.New("page").Funcs(template.FuncMap{
 {{else}}<span class="mut">No module data.</span>{{end}}</div>
 
 <h3>Slow frames</h3>
-<div class="card">{{if .SlowFrames}}<table><tr><th class="n">At (s)</th><th class="n">Frame ms</th><th class="n">Script</th><th class="n">Layout</th><th class="n">Paint</th><th class="n">GC</th><th>Top event / function</th></tr>
-{{range .SlowFrames}}<tr><td class="n">{{printf "%.2f" .T}}</td><td class="n">{{printf "%.1f" .Ms}}</td><td class="n">{{printf "%.1f" .ScriptMs}}</td><td class="n">{{printf "%.1f" .LayoutMs}}</td><td class="n">{{printf "%.1f" .PaintMs}}</td><td class="n">{{printf "%.1f" .GCMs}}</td><td>{{.TopEvent}}{{if .TopFunc}} &rarr; <code>{{.TopFunc}}</code>{{end}}{{if .SampleStatus}}<div class="mut">{{.SampleStatus}}</div>{{end}}</td></tr>{{end}}</table>
+<p class="mut">Work-bound active intervals above {{printf "%.1f" .R.JankMs}} ms; {{len .SlowFrames}}/{{.R.SlowFramesTotal}} shown. Fixed scorecard frame standards use 16.7 ms. GC remains a separate collector overlay.</p>
+<div class="card">{{if .SlowFrames}}<table><tr><th class="n">At (s)</th><th class="n">Observed interval ms</th><th class="n">Main-thread work ms</th><th class="n">Script</th><th class="n">Layout</th><th class="n">Paint</th><th class="n">GC collector interval</th><th class="n">GC overlap with work</th><th>Top event / function</th></tr>
+{{range .SlowFrames}}<tr><td class="n">{{printf "%.2f" .T}}</td><td class="n">{{printf "%.1f" .Ms}}</td><td class="n">{{printf "%.1f" .WorkMs}}</td><td class="n">{{printf "%.1f" .ScriptMs}}</td><td class="n">{{printf "%.1f" .LayoutMs}}</td><td class="n">{{printf "%.1f" .PaintMs}}</td><td class="n">{{printf "%.1f" .GCMs}}</td><td class="n">{{printf "%.1f" .GCOverlapWithWorkMs}}</td><td>{{.TopEvent}}{{if .TopFunc}} &rarr; <code>{{.TopFunc}}</code>{{end}}{{if .SampleStatus}}<div class="mut">{{.SampleStatus}}</div>{{end}}</td></tr>{{end}}</table>
 {{else}}<span class="mut">No slow frames.</span>{{end}}</div>
 
+{{if .R.InputStalls}}<h3>Input stalls</h3>
+<p class="mut">Input arrived without a timely rendering update. These observed intervals are excluded from work-bound frame statistics and jank; interval length is not measured main-thread blocking time. {{len .R.InputStalls}}/{{.R.InputStallsTotal}} shown.</p>
+<div class="card"><table><tr><th class="n">At (s)</th><th class="n">Observed interval ms</th><th class="n">Main-thread work ms</th><th>Top event / function</th></tr>
+{{range .R.InputStalls}}<tr><td class="n">{{printf "%.2f" .T}}</td><td class="n">{{printf "%.1f" .Ms}}</td><td class="n">{{printf "%.3f" .WorkMs}}</td><td>{{.TopEvent}}{{if .TopFunc}} &rarr; <code>{{.TopFunc}}</code>{{end}}{{if .SampleStatus}}<div class="mut">{{.SampleStatus}}</div>{{end}}</td></tr>{{end}}</table></div>{{end}}
+
 <h3>Long tasks</h3>
+<p class="mut">Maximal overlapping script tasks above {{printf "%.1f" .R.LongTaskMs}} ms; {{len .LongTasks}}/{{.R.LongTasksTotal}} shown. Nested events do not count as separate tasks.</p>
 <div class="card">{{if .LongTasks}}<table><tr><th class="n">At (s)</th><th class="n">ms</th><th>Event</th><th>Detail</th><th>Top function</th></tr>
-{{range .LongTasks}}<tr><td class="n">{{printf "%.2f" .T}}</td><td class="n">{{printf "%.1f" .Ms}}</td><td>{{.EventType}}</td><td>{{.Detail}}</td><td>{{if .TopFunc}}<code>{{.TopFunc}}</code>{{end}}{{if .SampleStatus}}<div class="mut">{{.SampleStatus}}</div>{{end}}</td></tr>{{end}}</table>
+{{range .LongTasks}}<tr><td class="n">{{printf "%.2f" .T}}</td><td class="n">{{printf "%.1f" .Ms}}</td><td>{{.EventType}}{{if .Children}}<div class="mut">Nested events: {{len .Children}}/{{.ChildrenTotal}} shown · {{range $i, $child := .Children}}{{if $i}}, {{end}}{{$child}}{{end}}</div>{{end}}</td><td>{{.Detail}}</td><td>{{if .TopFunc}}<code>{{.TopFunc}}</code>{{end}}{{if .SampleStatus}}<div class="mut">{{.SampleStatus}}</div>{{end}}</td></tr>{{end}}</table>
 {{else}}<span class="mut">No long tasks.</span>{{end}}</div>
 
 {{if .StackPreviews}}<h3>Stack appendix</h3><p class="mut">Each distinct selected stack appears once. Query returns every exact frame.</p>

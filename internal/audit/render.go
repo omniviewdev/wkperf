@@ -257,12 +257,25 @@ func (r *Report) TotalSec() float64 {
 	return t
 }
 
-func overallScore(r *Report) (string, float64) {
+func overallScore(r *Report) (grade, label string, coverage float64) {
 	if r.Overall == nil {
-		return "-", 0
+		return "n/a", "partial score 0/100", 0
 	}
-	return r.Overall.Grade, r.Overall.Score
+	prefix := "score"
+	if r.Overall.Partial {
+		prefix = "partial score"
+	}
+	return r.Overall.Grade, fmt.Sprintf("%s %.0f/100", prefix, r.Overall.Score), r.Overall.Coverage
 }
+
+func cardScoreCell(c *scorecard.Scorecard) string {
+	if c.Partial {
+		return fmt.Sprintf("%.0f (partial)", c.Score)
+	}
+	return fmt.Sprintf("%.0f", c.Score)
+}
+
+const partialGradeNote = "Grade unavailable: every run and scene must support a grade; missing frame data or insufficient standard coverage cannot certify performance."
 
 // WorstRows returns the "worst scene per standard" rows in registry order.
 func (r *Report) WorstRows() []WorstRow {
@@ -308,22 +321,25 @@ func RenderTerm(w io.Writer, r *Report, color bool) error {
 		b.WriteString("\n" + p.bold(t) + "\n" + p.dim(strings.Repeat("─", termWidth)) + "\n")
 	}
 
-	g, score := overallScore(r)
+	g, score, coverage := overallScore(r)
 	ln("%s", p.bold("wkperf audit"))
 	ln("%s", p.dim(fmt.Sprintf("%d %s · %d %s · %.1fs recorded", len(r.Scenes), plural(len(r.Scenes), "scene", "scenes"),
 		r.TotalRuns(), plural(r.TotalRuns(), "run", "runs"), r.TotalSec())))
-	ln("Overall (typical scene): grade %s · score %.0f/100", p.grade(g), score)
+	ln("Overall (typical scene): grade %s · %s · coverage %.1f%%", p.grade(g), score, coverage*100)
+	if r.Overall == nil || r.Overall.Partial {
+		ln("%s", p.dim(partialGradeNote))
+	}
 	if len(r.Scenes) == 0 {
 		ln("%s", p.dim("no scenes"))
 	}
 
 	sec("Scene leaderboard (worst first)")
 	if len(r.Scenes) > 0 {
-		ln("  %s", p.dim(fmt.Sprintf("%-24s %-5s %5s %12s %9s %10s  %s", "scene", "grade", "score", "frame p95", "jank", "TBT", "top finding")))
+		ln("  %s", p.dim(fmt.Sprintf("%-24s %-5s %13s %9s %12s %9s %10s  %s", "scene", "grade", "score", "coverage", "frame p95", "jank", "TBT", "top finding")))
 	}
 	for _, s := range r.Scenes {
-		ln("  %s %s %5.0f %12s %9s %10s  %s",
-			padR(s.Name, 24), padGrade(p, s.Card.Grade, 5), s.Card.Score,
+		ln("  %s %s %13s %8.1f%% %12s %9s %10s  %s",
+			padR(s.Name, 24), padGrade(p, s.Card.Grade, 5), cardScoreCell(s.Card), s.Card.Coverage*100,
 			CardCell(s.Card, "frame-p95"), CardCell(s.Card, "jank-ratio"), CardCell(s.Card, "tbt"),
 			trunc(orDash(s.TopFinding), 40))
 	}
@@ -451,13 +467,16 @@ func RenderMarkdown(w io.Writer, r *Report) error {
 	var b strings.Builder
 	ln := func(f string, a ...any) { fmt.Fprintf(&b, f+"\n", a...) }
 
-	g, score := overallScore(r)
+	g, score, coverage := overallScore(r)
 	ln("# wkperf audit")
 	ln("")
 	ln("- Scenes: %d", len(r.Scenes))
 	ln("- Runs: %d", r.TotalRuns())
 	ln("- Recorded time: %.1fs", r.TotalSec())
-	ln("- Overall (typical scene): grade **%s**, score %.0f/100", g, score)
+	ln("- Overall (typical scene): grade **%s**, %s, coverage %.1f%%", g, score, coverage*100)
+	if r.Overall == nil || r.Overall.Partial {
+		ln("- %s", partialGradeNote)
+	}
 
 	ln("")
 	ln("## Scene leaderboard (worst first)")
@@ -465,10 +484,10 @@ func RenderMarkdown(w io.Writer, r *Report) error {
 	if len(r.Scenes) == 0 {
 		ln("_No scenes._")
 	} else {
-		ln("| Scene | Runs | Grade | Score | Frame p95 | Jank | TBT | Top finding |")
-		ln("|---|---:|:---:|---:|---:|---:|---:|---|")
+		ln("| Scene | Runs | Grade | Score | Coverage | Frame p95 | Jank | TBT | Top finding |")
+		ln("|---|---:|:---:|---:|---:|---:|---:|---:|---|")
 		for _, s := range r.Scenes {
-			ln("| %s | %d | %s | %.0f | %s | %s | %s | %s |", mdEscape(s.Name), s.Runs, s.Card.Grade, s.Card.Score,
+			ln("| %s | %d | %s | %s | %.1f%% | %s | %s | %s | %s |", mdEscape(s.Name), s.Runs, s.Card.Grade, cardScoreCell(s.Card), s.Card.Coverage*100,
 				CardCell(s.Card, "frame-p95"), CardCell(s.Card, "jank-ratio"), CardCell(s.Card, "tbt"), mdEscape(orDash(s.TopFinding)))
 		}
 	}

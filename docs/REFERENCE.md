@@ -34,7 +34,15 @@ The sample set also includes `regressions/idle-gap.json`, `stack-evidence.json` 
 
 Paused intervals in `recording.discontinuities` use `{startTime,endTime}` in recording timestamps. Their union is excluded from active wall time and rate denominators. Work overlapping pauses is clipped; paused frame intervals do not enter rendering statistics. Window flags remain seconds from the original recording start, not a compressed paused-time clock.
 
-Rendering-frame spans alone do not measure CPU work. An interval longer than 50 ms with less than 10% exclusive instrumented work and no input-driven event is classified as an idle gap. It is excluded from frame percentiles, jank ratios, and active-frame FPS, and reported as an idle wakeup with its dominant trigger. Its unoccupied time belongs to `Idle`; known work still belongs to script/style/layout/paint/GC. Other active-frame time is labeled `Frame time not attributed to work`. This classification is inferred from exported instrumentation, not a display-refresh measurement.
+`compare` and `summary` reject empty or zero-active-time selections with `window_error` and exit 1 before producing summaries or evaluating CI gates. A comparison cannot pass strict-fixture checks on an empty window.
+
+Rendering-frame spans alone do not measure CPU work. An interval longer than 50 ms with less than 10% exclusive instrumented work and no input-driven event is an inferred idle gap, reported as an idle wakeup rather than jank. An input-driven interval over budget with at most one budget of measured work is an input stall, not evidence that JavaScript occupied the whole interval. Idle gaps and input stalls do not enter active-frame percentiles, work-bound jank ratios, or FPS. Slow active frames retain their observed duration; work over budget and unexplained interval excess remain separate.
+
+Exclusive main-thread work follows the innermost record: latest original start, then shortest duration, then a deterministic category tie-break. Script, style, layout, paint, and composite partition that measured work. GC collector intervals are a separate overlay, with overlap against work; their elapsed duration is not a main-thread pause measurement. Uninstrumented active-frame time is labeled accordingly rather than attributed to JavaScript or GC.
+
+Tasks are maximal unions of overlapping non-GC, non-count-only script records. Touching intervals remain separate tasks. Long-task counts, TBT, triage, and `--around-long-task` share those boundaries, so nested callbacks and microtasks are not counted repeatedly. WebKit event names include `microtask-dispatched` and `observer-callback`; per-trigger inclusive durations can overlap and are labeled separately from exclusive work.
+
+Analysis exposes `gcMs` and `gcOverlapWithWorkMs` outside the exclusive breakdown, and keeps input stalls in their own bounded `inputStalls` list with totals. Jank findings cite `findings.jank.ratio` and `findings.jank.threshold_ms`; fixed-standard `frames.*` measurements remain separate. `findings.jank.interval_excess_ms` reports observed interval excess independently of measured work excess.
 
 Sampling weights come from `durations[i]`, in seconds, paired with `stackTraces[i]`. Missing weights use a 1 ms default. WebKit's actual [CallingContextTree consumer](https://github.com/WebKit/WebKit/blob/main/Source/WebInspectorUI/UserInterface/Models/CallingContextTree.js) visits frames last-to-first and identifies index zero as the leaf. wkperf normalizes these raw stacks to root-to-leaf paths. This follows the consumer rather than the protocol's ambiguous top/bottom wording.
 
@@ -207,7 +215,7 @@ Trigger tables separate event names and timer/rAF/microtask dispatches. Each row
 | `--format` | `term` | `term`, `md`, `json`, `html`, or `all` |
 | `--out` | `wkperf-audit.html` | output file; directory or prefix with `all` |
 | `--group-by-prefix` | off | group loose files `<scene>-<n>.json` / `<scene>_<n>.json` into scene `<scene>` |
-| `--min-score` | `0` (off) | exit 4 when the overall score is below N |
+| `--min-score` | `0` (off) | exit 4 when the overall score is below N or an overall grade is unavailable |
 | `--top` | `10` | list length for priorities, hotspots, modules |
 | `--jank-ms`, `--long-task-ms` | `16.7`, `50` | thresholds as in `analyze` |
 | `--trim-start`, `--trim-end`, `--from`, `--to` | `0` | window applied to every recording |
@@ -338,7 +346,11 @@ For bounded agent context, use `--brief` or `--max-bytes N` with Markdown or ter
 
 ## Scorecard
 
-Each recording is rated per standard as `good` / `needs-improvement` / `poor` (or `n/a` when the recording lacks the data), scored 0 to 100 (weighted mean), and graded A (90+), B (75+), C (60+), D (40+), F. "Gap" lists what is not good, with how many times over target. Targets are not Lighthouse or Core Web Vitals scores: TBT is normalized per 10 s of recording, INP is a handler-time approximation, FCP/LCP need load records, CLS is not measured, and wkperf-heuristic thresholds are our choices.
+Each available standard is rated `good`, `needs-improvement`, or `poor`; missing evidence is `n/a`. The numeric score is a weighted mean of available standards. Overall grade is unavailable when measured standards cover less than half the total weight, or all three frame standards are unavailable. A retained numeric value is then a partial score, not a claim of a healthy UI. Otherwise grades are A (90+), B (75+), C (60+), D (40+), and F. Targets are not Lighthouse or Core Web Vitals scores: TBT is normalized per 10 s, INP is a handler-time approximation, FCP/LCP need load records, and CLS is not measured.
+
+Frame p95, jank ratio, and FPS require at least 30 active frames and 1,000 ms of active-frame observation. `frames.active_ms` exposes the latter. Fixed 60 Hz standards always use 16.7 ms; `--jank-ms` changes finding thresholds, not those standards. Audit score gates cannot pass an unavailable overall grade.
+
+Scorecards expose `coverage` and `partial`. A recording's coverage is available standard weight divided by total standard weight. Audit aggregation uses mean child coverage rather than combining disjoint measurements into fictional complete coverage; any unavailable or missing child keeps the aggregate partial. Failed requested inputs also prevent a conclusive overall grade.
 
 | Standard | Source | ID | Good | Poor | Weight |
 | --- | --- | --- | --- | --- | --- |
@@ -351,9 +363,11 @@ Each recording is rated per standard as `good` / `needs-improvement` / `poor` (o
 | First Contentful Paint | Lighthouse | `fcp` | ≤ 1800 ms | > 3000 ms | 1 |
 | Largest Contentful Paint | Core Web Vitals | `lcp` | ≤ 2500 ms | > 4000 ms | 1 |
 | Main thread script busy | wkperf heuristic | `main-busy` | ≤ 25% | > 50% | 1 |
-| GC share of wall time | wkperf heuristic | `gc-share` | ≤ 3% | > 10% | 1 |
+| Main-thread GC pause share | wkperf heuristic | `gc-share` | ≤ 3% | > 10% | 1 |
 | Memory growth | wkperf heuristic | `memory-growth` | ≤ 1 MB/min | > 10 MB/min | 1 |
 | Forced layouts per second | wkperf heuristic | `forced-layout-rate` | ≤ 0.5 /s | > 5 /s | 1 |
+
+Collector intervals alone leave `gc-share` unavailable. Their coverage and overlap remain visible as diagnostics, not evidence of equivalent main-thread blocking.
 
 ### Findings → scorecard
 
@@ -456,7 +470,7 @@ Verdicts: `improved`, `regressed`, `unchanged`, `noisy` (change within run-to-ru
 | 1 | input or runtime error, including partial success when some analyze/audit files fail; valid results are still emitted |
 | 2 | `--fail-on-regression` and a regressed metric with confidence other than `low` in the frames, script, layout, or cpu groups |
 | 3 | `--strict-fixture` and the comparability score is below `--min-comparability` |
-| 4 | `audit --min-score N` and the overall score is below N |
+| 4 | `audit --min-score N` and the overall score is below N or cannot be graded with available evidence |
 
 ## CI usage
 

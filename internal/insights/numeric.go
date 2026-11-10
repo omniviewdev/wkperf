@@ -51,6 +51,18 @@ func NumericValues(r *Report) map[string]NumericValue {
 		values[key] = NumericValue{Value: value, Unit: unit, Description: description}
 	}
 	add("recording.duration_sec", r.DurationSec, "s", "Active recording duration")
+	add("gc.total_ms", r.GCMs, metrics.UnitMs, "Collector-interval union; not necessarily main-thread time")
+	add("gc.overlap_with_work_ms", r.GCOverlapWithWorkMs, metrics.UnitMs, "Collector intervals overlapping instrumented main-thread work")
+	threshold := r.JankMs
+	if threshold <= 0 {
+		threshold = 16.7
+	}
+	add("findings.jank.threshold_ms", threshold, metrics.UnitMs, "Configured finding threshold; fixed scorecard standards remain 16.7ms")
+	if r.Summary != nil {
+		if count, ok := r.Summary.Lookup("frames.count"); ok && count.Value > 0 {
+			add("findings.jank.ratio", float64(max(r.SlowFramesTotal, len(r.SlowFrames)))/count.Value, metrics.UnitRatio, "Active-frame interval ratio above configured finding threshold")
+		}
+	}
 	for _, s := range r.Breakdown {
 		prefix := "breakdown." + url.PathEscape(s.Name)
 		add(prefix+".ms", s.Ms, metrics.UnitMs, s.Name+" wall time")
@@ -126,10 +138,18 @@ func NumericValues(r *Report) map[string]NumericValue {
 		base := "slowFrames." + strconv.Itoa(i)
 		add(base+".t", f.T, "s", "Frame time from analyzed recording start")
 		add(base+".ms", f.Ms, metrics.UnitMs, "Active frame duration")
+		add(base+".work_ms", f.WorkMs, metrics.UnitMs, "Exclusive instrumented main-thread work")
 		add(base+".script_ms", f.ScriptMs, metrics.UnitMs, "Exclusive script overlap")
 		add(base+".layout_ms", f.LayoutMs, metrics.UnitMs, "Exclusive layout/style overlap")
 		add(base+".paint_ms", f.PaintMs, metrics.UnitMs, "Exclusive paint/composite overlap")
-		add(base+".gc_ms", f.GCMs, metrics.UnitMs, "Exclusive GC overlap")
+		add(base+".gc_ms", f.GCMs, metrics.UnitMs, "Collector interval overlay; not necessarily main-thread time")
+		add(base+".gc_overlap_with_work_ms", f.GCOverlapWithWorkMs, metrics.UnitMs, "Collector interval overlapping instrumented main-thread work")
+	}
+	for i, stall := range r.InputStalls {
+		base := "inputStalls." + strconv.Itoa(i)
+		add(base+".t", stall.T, "s", "Input-stall time from analyzed recording start")
+		add(base+".ms", stall.Ms, metrics.UnitMs, "Observed input-stall interval; not measured main-thread blocking time")
+		add(base+".work_ms", stall.WorkMs, metrics.UnitMs, "Exclusive instrumented main-thread work during input stall")
 	}
 	for i, t := range r.LongTasks {
 		base := "longTasks." + strconv.Itoa(i)

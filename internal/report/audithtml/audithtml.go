@@ -21,7 +21,6 @@ var palette = map[string]string{
 	"Layout":    "#4b8bd9",
 	"Paint":     "#2fa86b",
 	"Composite": "#17a2a2",
-	"GC":        "#d9534f",
 	"Other":     "#8a94a3",
 	"Idle":      "#cdd3db",
 }
@@ -57,6 +56,8 @@ type sliceView struct {
 
 type sceneView struct {
 	Name, Grade, Score, ScoreW string
+	Partial                    bool
+	Coverage                   string
 	Runs                       int
 	Duration                   string
 	FrameP95, Jank, TBT        string
@@ -113,6 +114,8 @@ type pageView struct {
 	Grade     string
 	Score     string
 	ScoreW    string
+	Partial   bool
+	Coverage  string
 	SceneRows []sceneView
 	Slices    []sliceView
 	Priority  []priorityView
@@ -137,11 +140,14 @@ func buildView(r *audit.Report, ai string) pageView {
 		pv.Grade = r.Overall.Grade
 		pv.Score = fmt.Sprintf("%.0f", r.Overall.Score)
 		pv.ScoreW = f1(clampPct(r.Overall.Score))
+		pv.Partial = r.Overall.Partial
+		pv.Coverage = fmt.Sprintf("%.0f%% coverage", 100*r.Overall.Coverage)
 	}
 
 	for _, s := range r.Scenes {
 		pv.SceneRows = append(pv.SceneRows, sceneView{
 			Name: s.Name, Grade: s.Card.Grade, Score: fmt.Sprintf("%.0f", s.Card.Score), ScoreW: f1(clampPct(s.Card.Score)),
+			Partial: s.Card.Partial, Coverage: fmt.Sprintf("%.0f%% coverage", 100*s.Card.Coverage),
 			Runs: s.Runs, Duration: fmt.Sprintf("%.1fs", s.DurationSec),
 			FrameP95: audit.CardCell(s.Card, "frame-p95"), Jank: audit.CardCell(s.Card, "jank-ratio"), TBT: audit.CardCell(s.Card, "tbt"),
 			TopFinding: s.TopFinding,
@@ -297,13 +303,13 @@ var pageTmpl = template.Must(template.New("page").Parse(`<!DOCTYPE html>
 <div class="stat"><span class="mut">Scenes</span><b>{{.Scenes}}</b></div>
 <div class="stat"><span class="mut">Runs</span><b>{{.Runs}}</b></div>
 <div class="stat"><span class="mut">Recorded</span><b>{{.Recorded}}</b></div>
-<div class="stat"><span class="mut">Overall (typical scene)</span><b><span class="grade g{{.Grade}}">{{.Grade}}</span> {{.Score}}<span class="mut">/100</span></b></div>
+<div class="stat"><span class="mut">Overall (typical scene) · {{if .Partial}}Partial score{{else}}Score{{end}}</span><b><span class="grade g{{.Grade}}">{{.Grade}}</span> {{.Score}}<span class="mut">/100</span></b><span class="mut">{{.Coverage}}{{if .Partial}} · insufficient data for an overall grade{{end}}</span></div>
 </div>
 {{if .Empty}}<p class="mut">No scenes audited.</p>{{end}}
 
 <h2>Scene leaderboard</h2>
 <div class="card">{{if .SceneRows}}<table><tr><th>Scene</th><th>Grade</th><th class="n">Score</th><th></th><th class="n">Frame p95</th><th class="n">Jank</th><th class="n">TBT</th><th>Top finding</th></tr>
-{{range .SceneRows}}<tr><td>{{.Name}}<div class="mut">{{.Runs}} run(s) &middot; {{.Duration}}</div></td><td><span class="grade g{{.Grade}}">{{.Grade}}</span></td><td class="n">{{.Score}}</td><td><div class="bar score"><i class="g{{.Grade}}" style="width:{{.ScoreW}}%"></i></div></td><td class="n">{{.FrameP95}}</td><td class="n">{{.Jank}}</td><td class="n">{{.TBT}}</td><td>{{.TopFinding}}</td></tr>{{end}}</table>
+{{range .SceneRows}}<tr><td>{{.Name}}<div class="mut">{{.Runs}} run(s) &middot; {{.Duration}}</div></td><td><span class="grade g{{.Grade}}">{{.Grade}}</span>{{if .Partial}}<div class="mut">insufficient data</div>{{end}}</td><td class="n">{{.Score}}<div class="mut">{{if .Partial}}Partial score · {{end}}{{.Coverage}}</div></td><td><div class="bar score"><i class="g{{.Grade}}" style="width:{{.ScoreW}}%"></i></div></td><td class="n">{{.FrameP95}}</td><td class="n">{{.Jank}}</td><td class="n">{{.TBT}}</td><td>{{.TopFinding}}</td></tr>{{end}}</table>
 {{else}}<span class="mut">No scenes.</span>{{end}}</div>
 
 <h2>Where the time goes</h2>

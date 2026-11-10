@@ -81,7 +81,7 @@ func TestQueryCommandSourceMapsDiffAndAmbiguity(t *testing.T) {
 	dir := t.TempDir()
 	bundle := filepath.Join(dir, "app.js")
 	file, mapFile := filepath.Join(dir, "capture.json"), filepath.Join(dir, "explicit.map")
-	rec := &model.Recording{StartTime: 0, EndTime: 1, Samples: []model.TargetSamples{{StackTraces: []model.StackTrace{{Timestamp: .1, StackFrames: []model.StackFrame{{Name: "a", URL: bundle, Line: 1, Column: 1}}}}, Durations: []float64{.01}}}}
+	rec := &model.Recording{StartTime: 0, EndTime: 1, Samples: []model.TargetSamples{{StackTraces: []model.StackTrace{{Timestamp: .1, StackFrames: []model.StackFrame{{Name: "a", URL: bundle, Line: 1, Column: 2}}}}, Durations: []float64{.01}}}}
 	data, err := json.Marshal(rec)
 	if err != nil {
 		t.Fatal(err)

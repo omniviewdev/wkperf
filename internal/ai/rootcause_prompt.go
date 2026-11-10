@@ -58,7 +58,7 @@ func rootStack(b *strings.Builder, stack rootcause.Stack) {
 }
 
 func rootWindow(b *strings.Builder, window rootcause.Window) {
-	fmt.Fprintf(b, "- %s %s, %s–%ss: duration=%sms active=%sms; %s; reproduce: %s\n", clip(oneLine(window.Kind), 60), clip(oneLine(window.Label), 100), num(window.FromSec), num(window.ToSec), num(window.DurationMs), num(window.ActiveMs), clip(oneLine(window.SampleStatus), 150), window.Command)
+	fmt.Fprintf(b, "- %s %s, %s–%ss: observed interval=%sms instrumented main-thread work=%sms; %s; reproduce: %s\n", clip(oneLine(window.Kind), 60), clip(oneLine(window.Label), 100), num(window.FromSec), num(window.ToSec), num(window.DurationMs), num(window.ActiveMs), clip(oneLine(window.SampleStatus), 150), window.Command)
 	rootStats(b, window.Stats, 6)
 	if window.TopStack != nil {
 		rootStack(b, *window.TopStack)
@@ -125,7 +125,7 @@ func rootCauseSections(label string, r *rootcause.Report, c Context, value int) 
 	}
 	if len(r.GCOverlaps) > 0 {
 		b.Reset()
-		b.WriteString("### GC timeline overlap (not allocation causality)\n")
+		b.WriteString("### GC timeline overlap (collector intervals, not measured pauses or allocation causality)\n")
 		for _, gc := range limitSlice(r.GCOverlaps, c.TopN) {
 			fmt.Fprintf(&b, "- %s–%ss duration=%sms: %s; reproduce: %s\n", num(gc.FromSec), num(gc.ToSec), num(gc.DurationMs), clip(oneLine(gc.Attribution), 400), gc.Command)
 			rootStats(&b, gc.Stats, 4)
@@ -145,7 +145,7 @@ func rootCauseSections(label string, r *rootcause.Report, c Context, value int) 
 		rootStack(&b, outlier.Stack)
 	}
 	add("depth", value-10, b.String())
-	if len(r.Windows)+len(r.LongTasks)+len(r.SlowFrames)+len(r.EventBursts) > 0 {
+	if len(r.Windows)+len(r.LongTasks)+len(r.SlowFrames)+len(r.InputStalls)+len(r.EventBursts) > 0 {
 		b.Reset()
 		b.WriteString("### Worst-window triage\n")
 		for _, window := range limitSlice(r.Windows, c.TopN) {
@@ -155,6 +155,9 @@ func rootCauseSections(label string, r *rootcause.Report, c Context, value int) 
 			rootWindow(&b, window)
 		}
 		for _, window := range limitSlice(r.SlowFrames, 3) {
+			rootWindow(&b, window)
+		}
+		for _, window := range limitSlice(r.InputStalls, 3) {
 			rootWindow(&b, window)
 		}
 		for _, window := range limitSlice(r.EventBursts, 3) {

@@ -72,6 +72,9 @@ func loadGroup(cmd *cobra.Command, paths []string, wo analyze.Options) ([]*loade
 		if err != nil {
 			return nil, nil, err
 		}
+		if _, _, err := windowBounds(rec, wo); err != nil {
+			return nil, nil, &inputError{File: f, Code: "window_error", Err: err}
+		}
 		out = append(out, &loaded{Sum: analyze.SummarizeWith(rec, f, wo), Rec: rec, SourceMap: diagnostics})
 	}
 	return out, files, nil
@@ -85,21 +88,34 @@ func summaries(ls []*loaded) []*metrics.Summary {
 	return out
 }
 
+// windowBounds validates the shared recording-relative selection before any
+// metrics or grades are computed. Stopped capture time is not active evidence.
+func windowBounds(rec *model.Recording, wo analyze.Options) (lo, hi float64, err error) {
+	lo = rec.StartTime + math.Max(0, math.Max(wo.TrimStartSec, wo.FromSec))
+	hi = rec.EndTime - math.Max(0, wo.TrimEndSec)
+	if wo.ToSec > 0 {
+		hi = math.Min(hi, rec.StartTime+wo.ToSec)
+	}
+	if hi <= lo {
+		return lo, hi, fmt.Errorf("window is empty: %.2fs..%.2fs of a %.2fs recording", lo-rec.StartTime, hi-rec.StartTime, rec.EndTime-rec.StartTime)
+	}
+	if profile.ActiveDuration(rec, lo, hi) <= 0 {
+		return lo, hi, fmt.Errorf("window has no active capture time: %.2fs..%.2fs of a %.2fs recording", lo-rec.StartTime, hi-rec.StartTime, rec.EndTime-rec.StartTime)
+	}
+	return lo, hi, nil
+}
+
 // clipRecording returns rec restricted to the window wo, with the same
 // semantics as analyze.SummarizeWith. Untimed samples and their original span
 // metadata survive clipping but are excluded from windowed sample aggregates.
 // It returns rec itself when the window covers the whole recording.
 func clipRecording(rec *model.Recording, wo analyze.Options) (*model.Recording, error) {
-	lo := rec.StartTime + math.Max(0, math.Max(wo.TrimStartSec, wo.FromSec))
-	hi := rec.EndTime - math.Max(0, wo.TrimEndSec)
-	if wo.ToSec > 0 {
-		hi = math.Min(hi, rec.StartTime+wo.ToSec)
+	lo, hi, err := windowBounds(rec, wo)
+	if err != nil {
+		return nil, err
 	}
 	if profile.CoversRecording(rec, lo-rec.StartTime, hi-rec.StartTime) {
 		return rec, nil
-	}
-	if hi <= lo {
-		return nil, fmt.Errorf("window is empty: %.2fs..%.2fs of a %.2fs recording", lo-rec.StartTime, hi-rec.StartTime, rec.EndTime-rec.StartTime)
 	}
 	return profile.Clip(rec, lo, hi), nil
 }

@@ -17,10 +17,12 @@ type Run struct {
 	Card   *scorecard.Scorecard
 }
 
-// Scene is one scenario; Runs has >=1 entries (repeat captures of the scene).
+// Scene is one scenario. Runs contains parsed captures; MissingRuns counts
+// requested captures that could not be loaded or observed in the window.
 type Scene struct {
-	Name string
-	Runs []Run
+	Name        string
+	Runs        []Run
+	MissingRuns int
 }
 
 // SceneResult is a scene after aggregating its runs.

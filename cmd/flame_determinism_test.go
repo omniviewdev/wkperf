@@ -113,9 +113,41 @@ func TestFlameAroundLongTaskSharesAnalyzeClassificationAndWindow(t *testing.T) {
 	}
 }
 
+func TestFlameAroundLongTaskUnionsNestedRecords(t *testing.T) {
+	path := flameInput(t, t.TempDir(), "nested.json", false)
+	rec, err := model.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.Records = append(rec.Records, model.Record{Type: model.TypeScript, EventType: "microtask-dispatched", StartTime: 10.51, EndTime: 10.69})
+	writeFlameJSON(t, path, rec)
+	out, err := runFlame(t, path, "--format", "json", "--around-long-task", "2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc flamereport.Document
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Charts[0].Tree.Root.TotalMs != 4 {
+		t.Fatalf("nested microtask displaced second maximal task: %s", out)
+	}
+	if _, err := runFlame(t, path, "--format", "json", "--around-long-task", "3"); err == nil {
+		t.Fatal("nested microtask must not create a third task")
+	}
+}
+
 func TestFlameFocusGeneratedMappedSelectorsAndCandidates(t *testing.T) {
 	dir := t.TempDir()
 	path := flameInput(t, dir, "input.json", false)
+	capture, loadErr := model.Load(path)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	for i := range capture.Samples[0].StackTraces {
+		capture.Samples[0].StackTraces[i].StackFrames[0].Column = 2
+	}
+	writeFlameJSON(t, path, capture)
 	mapPath := filepath.Join(dir, "bundle.js.map")
 	if err := os.WriteFile(mapPath, []byte(`{"version":3,"file":"bundle.js","sources":["src/original.ts"],"names":["originalWork"],"mappings":"AAAAA"}`), 0o644); err != nil {
 		t.Fatal(err)
@@ -140,7 +172,7 @@ func TestFlameFocusGeneratedMappedSelectorsAndCandidates(t *testing.T) {
 	if mapped == nil {
 		t.Fatal("mapped source metadata missing")
 	}
-	for _, selector := range []string{"work", "originalWork", "bundle.js:1:1", fmt.Sprintf("%s:%d:%d", mapped.URL, mapped.Line, mapped.Column)} {
+	for _, selector := range []string{"work", "originalWork", "bundle.js:1:2", fmt.Sprintf("%s:%d:%d", mapped.URL, mapped.Line, mapped.Column)} {
 		out, err := runFlame(t, path, "--format", "json", "--sourcemap", mapPath, "--focus", selector)
 		if err != nil {
 			t.Fatalf("%s: %v", selector, err)

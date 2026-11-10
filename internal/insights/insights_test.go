@@ -67,7 +67,7 @@ func TestBreakdownNoDoubleCount(t *testing.T) {
 		got[s.Name] = s.Ms
 		sum += s.Pct
 	}
-	want := map[string]float64{"GC": 40, "Script": 50, "Layout": 60, "Idle": 50}
+	want := map[string]float64{"Script": 50, "Layout": 100, "Idle": 50}
 	for k, v := range want {
 		if math.Abs(got[k]-v) > 1e-6 {
 			t.Errorf("%s = %v, want %v", k, got[k], v)
@@ -86,7 +86,7 @@ func TestBreakdownOtherIsUnclaimedFrameTime(t *testing.T) {
 	for _, s := range computeBreakdown(rec) {
 		got[s.Name] = s.Ms
 	}
-	if math.Abs(got["Frame time not attributed to work"]-300) > 1e-6 || math.Abs(got["Idle"]-500) > 1e-6 {
+	if math.Abs(got["Active-frame time without instrumented main-thread work"]-300) > 1e-6 || math.Abs(got["Idle"]-500) > 1e-6 {
 		t.Errorf("got %v", got)
 	}
 }

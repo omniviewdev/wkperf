@@ -26,8 +26,10 @@ func triggerKind(event string) string {
 		return "timer"
 	case "animation-frame-fired":
 		return "rAF"
-	case "microtask-fired":
+	case profile.EventMicrotaskDispatched:
 		return "microtask"
+	case profile.EventObserverCallback:
+		return "observer"
 	}
 	return ""
 }
@@ -152,7 +154,7 @@ func idleWakeups(rec *model.Recording, tree *flame.Tree, top int) WakeupStats {
 	out := WakeupStats{Causes: []TriggerStat{}}
 	buckets := map[string]*triggerBucket{}
 	for _, f := range profile.Frames(rec, rec.StartTime, rec.EndTime) {
-		if !f.IdleGap || f.Occupancy.WorkMs <= 0 {
+		if f.Class != profile.FrameIdleGap || f.Occupancy.WorkMs <= 0 {
 			continue
 		}
 		out.Count++
@@ -186,12 +188,12 @@ func idleWakeups(rec *model.Recording, tree *flame.Tree, top int) WakeupStats {
 	return out
 }
 
-func sampleCoverage(rec *model.Recording, sum *metrics.Summary) SampleCoverage {
+func sampleCoverage(sum *metrics.Summary, scriptMs float64) SampleCoverage {
 	c := SampleCoverage{SampleCount: sum.Fixture.SampleCount, Interpretation: "Sample weights estimate execution time; coverage may exceed 1 because weights are estimates and measured script time is exclusive. Coverage is not a causal attribution."}
 	for _, f := range sum.Functions {
 		c.SampledMs += f.SelfMs
 	}
-	c.ScriptMs = profile.Measure(rec, rec.StartTime, rec.EndTime).ScriptMs
+	c.ScriptMs = scriptMs
 	if c.ScriptMs > 0 {
 		c.Available = true
 		c.Ratio = c.SampledMs / c.ScriptMs

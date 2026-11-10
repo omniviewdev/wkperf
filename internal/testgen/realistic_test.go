@@ -9,7 +9,7 @@ import (
 )
 
 func TestWrappedEmissionAndRealisticFixtures(t *testing.T) {
-	for _, rec := range []*model.Recording{IdleMinified(), DeepMinified(), GetAnimations(), React(), Periodic(), PausedMinified(), UntimedSamples(), DecimalEnd()} {
+	for _, rec := range []*model.Recording{IdleMinified(), DeepMinified(), GetAnimations(), React(), Periodic(), PausedMinified(), UntimedSamples(), DecimalEnd(), NestedRecords(), InputStallFrames(), GCOverlay(), ThresholdFrames(), ExclusiveFindingCosts()} {
 		var out bytes.Buffer
 		if err := Write(&out, rec, true); err != nil {
 			t.Fatal(err)

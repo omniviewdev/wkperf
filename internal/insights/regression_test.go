@@ -29,7 +29,7 @@ func TestIdleGapsAreNotJankOrUnattributedWork(t *testing.T) {
 		if s.Name == "Idle" {
 			idle = s.Ms
 		}
-		if s.Name == "Frame time not attributed to work" {
+		if s.Name == "Active-frame time without instrumented main-thread work" {
 			unattributed = s.Ms
 		}
 	}
@@ -117,7 +117,7 @@ func TestTriggerSamplesStayInsideIntervals(t *testing.T) {
 	r := &model.Recording{EndTime: 2, Records: []model.Record{
 		script("event-dispatched", 0.1, 0.2, "click"),
 		script("animation-frame-fired", 0.3, 0.31, ""),
-		script("microtask-fired", 0.4, 0.42, ""),
+		script("microtask-dispatched", 0.4, 0.42, ""),
 	}, Samples: []model.TargetSamples{{StackTraces: []model.StackTrace{
 		{Timestamp: 0.15, StackFrames: []model.StackFrame{{Name: "clickWork", URL: "app.js"}}},
 		{Timestamp: 0.2, StackFrames: []model.StackFrame{{Name: "outside", URL: "app.js"}}},

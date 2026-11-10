@@ -26,6 +26,7 @@ Rules:
 - If results are marked noisy, low-confidence or single-run, say so explicitly. A scene with one run has no variance estimate.
 - Verification plan: for each recommendation name the scorecard standard IDs and metric keys that must move, in which direction and roughly by how much, and which scenes to re-capture (name them) before re-running the audit.
 - If the data was truncated, say which conclusions may be affected.
+- A grade of n/a or a partial score means insufficient evidence, not a healthy scene. State coverage and unavailable-standard reasons. GC collector intervals are not measured main-thread pauses; input-stall intervals are not measured blocking work.
 
 Output Markdown with exactly these top-level sections, in this order:
 ## Summary
@@ -77,7 +78,14 @@ func auditSections(a *audit.Report, c Context) []section {
 		if a.Overall == nil {
 			b.WriteString("Not available.\n")
 		} else {
-			fmt.Fprintf(&b, "Grade %s, score %s/100 (median across %d scene(s)).\n", a.Overall.Grade, num(a.Overall.Score), len(a.Scenes))
+			label := "score"
+			if a.Overall.Partial {
+				label = "partial score"
+			}
+			fmt.Fprintf(&b, "Grade %s, %s %s/100, %s%% coverage (median across %d scene(s)).\n", a.Overall.Grade, label, num(a.Overall.Score), num(100*a.Overall.Coverage), len(a.Scenes))
+			if a.Overall.Partial {
+				b.WriteString("Overall grade unavailable: insufficient data. Available standards do not establish overall health.\n")
+			}
 			if len(a.Overall.Gap) == 0 {
 				b.WriteString("All available standards are rated good.\n")
 			} else {
@@ -90,7 +98,11 @@ func auditSections(a *audit.Report, c Context) []section {
 			var notes []string
 			for _, r := range a.Overall.Results {
 				if r.Rating == scorecard.Unavailable {
-					notes = append(notes, r.ID)
+					note := r.ID
+					if r.Detail != "" {
+						note += ": " + clip(oneLine(r.Detail), 300)
+					}
+					notes = append(notes, note)
 				}
 			}
 			if len(notes) > 0 {
@@ -127,15 +139,19 @@ func auditSections(a *audit.Report, c Context) []section {
 		var b strings.Builder
 		b.WriteString("## Scene leaderboard (worst first)\n")
 		for _, s := range limitSlice(a.Scenes, capTopN) {
-			grade, score := "n/a", "n/a"
+			grade, score, scoreLabel, coverage := "n/a", "n/a", "score", "n/a"
 			var gaps []string
 			if s.Card != nil {
 				grade, score = s.Card.Grade, num(s.Card.Score)
+				coverage = num(100*s.Card.Coverage) + "% coverage"
+				if s.Card.Partial {
+					scoreLabel = "partial score"
+				}
 				for _, g := range limitSlice(s.Card.Gap, 3) {
 					gaps = append(gaps, fmt.Sprintf("%s=%s(%s)", g.ID, num(g.Value), g.Rating))
 				}
 			}
-			fmt.Fprintf(&b, "- %s: grade %s, score %s, %d run(s), %ss", clip(oneLine(s.Name), 80), grade, score, s.Runs, num(s.DurationSec))
+			fmt.Fprintf(&b, "- %s: grade %s, %s %s, %s, %d run(s), %ss", clip(oneLine(s.Name), 80), grade, scoreLabel, score, coverage, s.Runs, num(s.DurationSec))
 			if s.TopFinding != "" {
 				fmt.Fprintf(&b, ", top finding: %s", clip(oneLine(s.TopFinding), 120))
 			}
@@ -211,6 +227,7 @@ func auditSections(a *audit.Report, c Context) []section {
 	for i, scene := range limitSlice(a.Scenes, c.TopN) {
 		if scene.Rep != nil {
 			secs = append(secs, rootCauseSections("scene "+clip(oneLine(scene.Name), 80), scene.Rep.RootCause, c, vAuditPriorities-i)...)
+			secs = append(secs, measurementSections("scene "+clip(oneLine(scene.Name), 80), scene.Rep, c, vAuditPriorities-i)...)
 			secs = append(secs, stackAppendixSection("scene "+clip(oneLine(scene.Name), 80), scene.Rep, vAuditPriorities-i+1))
 		}
 	}

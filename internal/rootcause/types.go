@@ -136,7 +136,7 @@ type PeriodicRoot struct {
 	SampleStatus  string      `json:"sampleStatus,omitempty"`
 }
 
-// EventOverlap measures only temporal intersection with an instrumented GC pause.
+// EventOverlap measures temporal intersection with a collector interval, not a main-thread pause.
 type EventOverlap struct {
 	Event     string  `json:"event"`
 	FromSec   float64 `json:"fromSec"`
@@ -219,6 +219,8 @@ type Report struct {
 	LongTasksTotal      int            `json:"longTasksTotal"`
 	SlowFrames          []Window       `json:"slowFrames"`
 	SlowFramesTotal     int            `json:"slowFramesTotal"`
+	InputStalls         []Window       `json:"inputStalls"`
+	InputStallsTotal    int            `json:"inputStallsTotal"`
 	EventBursts         []Window       `json:"eventBursts"`
 	EventBurstsTotal    int            `json:"eventBurstsTotal"`
 	Depth               DepthStats     `json:"depth"`

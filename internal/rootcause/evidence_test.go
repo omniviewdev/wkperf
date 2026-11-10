@@ -117,12 +117,12 @@ func TestCapturePauseUsesSharedActiveTimeAndExcludesSamplerPoints(t *testing.T) 
 	if len(report.LongTasks) != 1 {
 		t.Fatalf("active long task missing: %+v", report.LongTasks)
 	}
-	near(t, report.LongTasks[0].DurationMs, 140)
+	near(t, report.LongTasks[0].DurationMs, 120)
 	if len(report.SlowFrames) != 0 {
 		t.Fatal("pause-spanning frame used as latency evidence")
 	}
 	if len(report.GCOverlaps) != 1 {
-		t.Fatal("active GC pause absent")
+		t.Fatal("active collector interval absent")
 	}
 	near(t, report.GCOverlaps[0].DurationMs, 10)
 }
@@ -131,7 +131,7 @@ func TestEventBurstsHaveWindowAndExactSampleEvidence(t *testing.T) {
 	r := recording()
 	for i := range 4 {
 		at := .1 + float64(i)*.01
-		event(r, "microtask-fired", at, at+.004)
+		event(r, "microtask-dispatched", at, at+.004)
 		sample(r, at+.001, 2, app("burstRoot"), app("flush"))
 	}
 	report := build(r)

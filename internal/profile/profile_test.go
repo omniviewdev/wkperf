@@ -25,7 +25,7 @@ func TestExclusiveOccupancyAndPausedIntervals(t *testing.T) {
 	if !closeTo(ActiveDuration(rec, 0, 1), .8) || !closeTo(o.DurationMs, 800) || !closeTo(o.WorkMs, 800) {
 		t.Fatalf("paused or duplicate work counted: %+v", o)
 	}
-	if !closeTo(o.ScriptMs, 450) || !closeTo(o.StyleMs, 100) || !closeTo(o.LayoutMs, 100) || !closeTo(o.PaintMs, 50) || !closeTo(o.CompositeMs, 50) || !closeTo(o.GCMs, 50) {
+	if !closeTo(o.ScriptMs, 500) || !closeTo(o.StyleMs, 100) || !closeTo(o.LayoutMs, 100) || !closeTo(o.PaintMs, 50) || !closeTo(o.CompositeMs, 50) || !closeTo(o.GCMs, 50) || !closeTo(o.GCOverlapWithWorkMs, 50) {
 		t.Fatalf("exclusive categories: %+v", o)
 	}
 }
@@ -40,7 +40,7 @@ func TestIdleGapInputAndPauseFrames(t *testing.T) {
 		{Type: model.TypeRenderingFrame, StartTime: 2, EndTime: 4},
 	}}
 	fs := Frames(rec, 0, 4)
-	if len(fs) != 2 || !fs[0].IdleGap || fs[0].DominantTrigger != "timer-fired" || fs[1].IdleGap {
+	if len(fs) != 2 || fs[0].Class != FrameIdleGap || fs[0].DominantTrigger != "timer-fired" || fs[1].Class != FrameInputStall {
 		t.Fatalf("idle/input/pause classification: %+v", fs)
 	}
 	if !closeTo(fs[0].Occupancy.WorkMs, 10) {

@@ -49,10 +49,12 @@ func SelectEvidence(report *Report, top int) *Report {
 	r.Depth.Outliers = head(r.Depth.Outliers, top)
 	r.LongTasksTotal = max(r.LongTasksTotal, len(r.LongTasks))
 	r.SlowFramesTotal = max(r.SlowFramesTotal, len(r.SlowFrames))
+	r.InputStallsTotal = max(r.InputStallsTotal, len(r.InputStalls))
 	r.EventBurstsTotal = max(r.EventBurstsTotal, len(r.EventBursts))
-	r.WindowsTotal = max(r.WindowsTotal, len(r.Windows), r.LongTasksTotal+r.SlowFramesTotal+r.EventBurstsTotal)
+	r.WindowsTotal = max(r.WindowsTotal, len(r.Windows), r.LongTasksTotal+r.SlowFramesTotal+r.InputStallsTotal+r.EventBurstsTotal)
 	r.LongTasks = head(r.LongTasks, top)
 	r.SlowFrames = head(r.SlowFrames, top)
+	r.InputStalls = head(r.InputStalls, top)
 	r.EventBursts = head(r.EventBursts, top)
 	r.Windows = head(r.Windows, top)
 	return &r

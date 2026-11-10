@@ -63,6 +63,14 @@ func Document() map[string]any {
 			"frames":              "Canonical generated function catalog, ordered by name, URL, line and column. Frame indices are zero-based within this report.",
 			"stacks":              "Exact root-to-leaf stacks stored once, keyed by canonical n_ path selectors. Detailed lists are top-N; their Total fields count all measured rows.",
 			"moreEvidenceCommand": "Explicit analyze rerun with a larger top limit that reveals omitted structured evidence; source maps, selected window and analysis options are preserved.",
+			"gcMs":                "Union of observed GC collector intervals, in milliseconds. Concurrent collector time is an overlay, not an exclusive main-thread work slice or a measured pause.",
+			"gcOverlapWithWorkMs": "Intersection of the GC collector union with instrumented main-thread work, in milliseconds. This overlap does not establish blocking.",
+			"inputStalls":         "Selected input-driven rendering intervals above the fixed 16.7 ms budget with at most one budget of instrumented work. Excluded from work-bound frame statistics and jank.",
+			"inputStallsTotal":    "Complete count of observed input stalls before the shared evidence limit.",
+			"slowFramesTotal":     "Complete count of work-bound slow frames before the shared evidence limit.",
+			"longTasksTotal":      "Complete count of maximal overlapping script tasks above longTaskMs before the shared evidence limit.",
+			"jankMs":              "Configurable threshold for slow-frame selection and finding evidence. Fixed scorecard frame standards and frames.jank_ratio remain at 16.7 ms.",
+			"longTaskMs":          "Configurable threshold for selected long tasks and finding evidence. Fixed long-task scorecard standards remain at 50 ms.",
 		},
 		"insights_CatalogStack": {
 			"frames": "Zero-based indices into this report's frames catalog, in exact root-to-leaf order. No stack depth truncation is applied.",
@@ -101,10 +109,31 @@ func Document() map[string]any {
 			"untimedSpans":       "Export-order inferred spans for labels only; never used for time-based attribution.",
 		},
 		"insights_SlowFrame": {
-			"sampleStatus": "Limit on timed attribution when substantial sampled weight has no timestamp.",
+			"workMs":              "Exclusive instrumented main-thread work within the active frame; excludes the GC collector overlay.",
+			"gcMs":                "Observed GC collector interval union overlapping the frame, not a measured pause or an exclusive work category.",
+			"gcOverlapWithWorkMs": "GC collector interval overlap with instrumented main-thread work within the frame.",
+			"sampleStatus":        "Limit on timed attribution when substantial sampled weight has no timestamp.",
+		},
+		"insights_InputStall": {
+			"t":            "Observed interval start, in seconds from the analyzed recording start.",
+			"ms":           "Observed input-driven rendering interval length; not measured main-thread blocking time.",
+			"workMs":       "Instrumented main-thread work in this interval, at most the fixed 16.7 ms frame budget and excluding GC collector intervals.",
+			"sampleStatus": "Limits on sampled attribution. Unknown-clock samples never imply time-based causality.",
+		},
+		"insights_WireRootReport": {
+			"inputStalls":      "Selected input-stall windows, kept separately from work-bound slow frames and ranked worst-work windows.",
+			"inputStallsTotal": "Complete input-stall window count before the shared evidence limit.",
+		},
+		"scorecard_Scorecard": {
+			"coverage": "Available standard weight divided by total weight. Aggregates retain the mean coverage of their child runs or scenes.",
+			"partial":  "True when data is insufficient for an overall grade, including any ungraded child run or scene in an aggregate.",
+			"score":    "Available-weight numeric score. This is a partial score, not an overall health grade, whenever partial is true.",
+			"grade":    "Overall letter grade or n/a. A grade is unavailable below 50% standard coverage or when all three frame standards are unavailable; partial aggregates also remain n/a.",
 		},
 		"insights_LongTask": {
-			"sampleStatus": "Limit on timed attribution when substantial sampled weight has no timestamp.",
+			"sampleStatus":  "Limit on timed attribution when substantial sampled weight has no timestamp.",
+			"children":      "Selected sorted unique nested event types within this maximal overlapping script task. The shared evidence limit applies; nested records do not count as separate tasks.",
+			"childrenTotal": "Complete count of unique nested event types before the shared evidence limit.",
 		},
 		"flame_Tree": {
 			"untimed":         "Included samples without usable timestamps; timestamp values in this separate array must not be interpreted as times.",
@@ -138,6 +167,9 @@ func Document() map[string]any {
 			properties[field].(map[string]any)["description"] = description
 		}
 	}
+	cardProperties := b.definitions["scorecard_Scorecard"].(map[string]any)["properties"].(map[string]any)
+	coverage := cardProperties["coverage"].(map[string]any)
+	coverage["minimum"], coverage["maximum"] = float64(0), float64(1)
 	return map[string]any{
 		"$schema":     "https://json-schema.org/draft/2020-12/schema",
 		"$id":         "https://wkperf.dev/schema/output.json",

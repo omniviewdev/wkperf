@@ -65,6 +65,8 @@ func RequestSchema(operation string) map[string]any {
 		}
 	}
 	properties["min_share"] = map[string]any{"type": "number", "minimum": 0, "maximum": 1, "default": .05}
+	properties["jank_ms"] = map[string]any{"type": "number", "minimum": 0, "default": 16.7, "description": "Slow-frame and findings.jank.* threshold in milliseconds; zero selects 16.7. Fixed frames.* scorecard standards remain at 16.7 ms."}
+	properties["long_task_ms"] = map[string]any{"type": "number", "minimum": 0, "default": float64(50), "description": "Maximal script-task threshold for derived finding and root-cause evidence in milliseconds; zero selects 50. Fixed long-task scorecard standards remain at 50 ms."}
 	return out
 }
 

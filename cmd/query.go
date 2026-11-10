@@ -85,8 +85,8 @@ func newQueryCmd() *cobra.Command {
 	c.Flags().Int("depth", 8, "maximum subtree depth (0 returns only selected contexts)")
 	c.Flags().Float64("min-ms", 0, "minimum subtree inclusive milliseconds")
 	c.Flags().Float64("min-share", .05, "minimum hot-path fraction of sampled time")
-	c.Flags().Float64("long-task-ms", 50, "long-task threshold for derived measurements")
-	c.Flags().Float64("jank-ms", 16.7, "slow-frame threshold for derived measurements")
+	c.Flags().Float64("long-task-ms", 50, "maximal script-task threshold for derived evidence (fixed scorecard standards remain 50 ms)")
+	c.Flags().Float64("jank-ms", 16.7, "slow active-frame/finding threshold for derived evidence (fixed frame standards remain 16.7 ms)")
 	addWindowFlags(c)
 	addSourceMapFlags(c)
 	return c

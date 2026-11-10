@@ -22,12 +22,14 @@ type ruleCtx struct {
 	slow   []SlowFrame
 	long   []LongTask
 	wallMs float64
+	costs  []profile.RecordCost
 }
 
 // evStat aggregates records of one kind.
 type evStat struct {
-	n  int
-	ms float64
+	n           int
+	ms          float64 // inclusive record time
+	exclusiveMs float64
 }
 
 type recStats struct {
@@ -114,7 +116,14 @@ func (c *ruleCtx) collect() *recStats {
 			}
 		}
 	}
+	type recordSpan struct {
+		event      string
+		start, end float64
+	}
+	forced := map[recordSpan]bool{}
+	postScript := map[recordSpan]bool{}
 	for _, r := range profile.ForcedLayoutRecords(c.rec) {
+		forced[recordSpan{r.EventType, r.StartTime, r.EndTime}] = true
 		st.forced.n++
 		st.forced.ms += profile.ActiveDuration(c.rec, r.StartTime, r.EndTime) * 1000
 		if r.EventType == "forced-layout" {
@@ -141,6 +150,7 @@ func (c *ruleCtx) collect() *recStats {
 			}
 			if follows && !inside {
 				st.afterScript.n++
+				postScript[recordSpan{r.EventType, r.StartTime, r.EndTime}] = true
 				st.afterScript.ms += profile.ActiveDuration(c.rec, r.StartTime, r.EndTime) * 1000
 			}
 		}
@@ -148,6 +158,29 @@ func (c *ruleCtx) collect() *recStats {
 	for _, f := range c.sum.Functions {
 		st.selfTotalMs += f.SelfMs
 	}
+	for _, cost := range c.costs {
+		r := cost.Record
+		switch r.Type {
+		case model.TypeScript:
+			get(st.script, r.EventType).exclusiveMs += cost.ExclusiveMs
+			if r.EventType == "event-dispatched" {
+				name := stringDetail(&r)
+				if name == "" {
+					name = "(unknown)"
+				}
+				get(st.eventNames, name).exclusiveMs += cost.ExclusiveMs
+			}
+		case model.TypeLayout:
+			get(st.layout, r.EventType).exclusiveMs += cost.ExclusiveMs
+			if forced[recordSpan{r.EventType, r.StartTime, r.EndTime}] {
+				st.forced.exclusiveMs += cost.ExclusiveMs
+			}
+			if postScript[recordSpan{r.EventType, r.StartTime, r.EndTime}] {
+				st.afterScript.exclusiveMs += cost.ExclusiveMs
+			}
+		}
+	}
+	st.gc.ms = c.rep.GCMs
 	return st
 }
 
@@ -186,8 +219,8 @@ func sortedByMs(m map[string]*evStat) []string {
 		keys = append(keys, k)
 	}
 	sort.Slice(keys, func(i, j int) bool {
-		if m[keys[i]].ms != m[keys[j]].ms {
-			return m[keys[i]].ms > m[keys[j]].ms
+		if m[keys[i]].exclusiveMs != m[keys[j]].exclusiveMs {
+			return m[keys[i]].exclusiveMs > m[keys[j]].exclusiveMs
 		}
 		return keys[i] < keys[j]
 	})
@@ -211,12 +244,13 @@ func runRules(c *ruleCtx) []Finding {
 		"Limit the subtree affected by layout: use contain: layout/strict on independent regions, avoid animating geometry (width/height/top/left; use transform), keep the DOM small and virtualize long lists."))
 	add(rulePaint(c, st))
 	add(ruleJank(c))
+	add(ruleInputStall(c))
 	add(ruleRAF(c, st))
 	add(ruleTimers(c, st))
 	add(ruleEvents(c, st))
-	add(ruleScriptKind(c, st, "microtask-heavy", "Microtask / promise callbacks are heavy", []string{"microtask-fired"},
+	add(ruleScriptKind(c, st, "microtask-heavy", "Microtask / promise callbacks are heavy", []string{profile.EventMicrotaskDispatched},
 		"Promise/microtask chains run before rendering and cannot be interrupted. Break up large async loops, yield to the event loop (setTimeout/scheduler.yield) between chunks, and avoid cascading awaits over big collections."))
-	add(ruleScriptKind(c, st, "observer-callback-heavy", "Observer callbacks are heavy", []string{"observer-callback-fired"},
+	add(ruleScriptKind(c, st, "observer-callback-heavy", "Observer callbacks are heavy", []string{profile.EventObserverCallback},
 		"Observer callbacks (Resize/Intersection/Mutation) run on the main thread each frame. Make them cheap: batch the entries, avoid reading/writing layout inside them, debounce, and disconnect observers that are no longer needed."))
 	add(ruleGC(c, st))
 	add(ruleMemory(c))
@@ -260,34 +294,34 @@ func ruleForcedLayout(c *ruleCtx, st *recStats) *Finding {
 	}
 	ev := []string{
 		fmt.Sprintf("%d explicit forced-layout records; %d layout records start inside script spans", st.forcedExplicit, st.forced.n-st.forcedExplicit),
-		fmt.Sprintf("%sms measured layout time; overlap suggests synchronous work, not proof of repeated DOM read/write thrashing", f1(st.forced.ms)),
+		fmt.Sprintf("%sms exclusive layout cost; %sms inclusive record time; overlap suggests synchronous work, not proof of repeated DOM read/write thrashing", f1(st.forced.exclusiveMs), f1(st.forced.ms)),
 	}
-	f := c.finding("forced-layout", "Synchronous layout evidence", "layout", st.forced.ms, ev,
+	f := c.finding("forced-layout", "Synchronous layout evidence", "layout", st.forced.exclusiveMs, ev,
 		"Inspect the implicated script spans for layout reads after DOM writes. Batch layout reads before writes, reduce style invalidation, and verify with an explicit forced-layout trace before claiming layout thrashing.")
 	return &f
 }
 
 func ruleLayoutAfterScript(c *ruleCtx, st *recStats) *Finding {
-	if st.afterScript.n == 0 || c.pct(st.afterScript.ms) < 5 {
+	if st.afterScript.n == 0 || c.pct(st.afterScript.exclusiveMs) < 5 {
 		return nil
 	}
-	ev := []string{fmt.Sprintf("%d layout/style records begin after script ends within a frame; %sms measured rendering time", st.afterScript.n, f1(st.afterScript.ms)),
+	ev := []string{fmt.Sprintf("%d layout/style records begin after script ends within a frame; %sms exclusive rendering cost; %sms inclusive record time", st.afterScript.n, f1(st.afterScript.exclusiveMs), f1(st.afterScript.ms)),
 		"Rendering after script is a normal browser phase, not evidence of forced synchronous layout."}
-	f := c.finding("layout-after-script", "Rendering after script is costly", "layout", st.afterScript.ms, ev,
+	f := c.finding("layout-after-script", "Rendering after script is costly", "layout", st.afterScript.exclusiveMs, ev,
 		"Inspect style invalidation from the preceding trigger: reduce the changed subtree, batch DOM mutations, and use containment where appropriate. Do not treat normal post-script rendering as forced layout.")
 	return &f
 }
 
 func ruleLayoutKind(c *ruleCtx, st *recStats, id, title, kind, sug string) *Finding {
 	s := st.layout[kind]
-	if s == nil || c.pct(s.ms) < 5 {
+	if s == nil || c.pct(s.exclusiveMs)+1e-9 < 5 {
 		return nil
 	}
-	ev := []string{fmt.Sprintf("%d %s records, %sms total (%s%% of wall time)", s.n, kind, f1(s.ms), f1(c.pct(s.ms)))}
-	if s.n > 0 {
-		ev = append(ev, fmt.Sprintf("mean %sms per record", f1(s.ms/float64(s.n))))
+	ev := []string{
+		fmt.Sprintf("%d %s records, %sms exclusive cost (%s%% of wall time)", s.n, kind, f1(s.exclusiveMs), f1(c.pct(s.exclusiveMs))),
+		fmt.Sprintf("%sms inclusive record time (nested work overlaps other categories)", f1(s.ms)),
 	}
-	f := c.finding(id, title, "layout", s.ms, ev, sug)
+	f := c.finding(id, title, "layout", s.exclusiveMs, ev, sug)
 	return &f
 }
 
@@ -296,36 +330,39 @@ func rulePaint(c *ruleCtx, st *recStats) *Finding {
 	if p == nil {
 		return nil
 	}
-	if c.pct(p.ms) < 5 && st.paintQuads < 3 {
+	if c.pct(p.exclusiveMs)+1e-9 < 5 && st.paintQuads < 3 {
 		return nil
 	}
-	ev := []string{fmt.Sprintf("%d paints, %sms total (%s%% of wall time)", p.n, f1(p.ms), f1(c.pct(p.ms)))}
+	ev := []string{
+		fmt.Sprintf("%d paints, %sms exclusive cost (%s%% of wall time)", p.n, f1(p.exclusiveMs), f1(c.pct(p.exclusiveMs))),
+		fmt.Sprintf("%sms inclusive record time (nested work overlaps other categories)", f1(p.ms)),
+	}
 	if st.maxQuad > 0 {
 		ev = append(ev, fmt.Sprintf("largest painted area %.0f px² (%d paints over %d px²)", st.maxQuad, st.paintQuads, largeQuadPx))
 	}
-	f := c.finding("paint-heavy", "Painting is heavy", "paint", p.ms, ev,
+	f := c.finding("paint-heavy", "Painting is heavy", "paint", p.exclusiveMs, ev,
 		"Reduce repaint area: avoid full-surface invalidation, replace expensive effects (box-shadow, filter, blur, gradients) with cheaper ones, and use contain: paint to scope repaints. Promote only truly animating elements to their own layer with will-change: transform, sparingly, since every layer costs memory.")
 	return &f
 }
 
 func ruleJank(c *ruleCtx) *Finding {
 	var frames []float64
+	janky, workExcess, intervalExcess := 0, 0.0, 0.0
 	for _, frame := range profile.Frames(c.rec, c.rec.StartTime, c.rec.EndTime) {
-		if !frame.IdleGap {
-			frames = append(frames, frame.DurationMs)
+		if frame.Class != profile.FrameActive {
+			continue
+		}
+		frames = append(frames, frame.DurationMs)
+		if frame.DurationMs > c.opt.JankMs {
+			janky++
+			workExcess += math.Max(0, frame.Occupancy.WorkMs-c.opt.JankMs)
+			intervalExcess += frame.DurationMs - c.opt.JankMs
 		}
 	}
 	if len(frames) == 0 {
 		return nil
 	}
 	p95 := analyze.Percentile(frames, 95)
-	janky, excess := 0, 0.0
-	for _, v := range frames {
-		if v > c.opt.JankMs {
-			janky++
-			excess += v - c.opt.JankMs
-		}
-	}
 	ratio := float64(janky) / float64(len(frames))
 	if p95 <= c.opt.JankMs || ratio < 0.05 {
 		return nil
@@ -336,19 +373,59 @@ func ruleJank(c *ruleCtx) *Finding {
 		ly += f.LayoutMs
 		pt += f.PaintMs
 	}
-	cause, cm, sug := "script", sc, "Frames are dominated by JavaScript: shorten the event handlers and per-frame callbacks listed under slow frames, defer non-visual work, and move computation off the main thread."
+	cause, cm, sug := "script", sc, "Measured work in slow active frames is dominated by JavaScript: shorten the listed handlers and callbacks, defer non-visual work, and move computation off the main thread."
 	if ly > cm {
-		cause, cm, sug = "layout/style", ly, "Frames are dominated by layout/style: avoid layout thrashing, shrink the affected DOM subtree (contain: layout), and animate transform/opacity instead of geometry."
+		cause, cm, sug = "layout/style", ly, "Measured work in slow active frames is dominated by layout/style: reduce style invalidation, shrink the affected DOM subtree, and animate transform/opacity instead of geometry. Only synchronous layout evidence supports a forced-layout claim."
 	}
 	if pt > cm {
-		cause, cm, sug = "paint/composite", pt, "Frames are dominated by paint/composite: reduce repaint area, simplify effects (shadows, filters), and use layers sparingly via will-change/contain."
+		cause, cm, sug = "paint/composite", pt, "Measured work in slow active frames is dominated by paint/composite: reduce repaint area, simplify effects, and use layers sparingly via will-change/contain."
 	}
+	if math.Max(cm, pt) == 0 {
+		cause, sug = "unestablished", "No instrumented main-thread cost explains these intervals. Inspect CPU and rendering instrumentation before attributing them to JavaScript."
+	}
+	fixedRatio, _ := c.metric("frames.jank_ratio")
 	ev := []string{
-		fmt.Sprintf("frame time p95 %sms vs %sms budget", f1(p95), f1(c.opt.JankMs)),
-		fmt.Sprintf("%d of %d frames over budget (%s%%)", janky, len(frames), f1(ratio*100)),
-		fmt.Sprintf("dominant cause across slow frames: %s (script %sms, layout %sms, paint %sms)", cause, f1(sc), f1(ly), f1(pt)),
+		fmt.Sprintf("active rendering interval p95 %sms vs configured %sms threshold", f1(p95), f1(c.opt.JankMs)),
+		fmt.Sprintf("%d of %d active frames over threshold (%s%%); idle gaps and input stalls excluded", janky, len(frames), f1(ratio*100)),
+		fmt.Sprintf("dominant measured cost across slow frames: %s (script %sms, layout/style %sms, paint/composite %sms)", cause, f1(sc), f1(ly), f1(pt)),
+		fmt.Sprintf("%sms exclusive work excess; %sms observed interval excess (not main-thread work)", f1(workExcess), f1(intervalExcess)),
+		fmt.Sprintf("scorecard and frames.jank_ratio use fixed 16.7ms budget: %s%% over budget", f1(fixedRatio*100)),
 	}
-	f := c.finding("jank", "Janky frames (rendering over budget)", "frames", excess, ev, sug)
+	f := c.finding("jank", "Work-bound janky frames", "frames", workExcess, ev, sug)
+	for _, metric := range []struct {
+		key         string
+		value       float64
+		unit        metrics.Unit
+		description string
+	}{
+		{"findings.jank.ratio", ratio, metrics.UnitRatio, fmt.Sprintf("Active-frame interval ratio over configured %.6gms threshold", c.opt.JankMs)},
+		{"findings.jank.threshold_ms", c.opt.JankMs, metrics.UnitMs, "Configured finding threshold; fixed scorecard standards remain 16.7ms"},
+		{"findings.jank.interval_excess_ms", intervalExcess, metrics.UnitMs, "Observed active-frame interval excess; not measured main-thread work"},
+	} {
+		f.NumericEvidence = append(f.NumericEvidence, Evidence{MetricKey: metric.key, Value: metric.value, Unit: metric.unit, Description: metric.description, Basis: "measured", Command: metricCommand(c, metric.key)})
+	}
+	return &f
+}
+
+func ruleInputStall(c *ruleCtx) *Finding {
+	stalls := c.rep.InputStalls
+	if len(stalls) == 0 {
+		return nil
+	}
+	total, work := 0.0, 0.0
+	for _, stall := range stalls {
+		total += stall.Ms
+		work += stall.WorkMs
+	}
+	worst := stalls[0]
+	ev := []string{
+		fmt.Sprintf("%d input-driven rendering stalls, %sms observed intervals; %sms measured main-thread work", len(stalls), f1(total), f1(work)),
+		fmt.Sprintf("input received, no rendering update for %sms; main thread did %.6gms of instrumented work in the longest interval", f1(worst.Ms), worst.WorkMs),
+		fmt.Sprintf("each interval exceeds the fixed %sms frame budget with at most one budget of work; excluded from work-bound jank and frame statistics", f1(profile.FrameBudgetMs)),
+		"Observed stall duration is not measured main-thread blocking time; collector intervals do not count as main-thread work.",
+	}
+	f := c.finding("input-stall", "Rendering stalls during input with little measured work", "frames", total, ev,
+		"Inspect awaited async work, IPC, and suppressed rendering. Check main-thread CPU before attributing the stall to uninstrumented work; this evidence does not show expensive JavaScript.")
 	return &f
 }
 
@@ -357,12 +434,12 @@ func ruleRAF(c *ruleCtx, st *recStats) *Finding {
 	if s == nil || s.n == 0 {
 		return nil
 	}
-	mean := s.ms / float64(s.n)
-	if c.pct(s.ms) < 10 && mean <= 8 {
+	mean := s.exclusiveMs / float64(s.n)
+	if c.pct(s.exclusiveMs) < 10 && mean <= 8 {
 		return nil
 	}
-	ev := []string{fmt.Sprintf("%d animation-frame callbacks, %sms total, mean %sms (%s%% of wall time)", s.n, f1(s.ms), f1(mean), f1(c.pct(s.ms)))}
-	f := c.finding("raf-load", "requestAnimationFrame callbacks are expensive", "script", s.ms, ev,
+	ev := []string{fmt.Sprintf("%d animation-frame callbacks, %sms exclusive cost, mean %sms (%s%% of wall time); %sms inclusive record time", s.n, f1(s.exclusiveMs), f1(mean), f1(c.pct(s.exclusiveMs)), f1(s.ms))}
+	f := c.finding("raf-load", "requestAnimationFrame callbacks are expensive", "script", s.exclusiveMs, ev,
 		"Keep rAF callbacks under ~8ms: do only visual updates, precompute outside the callback, avoid allocating per frame, cancel loops when content is offscreen or idle, and merge multiple rAF loops into one.")
 	return &f
 }
@@ -375,7 +452,7 @@ func ruleTimers(c *ruleCtx, st *recStats) *Finding {
 	fired, inst := 0, 0
 	ms := 0.0
 	if s := st.script["timer-fired"]; s != nil {
-		fired, ms = s.n, s.ms
+		fired, ms = s.n, s.exclusiveMs
 	}
 	if s := st.script["timer-installed"]; s != nil {
 		inst = s.n
@@ -392,35 +469,39 @@ func ruleTimers(c *ruleCtx, st *recStats) *Finding {
 
 func ruleEvents(c *ruleCtx, st *recStats) *Finding {
 	s := st.script["event-dispatched"]
-	if s == nil || c.pct(s.ms) < 5 {
+	if s == nil || c.pct(s.exclusiveMs) < 5 {
 		return nil
 	}
 	var ev []string
-	ev = append(ev, fmt.Sprintf("%d events, %sms total (%s%% of wall time)", s.n, f1(s.ms), f1(c.pct(s.ms))))
+	ev = append(ev, fmt.Sprintf("%d events, %sms exclusive cost (%s%% of wall time); %sms inclusive record time", s.n, f1(s.exclusiveMs), f1(c.pct(s.exclusiveMs)), f1(s.ms)))
 	for i, k := range sortedByMs(st.eventNames) {
 		if i >= 3 {
 			break
 		}
 		e := st.eventNames[k]
-		ev = append(ev, fmt.Sprintf("%s: %d dispatches, %sms (mean %sms)", k, e.n, f1(e.ms), f1(e.ms/float64(e.n))))
+		ev = append(ev, fmt.Sprintf("%s: %d dispatches, %sms exclusive cost; %sms inclusive record time", k, e.n, f1(e.exclusiveMs), f1(e.ms)))
 	}
-	f := c.finding("event-handler-heavy", "Event handlers are heavy", "script", s.ms, ev,
+	f := c.finding("event-handler-heavy", "Event handlers are heavy", "script", s.exclusiveMs, ev,
 		"Throttle or debounce high-frequency handlers (mousemove, pointermove, scroll, resize, input) to once per animation frame, mark scroll/touch listeners passive, use event delegation instead of per-element listeners, and keep handlers short by deferring heavy work.")
 	return &f
 }
 
 func ruleScriptKind(c *ruleCtx, st *recStats, id, title string, kinds []string, sug string) *Finding {
-	ms, n := 0.0, 0
+	ms, inclusiveMs, n := 0.0, 0.0, 0
 	for _, k := range kinds {
 		if s := st.script[k]; s != nil {
-			ms += s.ms
+			ms += s.exclusiveMs
+			inclusiveMs += s.ms
 			n += s.n
 		}
 	}
 	if n == 0 || c.pct(ms) < 3 {
 		return nil
 	}
-	ev := []string{fmt.Sprintf("%d %s callbacks, %sms total (%s%% of wall time)", n, strings.Join(kinds, "/"), f1(ms), f1(c.pct(ms)))}
+	ev := []string{fmt.Sprintf("%d %s callbacks, %sms exclusive cost (%s%% of wall time); %sms inclusive record time", n, strings.Join(kinds, "/"), f1(ms), f1(c.pct(ms)), f1(inclusiveMs))}
+	if id == "microtask-heavy" {
+		ev = append(ev, "Microtask checkpoints can nest inside dispatches and timers; inclusive record time overlaps event/timer time.")
+	}
 	f := c.finding(id, title, "script", ms, ev, sug)
 	return &f
 }
@@ -438,7 +519,10 @@ func ruleGC(c *ruleCtx, st *recStats) *Finding {
 	if c.pct(g.ms) < 3 && !(rate >= 2 && g.n >= 3) {
 		return nil
 	}
-	ev := []string{fmt.Sprintf("%d GC pauses, %sms total (%s%% of wall time), %s/s", g.n, f1(g.ms), f1(c.pct(g.ms)), f1(rate))}
+	ev := []string{
+		fmt.Sprintf("%d GC collections, %sms collector-interval union (%s%% of wall time), %s/s", g.n, f1(g.ms), f1(c.pct(g.ms)), f1(rate)),
+		fmt.Sprintf("%sms overlaps instrumented main-thread work; collector intervals are not necessarily main-thread time", f1(c.rep.GCOverlapWithWorkMs)),
+	}
 	if n := len(c.rec.MemoryPressureEvents); n > 0 {
 		ev = append(ev, fmt.Sprintf("%d memory pressure events", n))
 	}

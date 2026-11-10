@@ -68,6 +68,11 @@ type Record struct {
 	EndTime   float64 `json:"endTime"`
 	Timestamp float64 `json:"timestamp"` // cpu, memory
 
+	// Original bounds retain record ownership when an analysis window clips a
+	// positive-duration span. A positive original span indicates provenance.
+	OriginalStartTime float64 `json:"-"`
+	OriginalEndTime   float64 `json:"-"`
+
 	Target  *Target         `json:"target,omitempty"`
 	Details json.RawMessage `json:"details,omitempty"` // script: string or object
 

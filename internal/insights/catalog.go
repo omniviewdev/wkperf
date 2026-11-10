@@ -38,6 +38,17 @@ func SelectEvidence(report *Report) *Report {
 		r.MoreEvidenceCommand = moreEvidenceCommand(report, top)
 	}
 	r.RootCause = rootcause.SelectEvidence(r.RootCause, top)
+	r.SlowFramesTotal = max(r.SlowFramesTotal, len(r.SlowFrames))
+	r.InputStallsTotal = max(r.InputStallsTotal, len(r.InputStalls))
+	r.LongTasksTotal = max(r.LongTasksTotal, len(r.LongTasks))
+	r.SlowFrames = r.SlowFrames[:min(len(r.SlowFrames), top)]
+	r.InputStalls = r.InputStalls[:min(len(r.InputStalls), top)]
+	r.LongTasks = append([]LongTask{}, r.LongTasks[:min(len(r.LongTasks), top)]...)
+	for i := range r.LongTasks {
+		task := &r.LongTasks[i]
+		task.ChildrenTotal = max(task.ChildrenTotal, len(task.Children))
+		task.Children = task.Children[:min(len(task.Children), top)]
+	}
 	r.Findings = append([]Finding{}, r.Findings...)
 	for i := range r.Findings {
 		f := &r.Findings[i]
@@ -101,7 +112,7 @@ func newCatalog(r *Report) *catalogBuilder {
 			for _, outlier := range root.Depth.Outliers {
 				c.stacks([]rootcause.Stack{outlier.Stack})
 			}
-			for _, windows := range [][]rootcause.Window{root.Windows, root.LongTasks, root.SlowFrames, root.EventBursts} {
+			for _, windows := range [][]rootcause.Window{root.Windows, root.LongTasks, root.SlowFrames, root.InputStalls, root.EventBursts} {
 				for _, window := range windows {
 					if window.HotPath != nil {
 						c.path(window.HotPath.Frames)
@@ -257,7 +268,10 @@ func moreEvidenceCommand(r *Report, top int) string {
 	if r.Source == "" {
 		return ""
 	}
-	required := top
+	required := max(top, r.SlowFramesTotal, len(r.SlowFrames), r.InputStallsTotal, len(r.InputStalls), r.LongTasksTotal, len(r.LongTasks))
+	for _, task := range r.LongTasks {
+		required = max(required, task.ChildrenTotal, len(task.Children))
+	}
 	for _, finding := range r.Findings {
 		required = max(required, finding.StacksTotal, len(finding.Stacks), len(finding.StackIDs))
 	}
@@ -265,9 +279,9 @@ func moreEvidenceCommand(r *Report, top int) string {
 		required = max(required, root.AppAttributionTotal, len(root.AppAttribution),
 			root.PeriodicRootsTotal, len(root.PeriodicRoots), root.GCOverlapsTotal, len(root.GCOverlaps),
 			root.WindowsTotal, len(root.Windows), root.LongTasksTotal, len(root.LongTasks),
-			root.SlowFramesTotal, len(root.SlowFrames), root.EventBurstsTotal, len(root.EventBursts),
+			root.SlowFramesTotal, len(root.SlowFrames), root.InputStallsTotal, len(root.InputStalls), root.EventBurstsTotal, len(root.EventBursts),
 			root.Depth.OutliersTotal, len(root.Depth.Outliers))
-		required = max(required, max(root.LongTasksTotal, len(root.LongTasks))+max(root.SlowFramesTotal, len(root.SlowFrames))+max(root.EventBurstsTotal, len(root.EventBursts)))
+		required = max(required, max(root.LongTasksTotal, len(root.LongTasks))+max(root.SlowFramesTotal, len(root.SlowFrames))+max(root.InputStallsTotal, len(root.InputStalls))+max(root.EventBurstsTotal, len(root.EventBursts)))
 		for _, attribution := range root.AppAttribution {
 			required = max(required, attribution.StacksTotal, len(attribution.Stacks))
 		}

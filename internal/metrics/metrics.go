@@ -143,7 +143,7 @@ type Summary struct {
 	IdleWakeups        []IdleWakeup `json:"idleWakeups,omitempty"`
 
 	// Series for HTML charts (not compared statistically).
-	FrameMs  []float64 `json:"frameMs,omitempty"`  // rendering frame durations in ms, chronological
+	FrameMs  []float64 `json:"frameMs,omitempty"`  // active rendering intervals, excluding idle gaps and input stalls
 	CPU      []Point   `json:"cpu,omitempty"`      // total cpu usage %
 	MemoryMB []Point   `json:"memoryMB,omitempty"` // total memory MB
 }

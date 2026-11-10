@@ -41,9 +41,11 @@ type Result struct {
 
 // Scorecard is the full rating of one recording.
 type Scorecard struct {
-	Results []Result `json:"results"`
-	Score   float64  `json:"score"` // weighted mean of available Results, 0..100
-	Grade   string   `json:"grade"` // A (>=90) B (>=75) C (>=60) D (>=40) F
+	Results  []Result `json:"results"`
+	Score    float64  `json:"score"`    // available-weight mean, 0..100; partial when no grade is supported
+	Grade    string   `json:"grade"`    // A (>=90), B (>=75), C (>=60), D (>=40), F, or n/a
+	Coverage float64  `json:"coverage"` // available standard weight / total weight; aggregates average input coverage
+	Partial  bool     `json:"partial"`  // grade unsupported by coverage/frame data, or any aggregate input lacks a grade
 	// Gap lists the available results not rated Good, worst first, with the
 	// distance to the Good threshold in the Standard's unit: "how far from a
 	// very performant UI".
@@ -62,7 +64,8 @@ type GapItem struct {
 // Implemented in scorecard.go:
 //   func Standards() []Standard
 //   func Evaluate(rec *model.Recording, rep *insights.Report) *Scorecard   // derives every metric from the recording + analysis
-//   func FromValues(values map[string]float64) *Scorecard                  // builds a Scorecard from standard-ID -> value (used to aggregate medians across runs/scenes); missing IDs => Unavailable
+//   func FromValues(values map[string]float64) *Scorecard                  // builds a Scorecard from standard-ID -> value; missing IDs => Unavailable
+//   func Aggregate(cards []*Scorecard) *Scorecard                         // per-standard medians; mean coverage, partial if any input lacks a grade
 //   func Values(c *Scorecard) map[string]float64                           // available id -> value
 // Implemented in render.go:
 //   func RenderTerm(w io.Writer, c *Scorecard, color bool) error

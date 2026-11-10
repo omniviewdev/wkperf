@@ -14,50 +14,44 @@ type findingContext struct {
 	reason string
 }
 
+// LongTaskRecords returns shared task unions with their outermost record labels.
 func LongTaskRecords(rec *model.Recording, thresholdMs float64) []model.Record {
-	if rec == nil {
-		return []model.Record{}
+	tasks := longTaskSpans(rec, thresholdMs)
+	out := make([]model.Record, len(tasks))
+	for i, task := range tasks {
+		out[i] = task.Record
 	}
+	return out
+}
+
+func longTaskSpans(rec *model.Recording, thresholdMs float64) []profile.Task {
 	if thresholdMs <= 0 {
 		thresholdMs = 50
 	}
-	type task struct {
-		record model.Record
-		ms     float64
-		detail string
-	}
-	var tasks []task
-	for _, r := range rec.Records {
-		if r.Type != model.TypeScript || profile.IsGC(r) || profile.CountOnly(r.EventType) {
-			continue
-		}
-		r.StartTime = math.Max(r.StartTime, rec.StartTime)
-		r.EndTime = math.Min(r.EndTime, rec.EndTime)
-		ms := profile.ActiveDuration(rec, r.StartTime, r.EndTime) * 1000
-		if ms > thresholdMs {
-			tasks = append(tasks, task{r, ms, detailString(&r)})
+	tasks := profile.Tasks(rec)
+	out := tasks[:0]
+	for _, task := range tasks {
+		if (task.EndTime-task.StartTime)*1000 > thresholdMs {
+			out = append(out, task)
 		}
 	}
-	sort.Slice(tasks, func(i, j int) bool {
-		a, b := tasks[i], tasks[j]
-		if a.ms != b.ms {
-			return a.ms > b.ms
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		aMs, bMs := a.EndTime-a.StartTime, b.EndTime-b.StartTime
+		if aMs != bMs {
+			return aMs > bMs
 		}
-		if a.record.StartTime != b.record.StartTime {
-			return a.record.StartTime < b.record.StartTime
+		if a.StartTime != b.StartTime {
+			return a.StartTime < b.StartTime
 		}
-		if a.record.EndTime != b.record.EndTime {
-			return a.record.EndTime < b.record.EndTime
+		if a.EndTime != b.EndTime {
+			return a.EndTime < b.EndTime
 		}
-		if a.record.EventType != b.record.EventType {
-			return a.record.EventType < b.record.EventType
+		if a.EventType != b.EventType {
+			return a.EventType < b.EventType
 		}
-		return a.detail < b.detail
+		return detailString(&a.Record) < detailString(&b.Record)
 	})
-	out := make([]model.Record, len(tasks))
-	for i, task := range tasks {
-		out[i] = task.record
-	}
 	return out
 }
 
@@ -75,9 +69,9 @@ func matchesFinding(r model.Record, id string) bool {
 	case "event-handler-heavy":
 		return r.Type == model.TypeScript && r.EventType == "event-dispatched"
 	case "microtask-heavy":
-		return r.Type == model.TypeScript && r.EventType == "microtask-fired"
+		return r.Type == model.TypeScript && r.EventType == profile.EventMicrotaskDispatched
 	case "observer-callback-heavy":
-		return r.Type == model.TypeScript && r.EventType == "observer-callback-fired"
+		return r.Type == model.TypeScript && r.EventType == profile.EventObserverCallback
 	case "style-recalc-heavy":
 		return r.Type == model.TypeLayout && isStyleEvent(r.EventType)
 	case "layout-heavy":
@@ -99,6 +93,14 @@ func contextForFinding(c *ruleCtx, f Finding) findingContext {
 	if f.ID == "jank" && len(c.slow) > 0 {
 		frame := c.slow[0]
 		return findingContext{span{c.rec.StartTime + frame.T, c.rec.StartTime + frame.T + frame.Ms/1000}, "Inspect the worst active frame; idle gaps are excluded."}
+	}
+	if f.ID == "input-stall" && len(c.rep.InputStalls) > 0 {
+		frame := c.rep.InputStalls[0]
+		return findingContext{span{c.rec.StartTime + frame.T, c.rec.StartTime + frame.T + frame.Ms/1000}, "Inspect the longest input-driven rendering stall; measured main-thread work is at most one frame budget."}
+	}
+	if f.ID == "long-tasks" && len(c.long) > 0 {
+		task := c.long[0]
+		return findingContext{span{c.rec.StartTime + task.T, c.rec.StartTime + task.T + task.Ms/1000}, "Inspect the worst overlapping script-task union; nested records count once."}
 	}
 	candidates := c.rec.Records
 	if f.ID == "forced-layout" {

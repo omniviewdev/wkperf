@@ -64,15 +64,7 @@ func median(v []float64) float64 {
 	return (s[n/2-1] + s[n/2]) / 2
 }
 
-// cardValues is the available id->value map of c (nil-safe).
-func cardValues(c *scorecard.Scorecard) map[string]float64 {
-	if c == nil {
-		return nil
-	}
-	return scorecard.Values(c)
-}
-
-// Build aggregates scenes into one Report. Scenes without runs are dropped.
+// Build aggregates scenes into one Report. Scenes with no requested runs are dropped.
 // Scenes are ordered worst score first; Top (default 10) caps the priority,
 // hotspot and module lists.
 //
@@ -88,7 +80,7 @@ func Build(scenes []Scene, o Options) *Report {
 
 	results := make([]SceneResult, 0, len(scenes))
 	for _, s := range scenes {
-		if len(s.Runs) == 0 {
+		if len(s.Runs) == 0 && s.MissingRuns == 0 {
 			continue
 		}
 		results = append(results, buildScene(s))
@@ -110,28 +102,22 @@ func Build(scenes []Scene, o Options) *Report {
 }
 
 func buildScene(s Scene) SceneResult {
-	sr := SceneResult{Name: s.Name, Runs: len(s.Runs)}
+	sr := SceneResult{Name: s.Name, Sources: []string{}, Runs: len(s.Runs)}
 
-	perStd := map[string][]float64{}
+	cards := make([]*scorecard.Scorecard, len(s.Runs)+s.MissingRuns)
 	var durations []float64
-	for _, r := range s.Runs {
+	for i, r := range s.Runs {
 		if r.Source != "" {
 			sr.Sources = append(sr.Sources, r.Source)
 		} else if r.Report != nil && r.Report.Source != "" {
 			sr.Sources = append(sr.Sources, r.Report.Source)
 		}
-		for id, v := range cardValues(r.Card) {
-			perStd[id] = append(perStd[id], v)
-		}
+		cards[i] = r.Card
 		if r.Report != nil {
 			durations = append(durations, r.Report.DurationSec)
 		}
 	}
-	meds := make(map[string]float64, len(perStd))
-	for id, vs := range perStd {
-		meds[id] = median(vs)
-	}
-	sr.Card = scorecard.FromValues(meds)
+	sr.Card = scorecard.Aggregate(cards)
 	sr.DurationSec = median(durations)
 	sr.Breakdown = medianBreakdown(s.Runs)
 	sr.Rep = pickRep(s.Runs)
@@ -147,23 +133,19 @@ func buildScene(s Scene) SceneResult {
 	return sr
 }
 
-func frameP95(rep *insights.Report) (float64, bool) {
-	if rep == nil || rep.Summary == nil {
+func frameP95(run Run) (float64, bool) {
+	if run.Report == nil {
 		return 0, false
 	}
-	m, ok := rep.Summary.Lookup("frames.p95_ms")
-	if !ok {
-		return 0, false
-	}
-	return m.Value, true
+	return CardValue(run.Card, "frame-p95")
 }
 
-// pickRep returns the run whose frame p95 is closest to the median frame p95;
-// the first run with a report when no run has that metric.
+// pickRep returns the run whose rated frame p95 is closest to the median;
+// the first run with a report when no run has sufficient frame data.
 func pickRep(runs []Run) *insights.Report {
 	var vals []float64
 	for _, r := range runs {
-		if v, ok := frameP95(r.Report); ok {
+		if v, ok := frameP95(r); ok {
 			vals = append(vals, v)
 		}
 	}
@@ -172,7 +154,7 @@ func pickRep(runs []Run) *insights.Report {
 		var best *insights.Report
 		bestD := 0.0
 		for _, r := range runs {
-			v, ok := frameP95(r.Report)
+			v, ok := frameP95(r)
 			if !ok {
 				continue
 			}
@@ -222,15 +204,9 @@ func medianBreakdown(runs []Run) []insights.Slice {
 // overall builds the typical-scene card (median per standard across scenes)
 // and the scene with the worst value per standard.
 func overall(scenes []SceneResult) (*scorecard.Scorecard, map[string]string) {
-	perStd := map[string][]float64{}
+	cards := make([]*scorecard.Scorecard, 0, len(scenes))
 	for _, s := range scenes {
-		for id, v := range cardValues(s.Card) {
-			perStd[id] = append(perStd[id], v)
-		}
-	}
-	meds := make(map[string]float64, len(perStd))
-	for id, vs := range perStd {
-		meds[id] = median(vs)
+		cards = append(cards, s.Card)
 	}
 	worst := map[string]string{}
 	for _, std := range scorecard.Standards() {
@@ -247,7 +223,7 @@ func overall(scenes []SceneResult) (*scorecard.Scorecard, map[string]string) {
 			}
 		}
 	}
-	return scorecard.FromValues(meds), worst
+	return scorecard.Aggregate(cards), worst
 }
 
 // mergeBreakdown is the duration-weighted mean share per slice, normalized so

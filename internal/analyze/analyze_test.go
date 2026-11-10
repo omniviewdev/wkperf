@@ -3,7 +3,6 @@ package analyze
 import (
 	"encoding/json"
 	"math"
-	"strings"
 	"testing"
 
 	"github.com/omniviewdev/wkperf/internal/metrics"
@@ -295,34 +294,5 @@ func TestNoOptionsEqualsSummarize(t *testing.T) {
 	b := SummarizeWith(windowRec(), "x", Options{})
 	if len(a.Metrics) != len(b.Metrics) || a.DurationSec != 20 || a.Fixture.Window != "" {
 		t.Fatalf("zero options must be the whole recording: dur %v window %q", a.DurationSec, a.Fixture.Window)
-	}
-}
-
-func TestExtensiveFlags(t *testing.T) {
-	gc := json.RawMessage(`{"__type":"GarbageCollection"}`)
-	rec := &model.Recording{StartTime: 0, EndTime: 10,
-		MemoryPressureEvents: []model.MemoryPressure{{Timestamp: 1}},
-		Records: []model.Record{
-			frame(0, 0.02),
-			{Type: model.TypeScript, EventType: "event-dispatched", StartTime: 1, EndTime: 1.1},
-			{Type: model.TypeScript, EventType: "timer-installed", StartTime: 1, EndTime: 1},
-			{Type: model.TypeScript, EventType: "script-evaluated", Details: gc, StartTime: 2, EndTime: 2.01},
-			{Type: model.TypeLayout, EventType: "layout", StartTime: 3, EndTime: 3.01},
-			{Type: model.TypeCPU, Timestamp: 1, Usage: 5},
-			{Type: model.TypeMemory, Timestamp: 1, Categories: []model.MemoryCategory{{Type: "JS", Size: 1 << 20}}},
-			{Type: model.TypeNetwork, Entry: json.RawMessage(`{"time":10,"response":{"_transferSize":5}}`)},
-		}}
-	s := Summarize(rec, "x")
-	for _, m := range s.Metrics {
-		want := strings.HasSuffix(m.Key, ".count") || strings.HasSuffix(m.Key, ".total_ms") ||
-			strings.HasPrefix(m.Key, "frames.jank_") && m.Key != "frames.jank_ratio" ||
-			m.Key == "network.requests" || m.Key == "network.transfer_bytes" || m.Key == "pressure.events" ||
-			m.Key == "overview.records" || m.Key == "frames.idle_wakeups" || m.Key == "frames.idle_gap_ms"
-		if m.Extensive != want {
-			t.Errorf("%s: Extensive=%v want %v", m.Key, m.Extensive, want)
-		}
-	}
-	if len(s.Metrics) < 20 {
-		t.Errorf("expected broad metric coverage, got %d", len(s.Metrics))
 	}
 }

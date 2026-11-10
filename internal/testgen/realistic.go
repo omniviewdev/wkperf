@@ -101,7 +101,7 @@ func GetAnimations() *model.Recording {
 	measure := model.StackFrame{Name: "measureRows", URL: "https://app.test/src/rows.js", Line: 40, Column: 7}
 	commit := model.StackFrame{Name: "commitOnFiber", URL: "https://app.test/node_modules/react-dom/index.js", Line: 80, Column: 2}
 	native := model.StackFrame{Name: "getAnimations", SourceID: "native", Line: -1, Column: -1}
-	rec.Records = append(rec.Records, frameRecord(1, 1.08), scriptRecord("observer-callback-fired", 1, 1.08))
+	rec.Records = append(rec.Records, frameRecord(1, 1.08), scriptRecord("observer-callback", 1, 1.08))
 	rec.Samples = []model.TargetSamples{{Target: target(), StackTraces: []model.StackTrace{
 		{Timestamp: 1.01, StackFrames: []model.StackFrame{native, commit, measure, app}},
 		{Timestamp: 1.03, StackFrames: []model.StackFrame{commit, measure, app}},
@@ -119,7 +119,7 @@ func React() *model.Recording {
 	render := model.StackFrame{Name: "renderWithHooks", URL: "https://app.test/node_modules/react-dom/client.js", Line: 200, Column: 1}
 	commit := model.StackFrame{Name: "commitRoot", URL: render.URL, Line: 400, Column: 1}
 	syncRoot := model.StackFrame{Name: "performSyncWorkOnRoot", URL: render.URL, Line: 100, Column: 1}
-	rec.Records = append(rec.Records, frameRecord(1, 1.09), scriptRecord("microtask-fired", 1, 1.08))
+	rec.Records = append(rec.Records, frameRecord(1, 1.09), scriptRecord("microtask-dispatched", 1, 1.08))
 	rec.Samples = []model.TargetSamples{{Target: target(), StackTraces: []model.StackTrace{
 		{Timestamp: 1.01, StackFrames: []model.StackFrame{render, syncRoot, app}},
 		{Timestamp: 1.04, StackFrames: []model.StackFrame{commit, syncRoot, app}},

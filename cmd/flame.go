@@ -13,7 +13,6 @@ import (
 
 	"github.com/omniviewdev/wkperf/internal/analyze"
 	core "github.com/omniviewdev/wkperf/internal/flame"
-	"github.com/omniviewdev/wkperf/internal/insights"
 	"github.com/omniviewdev/wkperf/internal/model"
 	"github.com/omniviewdev/wkperf/internal/profile"
 	"github.com/omniviewdev/wkperf/internal/query"
@@ -173,7 +172,20 @@ func flameBuildOptions(rec *model.Recording, wo analyze.Options, around int, dur
 	if around > 0 {
 		windowRec := *rec
 		windowRec.StartTime, windowRec.EndTime = rec.StartTime+from, rec.StartTime+to
-		tasks := insights.LongTaskRecords(&windowRec, 50)
+		tasks := profile.Tasks(&windowRec)
+		long := tasks[:0]
+		for _, task := range tasks {
+			if task.Duration()*1000 > profile.LongTaskBudgetMs {
+				long = append(long, task)
+			}
+		}
+		tasks = long
+		sort.Slice(tasks, func(i, j int) bool {
+			if tasks[i].Duration() != tasks[j].Duration() {
+				return tasks[i].Duration() > tasks[j].Duration()
+			}
+			return tasks[i].StartTime < tasks[j].StartTime
+		})
 		if around > len(tasks) {
 			return opts, fmt.Errorf("--around-long-task %d exceeds %d script tasks over 50 ms", around, len(tasks))
 		}

@@ -62,6 +62,9 @@ func Stats(r *Report) []Stat {
 	for _, w := range r.SlowFrames {
 		addWindow(w)
 	}
+	for _, w := range r.InputStalls {
+		addWindow(w)
+	}
 	for _, w := range r.EventBursts {
 		addWindow(w)
 	}

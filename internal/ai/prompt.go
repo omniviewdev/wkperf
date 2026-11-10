@@ -73,6 +73,7 @@ Rules:
 - If comparability warnings are listed, or results are marked noisy, low-confidence or single-run, say so explicitly and do not over-claim. A metric that moved within noise is not a finding.
 - For each recommendation, say how to verify it with wkperf: which metric key (or function) should move, in which direction, and roughly by how much; capture again with the same scenario and compare.
 - If the data was truncated, say which conclusions may be affected.
+- GC collector intervals are overlays, not measured main-thread pauses. Input-stall intervals are observed latency, not measured blocking work. Do not infer either cause from interval length.
 
 Output Markdown with exactly these top-level sections, in this order:
 ## Summary
@@ -294,6 +295,7 @@ func reportSections(label string, r *insights.Report, c Context, idx, offset int
 		bd += strings.Join(parts, ", ") + "\n"
 		out = append(out, section{title: tag + " breakdown", value: val(vBreakdown), body: bd})
 	}
+	out = append(out, measurementSections(tag, r, c, val(vBreakdown))...)
 
 	if len(r.Findings) > 0 {
 		var b strings.Builder
@@ -379,10 +381,10 @@ func reportSections(label string, r *insights.Report, c Context, idx, offset int
 
 	if len(r.SlowFrames) > 0 {
 		var b strings.Builder
-		b.WriteString("### Slowest frames\n")
+		fmt.Fprintf(&b, "### Slowest work-bound frames (finding threshold %sms; fixed frame standards use 16.7ms)\n", num(r.JankMs))
 		for i, f := range limitSlice(r.SlowFrames, c.TopN) {
-			fmt.Fprintf(&b, "%d. t=%ss %sms (script %s, layout+style %s, paint+composite %s, gc %s)",
-				i+1, num(f.T), num(f.Ms), num(f.ScriptMs), num(f.LayoutMs), num(f.PaintMs), num(f.GCMs))
+			fmt.Fprintf(&b, "%d. t=%ss observed interval %sms; main-thread work %sms (script %s, layout+style %s, paint+composite %s); GC collector interval overlay %sms, overlap with work %sms",
+				i+1, num(f.T), num(f.Ms), num(f.WorkMs), num(f.ScriptMs), num(f.LayoutMs), num(f.PaintMs), num(f.GCMs), num(f.GCOverlapWithWorkMs))
 			if f.TopEvent != "" {
 				fmt.Fprintf(&b, " event=%s", clip(oneLine(f.TopEvent), 80))
 			}
@@ -396,7 +398,7 @@ func reportSections(label string, r *insights.Report, c Context, idx, offset int
 
 	if len(r.LongTasks) > 0 {
 		var b strings.Builder
-		b.WriteString("### Long tasks (>50ms)\n")
+		fmt.Fprintf(&b, "### Long tasks (maximal overlapping script intervals, >%sms)\nNested events do not count as separate tasks.\n", num(r.LongTaskMs))
 		for i, t := range limitSlice(r.LongTasks, c.TopN) {
 			fmt.Fprintf(&b, "%d. t=%ss %sms %s", i+1, num(t.T), num(t.Ms), clip(oneLine(t.EventType), 60))
 			if t.Detail != "" {
@@ -406,10 +408,39 @@ func reportSections(label string, r *insights.Report, c Context, idx, offset int
 				fmt.Fprintf(&b, " topFunc=%s", clip(oneLine(t.TopFunc), 80))
 			}
 			b.WriteByte('\n')
+			if len(t.Children) > 0 {
+				fmt.Fprintf(&b, "   nested events: %d/%d shown · %s\n", len(t.Children), t.ChildrenTotal, clip(strings.Join(t.Children, ", "), 200))
+			}
 		}
 		out = append(out, section{title: tag + " long tasks", value: val(vLongTasks), body: b.String()})
 	}
 	return out
+}
+
+func measurementSections(label string, r *insights.Report, c Context, value int) []section {
+	var sections []section
+	if r.GCMs > 0 {
+		var b strings.Builder
+		b.WriteString("### GC collections (collector interval overlay, not a measured pause)\nCollector intervals can run concurrently; they are not an exclusive main-thread work slice.\n")
+		fmt.Fprintf(&b, "Collector interval=%sms; overlap with work=%sms.\nReproduce: %s; %s\n", num(r.GCMs), num(r.GCOverlapWithWorkMs), insights.NumericCommand(r, "gc.total_ms"), insights.NumericCommand(r, "gc.overlap_with_work_ms"))
+		sections = append(sections, section{title: label + " GC overlay", value: value, body: b.String()})
+	}
+	if len(r.InputStalls) > 0 {
+		var b strings.Builder
+		fmt.Fprintf(&b, "### Input stalls (%d/%d shown)\nInput arrived without a timely rendering update. Observed interval length is not measured main-thread blocking time. Stalls are excluded from work-bound frame statistics and jank.\n", min(len(r.InputStalls), c.TopN), r.InputStallsTotal)
+		for i, stall := range limitSlice(r.InputStalls, c.TopN) {
+			fmt.Fprintf(&b, "- t=%ss observed interval=%sms; main-thread work=%sms; event=%s", num(stall.T), num(stall.Ms), num(stall.WorkMs), clip(oneLine(stall.TopEvent), 100))
+			if stall.TopFunc != "" {
+				fmt.Fprintf(&b, "; topFunc=%s", clip(oneLine(stall.TopFunc), 80))
+			}
+			if stall.SampleStatus != "" {
+				fmt.Fprintf(&b, "; %s", clip(oneLine(stall.SampleStatus), 200))
+			}
+			fmt.Fprintf(&b, "; reproduce interval: %s; work: %s\n", insights.NumericCommand(r, "inputStalls."+strconv.Itoa(i)+".ms"), insights.NumericCommand(r, "inputStalls."+strconv.Itoa(i)+".work_ms"))
+		}
+		sections = append(sections, section{title: label + " input stalls", value: value + 1, body: b.String()})
+	}
+	return sections
 }
 
 // ---- comparison rendering ----

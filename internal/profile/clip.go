@@ -51,6 +51,9 @@ func Clip(rec *model.Recording, start, end float64) *model.Recording {
 			continue
 		}
 		if r.EndTime > r.StartTime {
+			if r.OriginalEndTime <= r.OriginalStartTime && (r.StartTime < start || r.EndTime > end) {
+				r.OriginalStartTime, r.OriginalEndTime = r.StartTime, r.EndTime
+			}
 			r.StartTime = math.Max(start, r.StartTime)
 			r.EndTime = math.Min(end, r.EndTime)
 		}

@@ -259,18 +259,19 @@ func TestComparabilityRunVariance(t *testing.T) {
 }
 
 func TestComparabilitySkipsMissingData(t *testing.T) {
-	// Summaries without fixture data (hand-built) and empty groups never warn or panic.
+	// Missing fixture metadata does not warn when active windows are observed.
 	b := []*metrics.Summary{sum("b", met("k", "script", metrics.UnitMs, metrics.LowerBetter, 1))}
 	c := []*metrics.Summary{sum("c", met("k", "script", metrics.UnitMs, metrics.LowerBetter, 1))}
+	b[0].DurationSec, c[0].DurationSec = 10, 10
 	r := Compare(b, c, DefaultOptions())
 	if r.Comparability.Score != 1 || len(r.Comparability.Warnings) != 0 {
 		t.Errorf("no data must not warn: %+v", r.Comparability)
 	}
 	r = Compare(nil, c, DefaultOptions())
-	if r.Comparability.Score != 1 || r.Comparability.Warnings == nil {
+	if r.Comparability.Score != 0 || codes(r.Comparability)[CodeWindowEmpty] != LevelWarn {
 		t.Errorf("empty baseline: %+v", r.Comparability)
 	}
-	if r = Compare(nil, nil, DefaultOptions()); r.Comparability.Score != 1 {
+	if r = Compare(nil, nil, DefaultOptions()); r.Comparability.Score != 0 || codes(r.Comparability)[CodeWindowEmpty] != LevelWarn {
 		t.Errorf("both empty: %+v", r.Comparability)
 	}
 }
