@@ -32,6 +32,10 @@ type Metric struct {
 	Unit  Unit      `json:"unit"`
 	Dir   Direction `json:"dir"`
 	Value float64   `json:"value"`
+	// Extensive marks metrics that scale with capture length/activity (counts
+	// and total_ms sums). Compare normalizes these per second when fixtures
+	// differ in duration. Percentiles, means, maxima, ratios are intensive.
+	Extensive bool `json:"extensive,omitempty"`
 }
 
 // FuncStat: per-function sampling-profiler aggregate. Identity = Name+URL+Line.
@@ -64,6 +68,7 @@ type Summary struct {
 	DurationSec float64    `json:"durationSec"`
 	Metrics     []Metric   `json:"metrics"`
 	Functions   []FuncStat `json:"functions"`
+	Fixture     Fixture    `json:"fixture"`
 
 	// Series for HTML charts (not compared statistically).
 	FrameMs  []float64 `json:"frameMs,omitempty"`  // rendering frame durations in ms, chronological
@@ -101,4 +106,17 @@ func itoa(n int) string {
 		b[i] = '-'
 	}
 	return string(b[i:])
+}
+
+// Fixture describes what was captured, to judge comparability of two recordings.
+type Fixture struct {
+	DurationSec     float64  `json:"durationSec"` // after any trimming/windowing
+	Frames          int      `json:"frames"`
+	Records         int      `json:"records"`
+	SampleCount     int      `json:"sampleCount"`
+	URLs            []string `json:"urls"`             // distinct target URLs
+	Instruments     []string `json:"instruments"`      // recording instrument types
+	ScriptEventSet  []string `json:"scriptEventSet"`   // distinct script eventTypes seen
+	TopFunctionKeys []string `json:"topFunctionKeys"`  // FuncStat.Key of top 20 by self time (workload fingerprint)
+	Window          string   `json:"window,omitempty"` // e.g. "2.0s-12.0s" when trimmed
 }
