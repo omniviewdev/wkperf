@@ -12,10 +12,10 @@ Output is a terminal report, a single self-contained HTML file you can share, or
 
 ## Install
 
-The repo is private, so you need git access to the `omniviewdev` org:
+Install with Go:
 
 ```bash
-GOPRIVATE=github.com/omniviewdev go install github.com/omniviewdev/wkperf@latest
+go install github.com/omniviewdev/wkperf@latest
 ```
 
 Needs Go 1.26+. Check it worked with `wkperf version`.

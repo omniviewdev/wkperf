@@ -8,10 +8,10 @@ It analyzes rendering frames (frame time, FPS, jank), script and layout events, 
 
 ## Install
 
-The repository is private, so Go needs git access to the `omniviewdev` org:
+Install with Go:
 
 ```bash
-GOPRIVATE=github.com/omniviewdev go install github.com/omniviewdev/wkperf@latest
+go install github.com/omniviewdev/wkperf@latest
 ```
 
 Or build from a checkout:

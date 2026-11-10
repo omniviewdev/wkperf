@@ -1,7 +1,7 @@
 # wkperf — design
 
 Compare WebKit Web Inspector Timelines exports (baseline vs candidate). Go, cobra + viper.
-Install: `GOPRIVATE=github.com/omniviewdev go install github.com/omniviewdev/wkperf@latest`
+Install: `go install github.com/omniviewdev/wkperf@latest`
 
 ## Pipeline
 model.Load (JSON) -> analyze.Summarize -> metrics.Summary (flat metrics + function stats + chart series)
