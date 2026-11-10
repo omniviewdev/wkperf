@@ -144,7 +144,11 @@ func priorityDetails(pr Priority) []string {
 		lines = append(lines, "Reproduce: "+pr.Command)
 	}
 	for _, stack := range pr.Stacks {
-		lines = append(lines, fmt.Sprintf("Exact stack: %.3f sampled self ms; %d samples; %.3f–%.3f s; reproduce: %s", stack.SelfMs, stack.Samples, stack.FirstSec, stack.LastSec, stack.Command))
+		timing := "timestamps unavailable"
+		if stack.FirstSec != nil && stack.LastSec != nil {
+			timing = fmt.Sprintf("%.3f–%.3f s", *stack.FirstSec, *stack.LastSec)
+		}
+		lines = append(lines, fmt.Sprintf("Exact stack: %.3f sampled self ms; %d samples (%d untimed); %s; reproduce: %s", stack.SelfMs, stack.Samples, stack.UntimedSamples, timing, stack.Command))
 		var path strings.Builder
 		for i, frame := range stack.Frames {
 			if i > 0 {

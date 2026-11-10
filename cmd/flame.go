@@ -15,6 +15,7 @@ import (
 	core "github.com/omniviewdev/wkperf/internal/flame"
 	"github.com/omniviewdev/wkperf/internal/insights"
 	"github.com/omniviewdev/wkperf/internal/model"
+	"github.com/omniviewdev/wkperf/internal/profile"
 	"github.com/omniviewdev/wkperf/internal/query"
 	flamereport "github.com/omniviewdev/wkperf/internal/report/flame"
 )
@@ -122,6 +123,9 @@ func runFlameCommand(cmd *cobra.Command, args []string) error {
 			charts = append(charts, flamereport.Chart{Label: files[i], Tree: tree})
 		}
 	}
+	if err := flamereport.WriteNotes(cmd.ErrOrStderr(), charts); err != nil {
+		return err
+	}
 	out := viper.GetString("out")
 	if out == "" && format == "html" {
 		out = "wkperf-flame.html"
@@ -147,7 +151,7 @@ func buildFlameTree(rec *model.Recording, wo analyze.Options, around int) (*core
 	if tree == nil {
 		return core.Build(rec, opts), nil
 	}
-	if opts.From == nil || (*opts.From == tree.StartTime && *opts.To == tree.EndTime) {
+	if opts.From == nil || profile.CoversRecording(rec, *opts.From, *opts.To) {
 		return tree, nil
 	}
 	return tree.Window(*opts.From, *opts.To), nil

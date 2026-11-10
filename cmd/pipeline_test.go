@@ -253,7 +253,7 @@ func TestPipelineSchemaContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	doc := decodeDocument(t, out)
-	if !strings.Contains(string(doc["$schema"]), "2020-12") || !strings.Contains(out, "wkperf-insights/v2") {
+	if !strings.Contains(string(doc["$schema"]), "2020-12") || !strings.Contains(out, "wkperf-insights/v3") {
 		t.Fatalf("schema missing version: %.300s", out)
 	}
 	for _, field := range []string{"findings", "hotspots", "inclusiveHotspots", "triggers", "wakeups", "suggestedWindows", "scorecard", "column", "errors"} {
@@ -269,7 +269,7 @@ func TestPipelineSchemaContract(t *testing.T) {
 	var result struct {
 		Schema string `json:"schema"`
 	}
-	if err := json.Unmarshal([]byte(analysis), &result); err != nil || result.Schema != "wkperf-insights/v2" {
+	if err := json.Unmarshal([]byte(analysis), &result); err != nil || result.Schema != "wkperf-insights/v3" {
 		t.Fatalf("actual schema differs: %v %s", err, result.Schema)
 	}
 }

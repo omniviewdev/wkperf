@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	InsightsVersion   = "wkperf-insights/v2"
-	AuditVersion      = "wkperf-audit/v1"
+	InsightsVersion   = "wkperf-insights/v3"
+	AuditVersion      = "wkperf-audit/v2"
 	ComparisonVersion = "wkperf/v1"
 	SummaryVersion    = "wkperf-summary/v1"
 	ErrorVersion      = "wkperf-error/v1"

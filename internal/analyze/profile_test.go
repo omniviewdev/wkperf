@@ -192,3 +192,17 @@ func TestCommonStackIDMatchesCanonicalPath(t *testing.T) {
 		}
 	}
 }
+
+func TestUntimedWholeRecordingUsesNanosecondTolerance(t *testing.T) {
+	rec := &model.Recording{StartTime: 2.611872458306607, EndTime: 20.24081204162212, Samples: []model.TargetSamples{{
+		StackTraces: []model.StackTrace{
+			{Timestamp: 0, StackFrames: []model.StackFrame{{Name: "untimed", URL: "app.js"}}},
+			{Timestamp: 3, StackFrames: []model.StackFrame{{Name: "timed", URL: "app.js"}}},
+		},
+		Durations: []float64{0.025, 0.04},
+	}}}
+	s := SummarizeWith(rec, "decimal.json", Options{ToSec: 17.628939583})
+	if s.Fixture.SampleCount != 2 || s.Fixture.Window != "" || len(s.Functions) != 2 {
+		t.Fatalf("rounded whole bounds excluded unknown clocks: %+v %+v", s.Fixture, s.Functions)
+	}
+}

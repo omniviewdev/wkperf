@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/omniviewdev/wkperf/internal/metrics"
+	"github.com/omniviewdev/wkperf/internal/profile"
+	"github.com/omniviewdev/wkperf/internal/rootcause"
 )
 
 func functionLabel(f metrics.FuncStat) string {
@@ -110,7 +112,7 @@ func verificationTarget(id string, metric metrics.Metric) float64 {
 }
 
 func appendUnique(items []string, value string) []string {
-	if value == "" || strings.HasPrefix(value, "No samples") {
+	if value == "" || strings.HasPrefix(value, "No samples") || strings.HasPrefix(value, "No timed samples") {
 		return items
 	}
 	for _, item := range items {
@@ -150,7 +152,10 @@ func implicatedTriggers(id string, triggers []TriggerStat) []TriggerStat {
 func suggestedWindow(c *ruleCtx, context findingContext) SuggestedWindow {
 	from := context.s - c.rec.StartTime + c.opt.WindowStartSec
 	to := context.e - c.rec.StartTime + c.opt.WindowStartSec
-	flags := []string{"--from", seconds(from), "--to", seconds(to)}
+	flags := []string{}
+	if !c.rep.WholeRecording || !profile.CoversRecording(c.rec, context.s-c.rec.StartTime, context.e-c.rec.StartTime) {
+		flags = append(flags, "--from", seconds(from), "--to", seconds(to))
+	}
 	if c.opt.JankMs != 16.7 {
 		flags = append(flags, "--jank-ms", seconds(c.opt.JankMs))
 	}
@@ -191,6 +196,15 @@ func enrichFindings(c *ruleCtx, findings []Finding) {
 		}
 		if coverage.Available && coverage.Ratio < 0.5 {
 			f.ConfidenceReasons = append(f.ConfidenceReasons, "Sample weights cover less than half the measured script time.")
+		}
+		if temporalFinding(f.ID) {
+			sampledMs := coverage.SampledMs
+			if coverage.UntimedExcluded {
+				sampledMs += coverage.UntimedMs
+			}
+			if note := rootcause.UntimedAttributionNote(coverage.UntimedMs, sampledMs); note != "" {
+				f.ConfidenceReasons = append(f.ConfidenceReasons, note)
+			}
 		}
 		for _, key := range primaryMetricKeys(f.ID) {
 			metric, ok := c.sum.Lookup(key)
@@ -244,4 +258,14 @@ func enrichFindings(c *ruleCtx, findings []Finding) {
 		sort.Strings(f.Functions)
 		sort.Strings(f.Triggers)
 	}
+}
+
+func temporalFinding(id string) bool {
+	switch id {
+	case "jank", "long-tasks", "react-sync-in-trigger", "periodic-root", "suspected-layout-read",
+		"forced-layout", "layout-after-script", "layout-heavy", "style-recalc-heavy", "paint-heavy",
+		"raf-load", "timer-storm", "event-handler-heavy", "microtask-heavy", "observer-callback-heavy":
+		return true
+	}
+	return false
 }

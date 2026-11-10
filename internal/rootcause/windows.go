@@ -69,24 +69,36 @@ func (b builder) heaviestWindowStack(from, to float64, prefix string) *Stack {
 		}
 	}
 	v := weights[best]
-	stack := b.finishStack(Stack{Frames: b.pathByID[best].Frames, SelfMs: v.ms, Samples: v.samples, FirstSec: b.exportTime(v.first), LastSec: b.exportTime(v.last)}, prefix, b.pathKeys[best])
+	first, last := b.exportTime(v.first), b.exportTime(v.last)
+	stack := b.finishStack(Stack{Frames: b.pathByID[best].Frames, SelfMs: v.ms, Samples: v.samples, FirstSec: &first, LastSec: &last}, prefix, b.pathKeys[best])
 	stack.Command = b.query("stacks "+quote(best), from, to)
 	return &stack
 }
 
 func (b builder) completeWindows(windows []Window) {
+	totalMs := b.tree.Root.TotalMs
+	if !b.tree.UntimedIncluded {
+		totalMs += b.tree.UntimedTotal.Ms
+	}
+	note := UntimedAttributionNote(b.tree.UntimedTotal.Ms, totalMs)
 	for i := range windows {
 		w := &windows[i]
 		from, to := seconds(w.FromSec-b.o.OffsetSec), seconds(w.ToSec-b.o.OffsetSec)
 		key := windowKey(*w)
 		w.TopStack = b.heaviestWindowStack(from, to, key)
 		if w.TopStack == nil {
-			w.SampleStatus = "No overlapping sampler samples; timeline evidence only."
+			w.SampleStatus = UntimedSampleStatus(b.tree.UntimedSpans, from, to, b.o.OffsetSec)
+			if w.SampleStatus == "" {
+				w.SampleStatus = "No overlapping sampler samples; timeline evidence only."
+			}
 		} else {
 			w.SampleStatus = "Duration-weighted sampler estimates at timestamps inside this interval; overlap is not causal attribution."
 		}
+		if note != "" {
+			w.SampleStatus += " " + note
+		}
 		if i < b.o.Top {
-			tree := b.tree.Window(from, to)
+			tree := b.tree.Window(from, to).TimedOnly()
 			path := b.hotPath(tree, key+".hot_path", from, to)
 			w.HotPath = &path
 		}

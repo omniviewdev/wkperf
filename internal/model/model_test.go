@@ -1,6 +1,7 @@
 package model
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -34,5 +35,24 @@ func TestParseInvalidListsActualAndExpectedKeys(t *testing.T) {
 		if strings.Contains(input, "banana") && (!strings.Contains(err.Error(), "banana") || !strings.Contains(err.Error(), "records") || !strings.Contains(err.Error(), "samples")) {
 			t.Fatalf("error lacks actual/expected keys: %v", err)
 		}
+	}
+}
+
+func TestInternalSampleEvidenceIsNotExported(t *testing.T) {
+	rec := &Recording{StartTime: 10, EndTime: 12, Records: []Record{}, UntimedExcluded: true,
+		SampleEvidence: &SampleEvidence{StartTime: 1, EndTime: 20, Samples: []TargetSamples{}},
+	}
+	data, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"UntimedExcluded", "untimedExcluded", "SampleEvidence", "sampleEvidence"} {
+		if strings.Contains(string(data), field) {
+			t.Fatalf("internal evidence field %s leaked: %s", field, data)
+		}
+	}
+	parsed, err := Parse(strings.NewReader(string(data)))
+	if err != nil || parsed.UntimedExcluded || parsed.SampleEvidence != nil {
+		t.Fatalf("internal evidence survived JSON round trip: %+v, %v", parsed, err)
 	}
 }

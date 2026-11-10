@@ -145,7 +145,10 @@ func (o Options) window(rec *model.Recording) window {
 	if o.ToSec > 0 {
 		hi = math.Min(hi, rec.StartTime+o.ToSec)
 	}
-	active := lo != rec.StartTime || hi != rec.EndTime
+	active := !profile.CoversRecording(rec, lo-rec.StartTime, hi-rec.StartTime)
+	if !active {
+		lo, hi = rec.StartTime, rec.EndTime
+	}
 	return window{lo: lo, hi: hi, active: active, bounded: active || rec.EndTime > rec.StartTime || len(rec.Discontinuities) > 0, intervals: profile.ActiveIntervals(rec, lo, hi)}
 }
 
@@ -487,7 +490,7 @@ func summarize(rec *model.Recording, source string, o Options, tree *flame.Tree)
 		}
 	}
 	applyTree(s, tree)
-	nSamples := len(tree.Samples)
+	nSamples := tree.SampleCount()
 
 	instruments := append([]string(nil), rec.InstrumentTypes...)
 	sort.Strings(instruments)

@@ -40,6 +40,16 @@ Sampling weights come from `durations[i]`, in seconds, paired with `stackTraces[
 
 Sample durations are statistical weights, not measured execution intervals. A time window selects samples by timestamp in `[from,to)` and retains each selected sample's full weight; it does not spread or proportionally clip the weight over wall time. Sampling totals can therefore differ from instrumented script totals and should not be presented as an exclusive elapsed-time breakdown.
 
+### Samples without usable timestamps
+
+When the original recording starts after zero, samples with `timestamp: 0` have an unknown position in time, not a position at the start of the recording. WebKit can export these when the sampler's stopwatch has not accumulated time. Their weights are still useful for whole-recording rankings, call trees, ownership, folded stacks, and coverage. A genuine zero-time sample in a recording starting at zero remains timed.
+
+Whole-recording views include both timed and untimed weights. Partial windows, task/frame attribution, trigger tables, and periodic detection use timed samples only. Output reports untimed counts, weights, and exclusions explicitly; it never reconstructs timestamps from sample weights. Coverage can exceed 1 because weights include default estimates and event averages while script time is an exclusive measurement.
+
+Export order can bound a run of untimed samples between neighboring timed samples when those timed timestamps are monotonic. These spans are labeled inferences used only to explain missing temporal attribution; they never move sampled weight into a window. Stack first/last times are nullable when no timed observation exists.
+
+Window coverage uses a shared 1 ns tolerance. An explicitly selected full recording includes the same samples as the default view, even when a printed endpoint is rounded. Reproduction commands omit `--from` and `--to` for whole-recording measurements.
+
 See WebKit's [TimelineRecording implementation](https://github.com/WebKit/WebKit/blob/main/Source/WebInspectorUI/UserInterface/Models/TimelineRecording.js) and [RenderingFrameTimelineRecord implementation](https://github.com/WebKit/WebKit/blob/main/Source/WebInspectorUI/UserInterface/Models/RenderingFrameTimelineRecord.js) for export semantics. Real recordings are not bundled; regression fixtures reproduce reported shapes and edge cases.
 
 ### Recommended workflow
@@ -140,7 +150,7 @@ wkperf version
 | `--max-bytes` | `0` (unlimited) | cap Markdown bytes; positive limits below 64 are rejected; JSON stays complete |
 | `--open`, `--no-color` | | as in `compare` |
 
-Each recording is followed by its scorecard (see Scorecard). Analysis JSON uses the versioned `wkperf-insights/v2` envelope; each report carries a `scorecard` field unless `--no-scorecard`. This replaces v1: agents must check the `schema` discriminator before reading the report. HTML includes time breakdowns, self and inclusive hotspots, trigger attribution, idle wakeups, and findings with confidence and verification guidance.
+Each recording is followed by its scorecard (see Scorecard). The unreleased fixes use `wkperf-insights/v3`; v0.4.0 emits v2. Each report carries a `scorecard` field unless `--no-scorecard`. Consumers must check the `schema` discriminator, including nullable stack times and untimed-sample metadata. HTML includes time breakdowns, self and inclusive hotspots, trigger attribution, idle wakeups, and findings with confidence and verification guidance.
 
 Bounded Markdown cannot be combined with a live `--ai` completion; emit the bounded local report or a prompt separately. The byte limit covers the whole Markdown artifact, including truncation markers.
 
@@ -194,7 +204,7 @@ Trigger tables separate event names and timer/rAF/microtask dispatches. Each row
 | `--open`, `--no-color` | | as in `compare` |
 | `--ai`, `--emit-prompt`, `--ai-*`, `--app-*` | | see AI workflow (audit prompt) |
 
-JSON output is `{"schema": "wkperf-audit/v1", "report": {...}}`.
+The unreleased audit envelope is `{"schema": "wkperf-audit/v2", "report": {...}}`; v0.4.0 emits v1. Its embedded analysis follows the updated analysis contract.
 
 
 ## Flame graphs
@@ -282,7 +292,7 @@ Stack-based findings retain their exact paths and reproducing query commands: na
 
 Window triage ranks long tasks, active slow frames, and event bursts. Detailed hot paths are built for the highest-ranked windows; lower-priority rows may have `hotPath: null` to avoid repeated tree construction. Every task/frame still retains its complete heaviest sampled stack, numeric evidence, and exact query command. Windows without sampler evidence say so explicitly.
 
-Stable ordering applies to tree nodes, functions, paths, findings, triggers, selectors, and exports. Equal-weight functions sort by name, URL, line, then column. Reports do not insert the current clock time. Shuffling samples with their paired durations preserves outputs; timestamps still control temporal operations.
+Stable ordering applies to tree nodes, functions, paths, findings, triggers, selectors, and exports. Equal-weight functions sort by name, URL, line, then column. Reports do not insert the current clock time. Aggregate weights and identities are invariant under paired sample reordering. Inferred untimed spans depend on meaningful export order and are unavailable when chronological ordering cannot be established.
 
 Local reports and emitted prompts are deterministic. Responses from external AI providers are not guaranteed deterministic.
 
@@ -292,10 +302,10 @@ Use the `schema` discriminator before decoding a result. `wkperf schema` prints 
 
 | Output | Contract |
 | --- | --- |
-| Analysis | `wkperf-insights/v2`: a `reports` array, per-file `errors`, optional AI response |
+| Analysis | `wkperf-insights/v3` (unreleased): reports, untimed accounting, per-file errors, optional AI response |
 | Query/MCP | `wkperf.query.v1`: `operation`, `status`, `sources`, `command`, `rows`, `total_count`, `limit`, `truncated` |
 | Comparison | `wkperf/v1`: baseline/candidate groups, metric/function deltas, verdicts, comparability warnings |
-| Audit | `wkperf-audit/v1`: scene scorecards, priorities, overall scorecard, per-file errors |
+| Audit | `wkperf-audit/v2` (unreleased): scene scorecards, priorities, overall scorecard, per-file errors |
 | Flame | `wkperf-flame/v1`: `mode` (`profile` or `diff`), `charts`, and visual `view` settings |
 | Summary | `wkperf-summary/v1`: scalar summary output |
 | Error-only result | `wkperf-error/v1`: machine-readable command errors |

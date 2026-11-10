@@ -71,7 +71,7 @@ func TestNumericFiguresHaveUniqueExactReproductionCommands(t *testing.T) {
 			t.Fatalf("invalid stat: %+v", s)
 		}
 		seen[s.Key] = true
-		if !strings.Contains(s.Command, "rootcause '"+s.Key+"'") || !strings.Contains(s.Command, "--from 0 --to 10") || !strings.Contains(s.Command, `'capture'"'"'; echo unsafe.json'`) || !strings.Contains(s.Command, `--sourcemap 'source map'"'"'s.js.map'`) {
+		if !strings.Contains(s.Command, "rootcause '"+s.Key+"'") || strings.Contains(s.Command, "--from") || strings.Contains(s.Command, "--to ") || !strings.Contains(s.Command, `'capture'"'"'; echo unsafe.json'`) || !strings.Contains(s.Command, `--sourcemap 'source map'"'"'s.js.map'`) {
 			t.Fatalf("not exact or shell-safe: %+v", s)
 		}
 	}

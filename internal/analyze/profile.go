@@ -154,7 +154,7 @@ func FunctionsInIntervalsWithTree(rec *model.Recording, tree *flame.Tree, interv
 		return nil
 	}
 	s := &metrics.Summary{}
-	applyTree(s, tree.InIntervals(relativeIntervals(rec, intervals)))
+	applyTree(s, tree.InIntervals(relativeIntervals(rec, intervals)).TimedOnly())
 	return s.Functions
 }
 

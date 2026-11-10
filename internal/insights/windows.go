@@ -169,6 +169,9 @@ func contextForFinding(c *ruleCtx, f Finding) findingContext {
 				context = findingContext{span{at, math.Min(c.rec.EndTime, at+0.001)}, "Inspect a timestamp sample of the implicated function/module; its weight is not an occupied time span."}
 			}
 		}
+		if bestWeight < 0 && c.rep.SampleCoverage.UntimedSampleCount > 0 {
+			context.reason = "implicated function has only untimed samples; no time window available"
+		}
 	}
 	return context
 }

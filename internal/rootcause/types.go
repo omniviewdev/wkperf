@@ -42,13 +42,14 @@ type Commands struct {
 // Stack is one exact root-to-leaf stack, never an aggregation of unrelated paths.
 // Frame locations retain generated and mapped identities from the recording.
 type Stack struct {
-	Frames   []flame.Frame `json:"frames"`
-	SelfMs   float64       `json:"selfMs"`
-	Samples  int           `json:"samples"`
-	FirstSec float64       `json:"firstSec"`
-	LastSec  float64       `json:"lastSec"`
-	Stats    []Stat        `json:"stats"`
-	Command  string        `json:"command"`
+	Frames         []flame.Frame `json:"frames"`
+	SelfMs         float64       `json:"selfMs"`
+	Samples        int           `json:"samples"`
+	UntimedSamples int           `json:"untimedSamples"`
+	FirstSec       *float64      `json:"firstSec"`
+	LastSec        *float64      `json:"lastSec"`
+	Stats          []Stat        `json:"stats"`
+	Command        string        `json:"command"`
 }
 
 // Path follows the heaviest child at every level of the weighted prefix tree.
@@ -114,18 +115,19 @@ type Fire struct {
 }
 
 type PeriodicRoot struct {
-	Root       flame.Frame `json:"root"`
-	TargetID   string      `json:"targetID,omitempty"`
-	FireCount  int         `json:"fireCount"`
-	PeriodMs   float64     `json:"periodMs"`
-	JitterMs   float64     `json:"jitterMs"`
-	Regularity float64     `json:"regularity"`
-	MeanCostMs float64     `json:"meanCostMs"`
-	TotalMs    float64     `json:"totalMs"`
-	Fires      []Fire      `json:"fires"`
-	Evidence   []Stack     `json:"evidence"`
-	Stats      []Stat      `json:"stats"`
-	Command    string      `json:"command"`
+	Root         flame.Frame `json:"root"`
+	TargetID     string      `json:"targetID,omitempty"`
+	FireCount    int         `json:"fireCount"`
+	PeriodMs     float64     `json:"periodMs"`
+	JitterMs     float64     `json:"jitterMs"`
+	Regularity   float64     `json:"regularity"`
+	MeanCostMs   float64     `json:"meanCostMs"`
+	TotalMs      float64     `json:"totalMs"`
+	Fires        []Fire      `json:"fires"`
+	Evidence     []Stack     `json:"evidence"`
+	Stats        []Stat      `json:"stats"`
+	Command      string      `json:"command"`
+	SampleStatus string      `json:"sampleStatus,omitempty"`
 }
 
 // EventOverlap measures only temporal intersection with an instrumented GC pause.

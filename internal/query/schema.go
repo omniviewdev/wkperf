@@ -17,6 +17,15 @@ func ResultSchema() map[string]any {
 	properties["by"] = map[string]any{"type": "string", "enum": []string{"self", "total"}}
 	properties["limit"] = map[string]any{"type": "integer", "minimum": 1, "maximum": MaxLimit}
 	properties["total_count"] = map[string]any{"type": "integer", "minimum": 0}
+	source := properties["sources"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)
+	for field, description := range map[string]string{
+		"untimed_samples":  "Whole-recording untimed sample count, preserved for partial windows.",
+		"untimed_ms":       "Whole-recording untimed sample weight in milliseconds.",
+		"untimed_excluded": "True when the selected window excludes untimed sample weight.",
+		"untimed_spans":    "Recording-relative export-order spans, inferred only for labels; never used for attribution.",
+	} {
+		source[field].(map[string]any)["description"] = description
+	}
 	return out
 }
 

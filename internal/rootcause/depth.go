@@ -34,7 +34,7 @@ func stackDepth(frames []flame.Frame) (repeated, commit int) {
 
 func (b builder) depth() DepthStats {
 	d := DepthStats{Command: b.query("depth", b.from, b.to)}
-	values := make([]float64, 0, len(b.tree.Samples))
+	values := make([]float64, 0, b.tree.SampleCount())
 	for _, path := range b.paths {
 		for range path.Samples {
 			values = append(values, float64(len(path.Frames)))
@@ -57,11 +57,11 @@ func (b builder) depth() DepthStats {
 	// A fixed excess guards against tiny MAD in healthy, nearly uniform stacks.
 	d.OutlierThreshold = number(math.Max(32, d.Median+math.Max(16, 6*1.4826*mad)))
 	var outlierSamples []flame.Sample
-	for _, s := range b.tree.Samples {
+	b.tree.EachSample(func(s flame.Sample) {
 		if float64(len(s.Frames)) > d.OutlierThreshold {
 			outlierSamples = append(outlierSamples, s)
 		}
-	}
+	})
 	for _, stack := range b.stacks(outlierSamples, "depth.outlier") {
 		repeat, commit := stackDepth(stack.Frames)
 		key := "depth.outlier." + stackKey(stack.Frames)

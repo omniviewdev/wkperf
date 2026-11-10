@@ -12,9 +12,9 @@ import (
 	"github.com/spf13/viper"
 
 	"github.com/omniviewdev/wkperf/internal/ai"
-	"github.com/omniviewdev/wkperf/internal/analyze"
+	core "github.com/omniviewdev/wkperf/internal/flame"
 	"github.com/omniviewdev/wkperf/internal/insights"
-	"github.com/omniviewdev/wkperf/internal/model"
+	flamereport "github.com/omniviewdev/wkperf/internal/report/flame"
 	"github.com/omniviewdev/wkperf/internal/report/insightshtml"
 	"github.com/omniviewdev/wkperf/internal/schema"
 	"github.com/omniviewdev/wkperf/internal/scorecard"
@@ -105,9 +105,9 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	var reps []*insights.Report
 	var cards []*scorecard.Scorecard
 	var sourceMaps []sourcemap.Diagnostics
-	var foldedRecordings []*model.Recording
+	var foldedCharts []flamereport.Chart
 	if format == "folded" {
-		foldedRecordings = make([]*model.Recording, 0, len(files))
+		foldedCharts = make([]flamereport.Chart, 0, len(files))
 	} else {
 		reps = make([]*insights.Report, 0, len(files))
 		cards = make([]*scorecard.Scorecard, 0, len(files))
@@ -127,7 +127,7 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 			continue
 		}
 		if format == "folded" {
-			foldedRecordings = append(foldedRecordings, rec)
+			foldedCharts = append(foldedCharts, flamereport.Chart{Label: f, Tree: core.Build(rec)})
 			continue
 		}
 		options := iopts
@@ -142,9 +142,12 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if format == "folded" {
+		if err := flamereport.WriteNotes(cmd.ErrOrStderr(), foldedCharts); err != nil {
+			return combineFailures(failures, err)
+		}
 		render := func(w io.Writer) error {
-			for _, rec := range foldedRecordings {
-				if err := analyze.RenderFolded(w, rec); err != nil {
+			for i := range foldedCharts {
+				if err := flamereport.Render(w, "folded", foldedCharts[i:i+1], flamereport.Options{}); err != nil {
 					return err
 				}
 			}

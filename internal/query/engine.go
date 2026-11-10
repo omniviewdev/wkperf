@@ -137,10 +137,15 @@ func (e *Engine) load(ctx context.Context, file string, req Request) (*model.Rec
 		return nil, nil, Source{}, fmt.Errorf("%s: selected window is empty", file)
 	}
 	tree := flame.Build(rec)
-	if from > 0 || to < rec.EndTime-rec.StartTime {
+	if !profile.CoversRecording(rec, from, to) {
 		tree = tree.Window(from, to)
 	}
-	return rec, tree, Source{File: file, From: from, To: to}, nil
+	return rec, tree, Source{
+		File: file, From: from, To: to,
+		UntimedSamples: tree.UntimedTotal.Count, UntimedMs: clean(tree.UntimedTotal.Ms),
+		UntimedExcluded: tree.UntimedTotal.Count > 0 && !tree.UntimedIncluded,
+		UntimedSpans:    tree.UntimedSpans,
+	}, nil
 }
 
 // Run executes the same bounded query used by CLI and MCP. Input paths are

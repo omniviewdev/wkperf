@@ -18,14 +18,14 @@ func (b builder) ownership() ([]Owner, []Attribution) {
 	attrs := map[string]*Attribution{}
 	attrSamples := map[string][]flame.Sample{}
 	var total float64
-	for _, s := range b.tree.Samples {
+	b.tree.EachSample(func(s flame.Sample) {
 		if len(s.Frames) == 0 {
-			continue
+			return
 		}
 		leaf := s.Frames[len(s.Frames)-1]
 		owner := owners[leaf.Category]
 		if owner == nil {
-			continue
+			return
 		}
 		owner.SelfMs += s.WeightMs
 		owner.Samples++
@@ -42,7 +42,7 @@ func (b builder) ownership() ([]Owner, []Attribution) {
 			}
 		}
 		if app == nil {
-			continue
+			return
 		}
 		key := stackKey([]flame.Frame{*app})
 		a := attrs[key]
@@ -60,7 +60,7 @@ func (b builder) ownership() ([]Owner, []Attribution) {
 		}
 		a.TotalMs += s.WeightMs
 		attrSamples[key] = append(attrSamples[key], s)
-	}
+	})
 	out := make([]Owner, 0, len(owners))
 	for _, c := range []flame.Category{flame.CategoryApp, flame.CategoryFramework, flame.CategoryNative, flame.CategoryGC} {
 		o := owners[c]

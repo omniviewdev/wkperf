@@ -311,6 +311,7 @@ var pageTmpl = template.Must(template.New("page").Funcs(template.FuncMap{
 {{range .TopInclusive}}<tr><td>Inclusive</td><td><code>{{name .Name}}</code></td><td>{{.Location}}</td><td class="n">{{printf "%.3f" .TotalMs}}<div><code>{{triggerFunctionCommand $r $trigger . "total_ms"}}</code></div></td></tr>{{end}}
 </table>{{else}}<span class="mut">No trigger attribution data.</span>{{end}}</div>
 <p class="mut">Wakeups: {{.R.Wakeups.Count}} callbacks <code>{{numeric $r "wakeups.count"}}</code>; {{printf "%.3f" .R.Wakeups.PerSecond}} per second <code>{{numeric $r "wakeups.per_second"}}</code>. {{.R.SampleCoverage.Interpretation}}</p>
+{{with .R.SampleCoverage}}{{if .UntimedSampleCount}}<p class="mut">Untimed samples: {{.UntimedSampleCount}} ({{printf "%.1f" .UntimedMs}} ms): {{if .UntimedExcluded}}excluded from this window{{else}}included in rankings, excluded from frame, task, trigger, window and periodic attribution{{end}}.</p>{{end}}{{end}}
 
 <h3>Modules</h3>
 <div class="card">{{if .Modules}}<table><tr><th>Module</th><th class="n">Self</th><th class="n">Share</th><th></th></tr>
@@ -319,12 +320,12 @@ var pageTmpl = template.Must(template.New("page").Funcs(template.FuncMap{
 
 <h3>Slow frames</h3>
 <div class="card">{{if .SlowFrames}}<table><tr><th class="n">At (s)</th><th class="n">Frame ms</th><th class="n">Script</th><th class="n">Layout</th><th class="n">Paint</th><th class="n">GC</th><th>Top event / function</th></tr>
-{{range .SlowFrames}}<tr><td class="n">{{printf "%.2f" .T}}</td><td class="n">{{printf "%.1f" .Ms}}</td><td class="n">{{printf "%.1f" .ScriptMs}}</td><td class="n">{{printf "%.1f" .LayoutMs}}</td><td class="n">{{printf "%.1f" .PaintMs}}</td><td class="n">{{printf "%.1f" .GCMs}}</td><td>{{.TopEvent}}{{if .TopFunc}} &rarr; <code>{{.TopFunc}}</code>{{end}}</td></tr>{{end}}</table>
+{{range .SlowFrames}}<tr><td class="n">{{printf "%.2f" .T}}</td><td class="n">{{printf "%.1f" .Ms}}</td><td class="n">{{printf "%.1f" .ScriptMs}}</td><td class="n">{{printf "%.1f" .LayoutMs}}</td><td class="n">{{printf "%.1f" .PaintMs}}</td><td class="n">{{printf "%.1f" .GCMs}}</td><td>{{.TopEvent}}{{if .TopFunc}} &rarr; <code>{{.TopFunc}}</code>{{end}}{{if .SampleStatus}}<div class="mut">{{.SampleStatus}}</div>{{end}}</td></tr>{{end}}</table>
 {{else}}<span class="mut">No slow frames.</span>{{end}}</div>
 
 <h3>Long tasks</h3>
 <div class="card">{{if .LongTasks}}<table><tr><th class="n">At (s)</th><th class="n">ms</th><th>Event</th><th>Detail</th><th>Top function</th></tr>
-{{range .LongTasks}}<tr><td class="n">{{printf "%.2f" .T}}</td><td class="n">{{printf "%.1f" .Ms}}</td><td>{{.EventType}}</td><td>{{.Detail}}</td><td>{{if .TopFunc}}<code>{{.TopFunc}}</code>{{end}}</td></tr>{{end}}</table>
+{{range .LongTasks}}<tr><td class="n">{{printf "%.2f" .T}}</td><td class="n">{{printf "%.1f" .Ms}}</td><td>{{.EventType}}</td><td>{{.Detail}}</td><td>{{if .TopFunc}}<code>{{.TopFunc}}</code>{{end}}{{if .SampleStatus}}<div class="mut">{{.SampleStatus}}</div>{{end}}</td></tr>{{end}}</table>
 {{else}}<span class="mut">No long tasks.</span>{{end}}</div>
 </section>
 {{end}}

@@ -599,7 +599,12 @@ func ruleCoverage(c *ruleCtx, st *recStats) *Finding {
 		return nil
 	}
 	ev := []string{fmt.Sprintf("%sms sampled vs %sms measured script; coverage ratio %.3f, %d samples", f1(coverage.SampledMs), f1(coverage.ScriptMs), coverage.Ratio, coverage.SampleCount)}
+	suggestion := "Sampled function and module rankings may be unrepresentative. Repeat the same interaction with JavaScript sampling enabled and a longer capture; compare sample weights with measured script time."
+	if coverage.UntimedExcluded && coverage.UntimedMs > 0 {
+		ev = append(ev, fmt.Sprintf("%d untimed samples (%.6g ms) excluded from this window", coverage.UntimedSampleCount, coverage.UntimedMs))
+		suggestion = "Analyze the whole recording to include untimed samples; per-window coverage counts timed samples only."
+	}
 	return &Finding{ID: "low-sample-coverage", Title: "Sampling profiler covers little of the script time", Severity: SevInfo, Category: "script",
 		Evidence:   ev,
-		Suggestion: "Sampled function and module rankings may be unrepresentative. Repeat the same interaction with JavaScript sampling enabled and a longer capture; compare sample weights with measured script time."}
+		Suggestion: suggestion}
 }

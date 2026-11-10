@@ -89,7 +89,10 @@ func bridgeRootFinding(c *ruleCtx, raw rootcause.Finding) Finding {
 	windows := raw.Windows
 	if len(windows) == 0 {
 		for _, stack := range raw.Evidence {
-			from, to := stack.FirstSec, stack.LastSec
+			if stack.FirstSec == nil || stack.LastSec == nil {
+				continue
+			}
+			from, to := *stack.FirstSec, *stack.LastSec
 			if to <= from {
 				to = from + 0.001
 			} else {

@@ -21,11 +21,16 @@ const Schema = "wkperf-flame/v1"
 // Chart keeps each recording separate. A differential chart supplies Before,
 // After, and Comparison instead of Tree. Labels identify original inputs.
 type Chart struct {
-	Label      string           `json:"label"`
-	Tree       *core.Tree       `json:"tree,omitempty"`
-	Before     *core.Tree       `json:"before,omitempty"`
-	After      *core.Tree       `json:"after,omitempty"`
-	Comparison *core.Comparison `json:"comparison,omitempty"`
+	Label           string           `json:"label"`
+	Tree            *core.Tree       `json:"tree,omitempty"`
+	Before          *core.Tree       `json:"before,omitempty"`
+	After           *core.Tree       `json:"after,omitempty"`
+	Comparison      *core.Comparison `json:"comparison,omitempty"`
+	UntimedSamples  int              `json:"untimedSamples"`
+	UntimedMs       float64          `json:"untimedMs"`
+	UntimedExcluded bool             `json:"untimedExcluded"`
+	Empty           bool             `json:"empty"`
+	EmptyReason     string           `json:"emptyReason,omitempty"`
 }
 
 // Options controls presentation. MinMS hides smaller visual contexts, not time.
@@ -60,12 +65,91 @@ func Render(w io.Writer, format string, charts []Chart, opts Options) error {
 	case "speedscope":
 		return renderSpeedscope(w, charts)
 	case "json":
+		encodedCharts := make([]Chart, len(charts))
+		for i, chart := range charts {
+			encodedCharts[i] = chartMetadata(chart)
+		}
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
-		return enc.Encode(Document{Schema: Schema, Mode: mode(charts), Charts: charts, View: opts})
+		return enc.Encode(Document{Schema: Schema, Mode: mode(charts), Charts: encodedCharts, View: opts})
 	default:
 		return fmt.Errorf("unknown flame format %q (want html|svg|folded|speedscope|json)", format)
 	}
+}
+
+func chartMetadata(chart Chart) Chart {
+	chart.UntimedSamples, chart.UntimedMs, chart.UntimedExcluded = 0, 0, false
+	chart.Empty, chart.EmptyReason = false, ""
+	add := func(tree *core.Tree) {
+		chart.UntimedSamples += tree.UntimedTotal.Count
+		chart.UntimedMs += tree.UntimedTotal.Ms
+		chart.UntimedExcluded = chart.UntimedExcluded || tree.UntimedTotal.Count > 0 && !tree.UntimedIncluded
+	}
+	if chart.Comparison != nil {
+		add(chart.Before)
+		add(chart.After)
+		chart.Empty = chart.Before.Root.TotalMs == 0 && chart.After.Root.TotalMs == 0
+		if chart.Empty {
+			chart.EmptyReason = "no weighted samples in baseline or current selected window"
+		}
+	} else {
+		add(chart.Tree)
+		chart.Empty = chart.Tree.Root.TotalMs == 0
+		if chart.Empty {
+			chart.EmptyReason = emptyReason(chart.Tree)
+			if note := exclusionNote(chart.Tree); note != "" {
+				chart.EmptyReason += "; " + note
+			}
+		}
+	}
+	return chart
+}
+
+func exclusionNote(tree *core.Tree) string {
+	if tree.UntimedIncluded || tree.UntimedTotal.Count == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d samples (%g ms) have no timestamp and are excluded from this window", tree.UntimedTotal.Count, tree.UntimedTotal.Ms)
+}
+
+func emptyReason(tree *core.Tree) string {
+	return fmt.Sprintf("no weighted samples in %.3f–%.3f s (%s ms active)", tree.StartTime, tree.EndTime, milliseconds(tree.ActiveDurationMs))
+}
+
+// WriteNotes reports valid empty selections and untimed exclusions without
+// adding nonstandard fields or comments to folded and speedscope exports.
+func WriteNotes(w io.Writer, charts []Chart) error {
+	write := func(label string, tree *core.Tree) error {
+		note := exclusionNote(tree)
+		if tree.Root.TotalMs == 0 {
+			if note != "" {
+				note += "; "
+			}
+			note += emptyReason(tree)
+		}
+		if note == "" {
+			return nil
+		}
+		if len(charts) == 1 && charts[0].Comparison == nil {
+			_, err := fmt.Fprintf(w, "wkperf: %s\n", note)
+			return err
+		}
+		_, err := fmt.Fprintf(w, "wkperf: %s: %s\n", label, note)
+		return err
+	}
+	for _, chart := range charts {
+		if chart.Comparison != nil {
+			if err := write(chart.Label+" · baseline", chart.Before); err != nil {
+				return err
+			}
+			if err := write(chart.Label+" · current", chart.After); err != nil {
+				return err
+			}
+		} else if err := write(chart.Label, chart.Tree); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func validate(charts []Chart, opts Options) error {

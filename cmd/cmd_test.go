@@ -140,7 +140,7 @@ func TestAnalyzeJSONSchema(t *testing.T) {
 		Schema  string            `json:"schema"`
 		Reports []json.RawMessage `json:"reports"`
 	}
-	if err := json.Unmarshal([]byte(out), &doc); err != nil || doc.Schema != "wkperf-insights/v2" || len(doc.Reports) != 1 {
+	if err := json.Unmarshal([]byte(out), &doc); err != nil || doc.Schema != "wkperf-insights/v3" || len(doc.Reports) != 1 {
 		t.Fatalf("bad json: %v %+v", err, doc)
 	}
 }
@@ -307,7 +307,7 @@ func TestAuditJSONAndMinScore(t *testing.T) {
 		Schema string          `json:"schema"`
 		Report json.RawMessage `json:"report"`
 	}
-	if err := json.Unmarshal([]byte(out), &doc); err != nil || doc.Schema != "wkperf-audit/v1" || len(doc.Report) == 0 {
+	if err := json.Unmarshal([]byte(out), &doc); err != nil || doc.Schema != "wkperf-audit/v2" || len(doc.Report) == 0 {
 		t.Fatalf("bad json: %v %.200s", err, out)
 	}
 	_, err = run(t, "audit", root, "--format", "json", "--min-score", "100")

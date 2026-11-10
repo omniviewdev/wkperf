@@ -40,7 +40,11 @@ func rootFrames(b *strings.Builder, frames []flame.Frame, n int) {
 }
 
 func rootStack(b *strings.Builder, stack rootcause.Stack, n int) {
-	fmt.Fprintf(b, "Exact sampled stack: self=%sms samples=%d window=%s–%ss; reproduce: %s\n", num(stack.SelfMs), stack.Samples, num(stack.FirstSec), num(stack.LastSec), stack.Command)
+	window := "unknown clock"
+	if stack.FirstSec != nil && stack.LastSec != nil {
+		window = num(*stack.FirstSec) + "–" + num(*stack.LastSec) + "s"
+	}
+	fmt.Fprintf(b, "Exact sampled stack: self=%sms samples=%d window=%s; reproduce: %s\n", num(stack.SelfMs), stack.Samples, window, stack.Command)
 	rootFrames(b, stack.Frames, n)
 	rootStats(b, stack.Stats, 4)
 }

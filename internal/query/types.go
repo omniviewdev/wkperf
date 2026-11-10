@@ -55,9 +55,13 @@ type Loader func(context.Context, string, SourceOptions) (*model.Recording, erro
 type Engine struct{ Loader Loader }
 
 type Source struct {
-	File string  `json:"file"`
-	From float64 `json:"from"`
-	To   float64 `json:"to"`
+	File            string              `json:"file"`
+	From            float64             `json:"from"`
+	To              float64             `json:"to"`
+	UntimedSamples  int                 `json:"untimed_samples"`
+	UntimedMs       float64             `json:"untimed_ms"`
+	UntimedExcluded bool                `json:"untimed_excluded"`
+	UntimedSpans    []flame.UntimedSpan `json:"untimed_spans,omitempty"`
 }
 
 // Function keeps generated identity and optional original source locations.

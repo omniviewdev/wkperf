@@ -239,6 +239,9 @@ func renderRootDetails(b *strings.Builder, r *Report) {
 	b.WriteString("\n## Periodic roots\n\n")
 	for _, periodic := range root.PeriodicRoots {
 		fmt.Fprintf(b, "### %s\n\n", mdEscape(frameLabel(periodic.Root)))
+		if periodic.SampleStatus != "" {
+			fmt.Fprintf(b, "%s\n\n", periodic.SampleStatus)
+		}
 		renderRootStats(b, periodic.Stats)
 		for _, stack := range periodic.Evidence {
 			renderStack(b, stack, false)
@@ -268,9 +271,8 @@ func renderRootDetails(b *strings.Builder, r *Report) {
 		renderRootStats(b, window.Stats)
 		if window.TopStack != nil {
 			renderStack(b, *window.TopStack, false)
-		} else {
-			fmt.Fprintf(b, "%s\n", window.SampleStatus)
 		}
+		fmt.Fprintf(b, "%s\n", window.SampleStatus)
 		fmt.Fprintf(b, "Reproduce window: %s\n", code(window.Command))
 	}
 }
@@ -344,6 +346,9 @@ func renderDetails(b *strings.Builder, r *Report) {
 	for i, f := range r.SlowFrames {
 		prefix := "slowFrames." + strconv.Itoa(i)
 		fmt.Fprintf(b, "- %s — %s\n", mdEscape(f.TopEvent), code(f.TopFunc))
+		if f.SampleStatus != "" {
+			fmt.Fprintf(b, "  - %s\n", f.SampleStatus)
+		}
 		for _, item := range []struct {
 			key, label string
 			value      float64
@@ -358,12 +363,28 @@ func renderDetails(b *strings.Builder, r *Report) {
 	for i, t := range r.LongTasks {
 		prefix := "longTasks." + strconv.Itoa(i)
 		fmt.Fprintf(b, "- %s %s — %s; time %.6gs, duration %.6gms. Reproduce: %s; %s\n", mdEscape(t.EventType), mdEscape(t.Detail), code(t.TopFunc), t.T, t.Ms, code(NumericCommand(r, prefix+".t")), code(NumericCommand(r, prefix+".ms")))
+		if t.SampleStatus != "" {
+			fmt.Fprintf(b, "  - %s\n", t.SampleStatus)
+		}
 	}
 }
 
 func markdown(r *Report, o MarkdownOptions) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# wkperf profile: %s\n\n- Source: %s\n- Active duration: %.6gs. Reproduce: %s\n", mdEscape(r.Name), code(r.Source), r.DurationSec, code(NumericCommand(r, "recording.duration_sec")))
+	if coverage := r.SampleCoverage; coverage.UntimedSampleCount > 0 {
+		totalMs := coverage.SampledMs
+		accounting := "included in rankings, excluded from frame, task, trigger, window and periodic attribution."
+		if coverage.UntimedExcluded {
+			totalMs += coverage.UntimedMs
+			accounting = "excluded from this window and all time-based attribution; analyze the whole recording to include them in rankings."
+		}
+		share := 0.0
+		if totalMs > 0 {
+			share = coverage.UntimedMs / totalMs * 100
+		}
+		fmt.Fprintf(&b, "- Untimed samples: %d (%.1f ms, %.1f%% of sampled weight): %s\n", coverage.UntimedSampleCount, coverage.UntimedMs, share, accounting)
+	}
 	renderFindings(&b, r, true)
 	renderHotPath(&b, r, o.Brief)
 	renderFunctions(&b, r, o.Brief)

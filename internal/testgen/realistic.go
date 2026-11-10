@@ -162,3 +162,51 @@ func PausedMinified() *model.Recording {
 func MinifiedSourceMap() string {
 	return `{"version":3,"file":"bundle.js","sourceRoot":"../src","sources":["view.ts"],"names":["render","flush"],"mappings":"AAAAA,UACIC"}`
 }
+
+// UntimedSamples has 40 missing-clock samples and 10 timed samples: 80 ms total.
+// Whole-recording aggregates include all 50; partial windows include timed only.
+func UntimedSamples() *model.Recording {
+	rec := Empty()
+	rec.DisplayName = "Untimed samples"
+	rec.StartTime, rec.EndTime = 10, 12
+	rec.Records = []model.Record{
+		scriptRecord("timer-fired", 10.2, 10.3),
+		scriptRecord("timer-fired", 11, 11.04),
+	}
+	root := model.StackFrame{Name: "appRoot", URL: "https://a.test/app.js", Line: 1, Column: 1}
+	untimed := model.StackFrame{Name: "untimedLeaf", URL: root.URL, Line: 10, Column: 1}
+	shared := model.StackFrame{Name: "sharedLeaf", URL: root.URL, Line: 20, Column: 1}
+	target := model.TargetSamples{Target: target(), StackTraces: make([]model.StackTrace, 0, 50), Durations: make([]float64, 0, 50)}
+	for i := range 50 {
+		leaf, timestamp, weight := shared, 0.0, .001
+		if i < 25 {
+			leaf = untimed
+		}
+		if i >= 40 {
+			timestamp, weight = 11+float64(i-40)*.004, .004
+		}
+		target.StackTraces = append(target.StackTraces, model.StackTrace{Timestamp: timestamp, StackFrames: []model.StackFrame{leaf, root}})
+		target.Durations = append(target.Durations, weight)
+	}
+	rec.Samples = []model.TargetSamples{target}
+	return rec
+}
+
+// DecimalEnd exercises a whole-recording end rounded down to nine decimals.
+func DecimalEnd() *model.Recording {
+	rec := UntimedSamples()
+	rec.DisplayName = "Decimal recording end"
+	start := 2.611872458306607
+	shift := start - rec.StartTime
+	rec.StartTime, rec.EndTime = start, 20.24081204162212
+	for i := range rec.Records {
+		rec.Records[i].StartTime += shift
+		rec.Records[i].EndTime += shift
+	}
+	for i := range rec.Samples[0].StackTraces {
+		if rec.Samples[0].StackTraces[i].Timestamp != 0 {
+			rec.Samples[0].StackTraces[i].Timestamp += shift
+		}
+	}
+	return rec
+}

@@ -9,6 +9,7 @@ import (
 	"github.com/omniviewdev/wkperf/internal/metrics"
 	"github.com/omniviewdev/wkperf/internal/model"
 	"github.com/omniviewdev/wkperf/internal/profile"
+	"github.com/omniviewdev/wkperf/internal/rootcause"
 )
 
 type triggerBucket struct {
@@ -56,6 +57,7 @@ func finishTriggers(rec *model.Recording, tree *flame.Tree, buckets map[string]*
 		top = 10
 	}
 	out := make([]TriggerStat, 0, len(buckets))
+	tree = tree.TimedOnly()
 	for _, b := range buckets {
 		sort.Float64s(b.durations)
 		t := TriggerStat{Kind: b.kind, Name: b.name, Count: len(b.durations), TopSelf: []metrics.FuncStat{}, TopInclusive: []metrics.FuncStat{}}
@@ -86,6 +88,22 @@ func finishTriggers(rec *model.Recording, tree *flame.Tree, buckets map[string]*
 		}
 		if len(t.TopInclusive) == 0 {
 			t.SampleMessage = "No samples in this trigger's intervals"
+			var spans []flame.UntimedSpan
+			for _, span := range tree.UntimedSpans {
+				for _, interval := range b.intervals {
+					if span.FromSec < interval.End-rec.StartTime && span.ToSec > interval.Start-rec.StartTime {
+						spans = append(spans, span)
+						break
+					}
+				}
+			}
+			offset := 0.0
+			if rec.SampleEvidence != nil {
+				offset = rec.StartTime - rec.SampleEvidence.StartTime
+			}
+			if status := rootcause.UntimedSampleStatus(spans, 0, rec.EndTime-rec.StartTime, offset); status != "" {
+				t.SampleMessage = status
+			}
 		}
 		out = append(out, t)
 	}
@@ -169,7 +187,7 @@ func idleWakeups(rec *model.Recording, tree *flame.Tree, top int) WakeupStats {
 }
 
 func sampleCoverage(rec *model.Recording, sum *metrics.Summary) SampleCoverage {
-	c := SampleCoverage{SampleCount: sum.Fixture.SampleCount, Interpretation: "Sample weights estimate execution time; coverage is not a causal attribution."}
+	c := SampleCoverage{SampleCount: sum.Fixture.SampleCount, Interpretation: "Sample weights estimate execution time; coverage may exceed 1 because weights are estimates and measured script time is exclusive. Coverage is not a causal attribution."}
 	for _, f := range sum.Functions {
 		c.SampledMs += f.SelfMs
 	}

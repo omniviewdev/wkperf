@@ -151,7 +151,8 @@ func TestFindingHasNumericEvidenceAndRerunContract(t *testing.T) {
 			}
 		}
 		for _, w := range f.SuggestedWindows {
-			if w.FromSec < 0 || w.ToSec <= w.FromSec || w.ToSec > 2 || len(w.Flags) < 4 || w.Flags[0] != "--from" || w.Flags[2] != "--to" {
+			whole := w.FromSec == 0 && w.ToSec == 2
+			if w.FromSec < 0 || w.ToSec <= w.FromSec || w.ToSec > 2 || (!whole && (len(w.Flags) < 4 || w.Flags[0] != "--from" || w.Flags[2] != "--to")) {
 				t.Errorf("invalid rerun window %+v", w)
 			}
 		}

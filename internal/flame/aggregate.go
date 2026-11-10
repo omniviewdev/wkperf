@@ -24,7 +24,8 @@ func (tree *Tree) aggregate(leafIDs []string) {
 	paths := make(map[string]*pathWork)
 	functionSeen := make(map[frameKey]int)
 	edgeSeen := make(map[edgeKey]int)
-	for sampleIndex, sample := range tree.Samples {
+	sampleIndex := 0
+	tree.EachSample(func(sample Sample) {
 		generation := sampleIndex + 1
 		for i, frame := range sample.Frames {
 			k := key(frame)
@@ -66,7 +67,8 @@ func (tree *Tree) aggregate(leafIDs []string) {
 		}
 		path.total.add(sample.WeightMs)
 		path.path.Samples++
-	}
+		sampleIndex++
+	})
 	tree.functions = make([]Function, 0, len(functions))
 	for _, work := range functions {
 		work.function.SelfMs, work.function.TotalMs = work.self.total(), work.total.total()
@@ -146,4 +148,26 @@ func (tree *Tree) SamplePathIDs() []string {
 		return []string{}
 	}
 	return tree.samplePathIDs
+}
+
+// SampleCount counts timed samples and untimed samples retained by this view.
+func (tree *Tree) SampleCount() int {
+	if tree == nil {
+		return 0
+	}
+	return len(tree.Samples) + len(tree.Untimed)
+}
+
+// EachSample visits included untimed samples first, then time-sorted samples.
+// The samples and their frame slices are read-only. No combined slice is made.
+func (tree *Tree) EachSample(visit func(Sample)) {
+	if tree == nil {
+		return
+	}
+	for _, sample := range tree.Untimed {
+		visit(sample)
+	}
+	for _, sample := range tree.Samples {
+		visit(sample)
+	}
 }

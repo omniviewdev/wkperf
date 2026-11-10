@@ -19,11 +19,14 @@ const timelineBasis = "instrumented timeline interval"
 
 // Build uses a supplied mapped tree, or builds a canonical tree when tree is nil.
 func Build(rec *model.Recording, tree *flame.Tree, o Options) *Report {
-	r := &Report{SchemaVersion: "1", Source: o.Source}
+	r := &Report{SchemaVersion: "2", Source: o.Source}
 	if rec == nil {
 		return r
 	}
 	o = defaults(o)
+	if rec.SampleEvidence != nil {
+		o.OffsetSec = rec.StartTime - rec.SampleEvidence.StartTime
+	}
 	from := math.Max(0, math.Max(o.FromSec, o.TrimStartSec))
 	to := math.Max(0, rec.EndTime-rec.StartTime-math.Max(0, o.TrimEndSec))
 	if o.ToSec > 0 {
@@ -42,7 +45,9 @@ func Build(rec *model.Recording, tree *flame.Tree, o Options) *Report {
 	if to < from {
 		to = from
 	}
-	tree = tree.Window(from, to)
+	if !profile.CoversRecording(rec, from, to) {
+		tree = tree.Window(from, to)
+	}
 	b := builder{rec: rec, tree: tree, o: o, from: from, to: to}
 	r.FromSec, r.ToSec = b.exportTime(from), b.exportTime(to)
 	r.Sourcemaps = append([]string(nil), o.Sourcemaps...)
@@ -62,25 +67,47 @@ func Build(rec *model.Recording, tree *flame.Tree, o Options) *Report {
 		Owners: b.query("rootcause", from, to), GC: b.query("rootcause", from, to),
 	}
 	selector := "(anonymous)"
-	if len(tree.Samples) > 0 && len(tree.Samples[0].Frames) > 0 {
-		selector = tree.Samples[0].Frames[0].Name
-	}
+	selected := false
+	tree.EachSample(func(s flame.Sample) {
+		if !selected && len(s.Frames) > 0 {
+			selector, selected = s.Frames[0].Name, true
+		}
+	})
 	r.Commands.Paths = b.query("paths "+quote(selector), from, to)
 	r.HotPath = b.hotPath(tree, "hot_path", from, to)
 	r.Owners, r.AppAttribution = b.ownership()
 	r.Findings = b.stackFindings()
 	r.PeriodicRoots = b.periodicRoots()
+	totalMs := tree.Root.TotalMs
+	if !tree.UntimedIncluded {
+		totalMs += tree.UntimedTotal.Ms
+	}
+	note := UntimedAttributionNote(tree.UntimedTotal.Ms, totalMs)
+	for i := range r.Findings {
+		if r.Findings[i].ID == "react-sync-in-trigger" || r.Findings[i].ID == "suspected-layout-read" {
+			if note != "" {
+				r.Findings[i].Explanation += " " + note
+			}
+		}
+	}
+	for i := range r.PeriodicRoots {
+		r.PeriodicRoots[i].SampleStatus = note
+	}
 	r.Depth = b.depth()
 	r.Findings = append(r.Findings, b.depthFindings(r.Depth)...)
 	r.GCOverlaps = b.gcOverlaps()
 	r.LongTasks, r.SlowFrames, r.EventBursts, r.Windows = b.windows()
-	var sampledMs float64
-	for _, s := range tree.Samples {
-		sampledMs += s.WeightMs
+	sampledMs := tree.Root.TotalMs
+	excludedMs := 0.0
+	if !tree.UntimedIncluded {
+		excludedMs = tree.UntimedTotal.Ms
 	}
 	r.Stats = []Stat{
 		b.stat("samples.self_ms", "Sampled self time", sampledMs, "ms", sampledBasis),
-		b.stat("samples.count", "Retained profiler samples", float64(len(tree.Samples)), "count", sampledBasis),
+		b.stat("samples.count", "Retained profiler samples", float64(tree.SampleCount()), "count", sampledBasis),
+		b.stat("samples.untimed_count", "Profiler samples without timestamps", float64(tree.UntimedTotal.Count), "count", sampledBasis),
+		b.stat("samples.untimed_ms", "Sample weight without timestamps", tree.UntimedTotal.Ms, "ms", sampledBasis),
+		b.stat("samples.untimed_excluded_ms", "Untimed sample weight excluded from this window", excludedMs, "ms", sampledBasis),
 		b.stat("window.duration_ms", "Selected wall duration", (to-from)*1000, "ms", timelineBasis),
 		b.stat("window.active_ms", "Active wall duration", profile.ActiveDuration(rec, rec.StartTime+from, rec.StartTime+to)*1000, "ms", timelineBasis),
 		b.stat("window.from_sec", "Selected window start", r.FromSec, "s", timelineBasis),
@@ -139,7 +166,13 @@ func number(v float64) float64 {
 	return math.Round(v*1e6) / 1e6
 }
 
-func seconds(v float64) float64                { return math.Round(v*1e9) / 1e9 }
+func seconds(v float64) float64 {
+	v = math.Round(v*1e9) / 1e9
+	if v == 0 {
+		return 0
+	}
+	return v
+}
 func decimal(v float64) string                 { return strconv.FormatFloat(seconds(v), 'f', -1, 64) }
 func quote(s string) string                    { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
 func (b builder) exportTime(t float64) float64 { return seconds(t + b.o.OffsetSec) }
@@ -163,7 +196,11 @@ func (b builder) query(op string, from, to float64) string {
 	for _, path := range b.o.Sourcemaps {
 		flags += " --sourcemap " + quote(path)
 	}
-	return "wkperf query " + quote(b.o.Source) + " " + op + " --from " + decimal(b.exportTime(from)) + " --to " + decimal(b.exportTime(to)) + flags + " --format json"
+	window := ""
+	if b.o.OffsetSec > 1e-9 || b.rec.UntimedExcluded || !profile.CoversRecording(b.rec, from, to) {
+		window = " --from " + decimal(b.exportTime(from)) + " --to " + decimal(b.exportTime(to))
+	}
+	return "wkperf query " + quote(b.o.Source) + " " + op + window + flags + " --format json"
 }
 
 func (b builder) reproduce(key string) string { return b.query("rootcause "+quote(key), b.from, b.to) }
@@ -221,15 +258,24 @@ func (b builder) stacks(samples []flame.Sample, prefix string) []Stack {
 		}
 		key := stackKey(s.Frames)
 		v := agg[key]
-		end := sampleEnd(s)
 		if v == nil {
-			v = &Stack{Frames: s.Frames, FirstSec: b.exportTime(s.Timestamp), LastSec: b.exportTime(end)}
+			v = &Stack{Frames: s.Frames}
 			agg[key] = v
 		}
 		v.SelfMs += s.WeightMs
 		v.Samples++
-		v.FirstSec = math.Min(v.FirstSec, b.exportTime(s.Timestamp))
-		v.LastSec = math.Max(v.LastSec, b.exportTime(end))
+		if s.Untimed {
+			v.UntimedSamples++
+			continue
+		}
+		at := b.exportTime(s.Timestamp)
+		if v.FirstSec == nil {
+			v.FirstSec, v.LastSec = new(float64), new(float64)
+			*v.FirstSec, *v.LastSec = at, at
+		} else {
+			*v.FirstSec = math.Min(*v.FirstSec, at)
+			*v.LastSec = math.Max(*v.LastSec, at)
+		}
 	}
 	out := make([]Stack, 0, len(agg))
 	for key, v := range agg {
@@ -251,8 +297,12 @@ func (b builder) finishStack(v Stack, prefix, key string) Stack {
 	v.Stats = []Stat{
 		b.stat(id+".self_ms", "Exact stack self time", v.SelfMs, "ms", sampledBasis),
 		b.stat(id+".samples", "Exact stack samples", float64(v.Samples), "count", sampledBasis),
-		b.stat(id+".first_sec", "First retained sample", v.FirstSec, "s", sampledBasis),
-		b.stat(id+".last_sec", "Last retained sample", v.LastSec, "s", sampledBasis),
+		b.stat(id+".untimed_samples", "Exact stack samples without timestamps", float64(v.UntimedSamples), "count", sampledBasis),
+	}
+	if v.FirstSec != nil && v.LastSec != nil {
+		v.Stats = append(v.Stats,
+			b.stat(id+".first_sec", "First retained timed sample", *v.FirstSec, "s", sampledBasis),
+			b.stat(id+".last_sec", "Last retained timed sample", *v.LastSec, "s", sampledBasis))
 	}
 	return v
 }

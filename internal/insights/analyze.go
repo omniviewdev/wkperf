@@ -2,6 +2,7 @@ package insights
 
 import (
 	"encoding/json"
+	"math"
 	"sort"
 	"strings"
 
@@ -35,14 +36,18 @@ func Analyze(rec *model.Recording, source string, o Options) *Report {
 	if rec == nil {
 		rec = &model.Recording{}
 	}
+	if rec.SampleEvidence != nil {
+		o.WindowStartSec = rec.StartTime - rec.SampleEvidence.StartTime
+	}
 	tree := flame.Build(rec)
 	sum := analyze.SummarizeWithTree(rec, source, tree)
 	r := &Report{
-		SchemaVersion:     "wkperf-insights/v2",
+		SchemaVersion:     "wkperf-insights/v3",
 		FlameTree:         tree,
 		Source:            source,
 		WindowStartSec:    o.WindowStartSec,
 		WindowEndSec:      o.WindowStartSec + rec.EndTime - rec.StartTime,
+		WholeRecording:    !rec.UntimedExcluded && o.WindowStartSec <= 1e-9,
 		ModuleGrouping:    o.ModuleGrouping,
 		JankMs:            o.JankMs,
 		LongTaskMs:        o.LongTaskMs,
@@ -84,13 +89,37 @@ func Analyze(rec *model.Recording, source string, o Options) *Report {
 		r.Modules = mods
 	}
 
-	idx := newSampleIndex(tree, rec.StartTime)
+	idx := newSampleIndex(tree, rec.StartTime, o.WindowStartSec)
 	r.Triggers = triggerStatsWithTree(rec, tree, o.Top)
 	r.Wakeups = idleWakeups(rec, tree, o.Top)
 	r.SampleCoverage = sampleCoverage(rec, sum)
-	r.SampleCoverage.SampleCount = len(tree.Samples)
+	r.SampleCoverage.SampleCount = tree.SampleCount()
+	r.SampleCoverage.TimedSampleCount = len(tree.Samples)
+	r.SampleCoverage.UntimedSampleCount = tree.UntimedTotal.Count
+	r.SampleCoverage.UntimedMs = tree.UntimedTotal.Ms
+	r.SampleCoverage.UntimedExcluded = tree.UntimedTotal.Count > 0 && !tree.UntimedIncluded
+	r.SampleCoverage.UntimedSpans = append([]flame.UntimedSpan{}, tree.UntimedSpans...)
+	for i := range r.SampleCoverage.UntimedSpans {
+		span := &r.SampleCoverage.UntimedSpans[i]
+		span.FromSec = math.Round((span.FromSec+o.WindowStartSec)*1e9) / 1e9
+		span.ToSec = math.Round((span.ToSec+o.WindowStartSec)*1e9) / 1e9
+		if span.FromSec == 0 {
+			span.FromSec = 0
+		}
+	}
+	sampledMs := r.SampleCoverage.SampledMs
+	if r.SampleCoverage.UntimedExcluded {
+		sampledMs += r.SampleCoverage.UntimedMs
+	}
+	note := rootcause.UntimedAttributionNote(r.SampleCoverage.UntimedMs, sampledMs)
 	allSlow := slowFrames(rec, idx, o.JankMs)
 	allLong := longTasks(rec, idx, o.LongTaskMs)
+	for i := range allSlow {
+		allSlow[i].SampleStatus = note
+	}
+	for i := range allLong {
+		allLong[i].SampleStatus = note
+	}
 	r.SlowFrames = topN(allSlow, o.Top)
 	r.LongTasks = topNLong(allLong, o.Top)
 
@@ -190,11 +219,14 @@ func computeModules(fns []metrics.FuncStat, grouping string) []ModuleStat {
 
 // sampleIndex is a time-sorted flattening of all samples for range queries.
 type sampleIndex struct {
-	rows []indexedSample
+	rows         []indexedSample
+	untimedSpans []flame.UntimedSpan
+	origin       float64
+	offset       float64
 }
 
-func newSampleIndex(tree *flame.Tree, origin float64) *sampleIndex {
-	x := &sampleIndex{rows: make([]indexedSample, 0, len(tree.Samples))}
+func newSampleIndex(tree *flame.Tree, origin, offset float64) *sampleIndex {
+	x := &sampleIndex{rows: make([]indexedSample, 0, len(tree.Samples)), untimedSpans: tree.UntimedSpans, origin: origin, offset: offset}
 	for _, sample := range tree.Samples {
 		if len(sample.Frames) == 0 {
 			continue
@@ -229,6 +261,9 @@ func (x *sampleIndex) top(s, e float64) string {
 		}
 	}
 	if best == "" {
+		if status := rootcause.UntimedSampleStatus(x.untimedSpans, s-x.origin, e-x.origin, x.offset); status != "" {
+			return status
+		}
 		return "No samples in this interval"
 	}
 	return best

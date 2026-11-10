@@ -30,7 +30,7 @@ func TestDocumentDefinesCompleteOutputContracts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"wkperf-insights/v2", "wkperf/v1", "wkperf-audit/v1", "wkperf-error/v1", "hotspots", "inclusiveHotspots", "column", "callers", "callees", "stacks", "triggers", "findings", "evidence", "suggestedWindows", "errors", "rating"} {
+	for _, name := range []string{"wkperf-insights/v3", "wkperf/v1", "wkperf-audit/v2", "wkperf-error/v1", "hotspots", "inclusiveHotspots", "column", "callers", "callees", "stacks", "triggers", "findings", "evidence", "suggestedWindows", "errors", "rating"} {
 		if !strings.Contains(string(data), name) {
 			t.Errorf("schema omits %s", name)
 		}

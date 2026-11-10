@@ -27,7 +27,7 @@ func NumericCommand(r *Report, key string) string {
 
 func queryFlags(r *Report) string {
 	flags := ""
-	if r.WindowEndSec > r.WindowStartSec {
+	if !r.WholeRecording && r.WindowEndSec > r.WindowStartSec {
 		flags += " --from " + seconds(r.WindowStartSec) + " --to " + seconds(r.WindowEndSec)
 	}
 	for _, path := range r.Sourcemaps {
@@ -59,6 +59,13 @@ func NumericValues(r *Report) map[string]NumericValue {
 	coverage := r.SampleCoverage
 	add("samples.count", float64(coverage.SampleCount), metrics.UnitCount, "Weighted sample count")
 	add("samples.sampled_ms", coverage.SampledMs, metrics.UnitMs, "Sampled self-time weight")
+	add("samples.untimed_count", float64(coverage.UntimedSampleCount), metrics.UnitCount, "Profiler samples without timestamps")
+	add("samples.untimed_ms", coverage.UntimedMs, metrics.UnitMs, "Sample weight without timestamps")
+	excludedMs := 0.0
+	if coverage.UntimedExcluded {
+		excludedMs = coverage.UntimedMs
+	}
+	add("samples.untimed_excluded_ms", excludedMs, metrics.UnitMs, "Untimed sample weight excluded from this window")
 	add("samples.script_ms", coverage.ScriptMs, metrics.UnitMs, "Exclusive measured script time")
 	if coverage.Available {
 		add("samples.coverage_ratio", coverage.Ratio, metrics.UnitRatio, "Sample weight / measured script time")

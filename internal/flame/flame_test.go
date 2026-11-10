@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/omniviewdev/wkperf/internal/model"
+	"github.com/omniviewdev/wkperf/internal/profile"
+	"github.com/omniviewdev/wkperf/internal/testgen"
 )
 
 func frame(name string, line int) model.StackFrame {
@@ -162,9 +164,9 @@ func TestMissingZeroInvalidAndEmptySamples(t *testing.T) {
 	rec := recording([][]model.StackFrame{{main}, {main}, {main}, {main}, {main}, {main}, nil, {main}, {main}}, []float64{0, -1, math.NaN(), math.Inf(1), math.Inf(-1), .002, .1})
 	rec.Samples[0].StackTraces[7].Timestamp = math.NaN()
 	tree := Build(rec)
-	near(t, tree.Root.TotalMs, 3)
-	if tree.Root.Samples != 2 {
-		t.Fatalf("got %d samples, want 2", tree.Root.Samples)
+	near(t, tree.Root.TotalMs, 4)
+	if tree.Root.Samples != 3 {
+		t.Fatalf("got %d samples, want 3", tree.Root.Samples)
 	}
 	if _, err := json.Marshal(tree); err != nil {
 		t.Fatalf("nonfinite data escaped filtering: %v", err)
@@ -452,5 +454,249 @@ func TestSamplePathIDsStayAligned(t *testing.T) {
 	var empty *Tree
 	if len(empty.SamplePathIDs()) != 0 {
 		t.Fatal("nil tree sample paths not empty")
+	}
+}
+
+func TestUntimedSamplesWholeAndPartialAggregates(t *testing.T) {
+	tree := Build(testgen.UntimedSamples())
+	near(t, tree.Root.TotalMs, 80)
+	if tree.Root.Samples != 50 || len(tree.Samples) != 10 {
+		t.Fatalf("whole selection has %d samples, %d timed", tree.Root.Samples, len(tree.Samples))
+	}
+	near(t, findFunction(t, tree, "untimedLeaf").SelfMs, 25)
+	near(t, findFunction(t, tree, "sharedLeaf").SelfMs, 55)
+	near(t, tree.Window(.9, 1.1).Root.TotalMs, 40)
+	near(t, tree.Window(0, 2-3e-10).Root.TotalMs, 80)
+	zero, two := 0.0, 2.0
+	near(t, Build(testgen.UntimedSamples(), Options{From: &zero, To: &two}).Root.TotalMs, 80)
+}
+
+func TestDecimalWholeSelectionKeepsUntimedSamples(t *testing.T) {
+	rec := testgen.DecimalEnd()
+	from, to := 0.0, 17.628939583
+	near(t, Build(rec, Options{From: &from, To: &to}).Root.TotalMs, 80)
+	near(t, Build(rec).Window(from, to).Root.TotalMs, 80)
+}
+
+func TestUntimedMetadataAndIncludedIteration(t *testing.T) {
+	tree := Build(testgen.UntimedSamples())
+	if !tree.UntimedIncluded || len(tree.Untimed) != 40 || tree.UntimedTotal != (SampleTotal{Count: 40, Ms: 40}) {
+		t.Fatalf("untimed metadata: %+v", tree)
+	}
+	if tree.SampleCount() != 50 {
+		t.Fatalf("included count = %d", tree.SampleCount())
+	}
+	count := 0
+	tree.EachSample(func(sample Sample) {
+		if sample.Untimed != (count < 40) {
+			t.Fatalf("sample %d timing flag = %t", count, sample.Untimed)
+		}
+		count++
+	})
+	if count != 50 {
+		t.Fatalf("iteration count = %d", count)
+	}
+	for i, sample := range tree.Samples {
+		if sample.Untimed || i > 0 && sample.Timestamp < tree.Samples[i-1].Timestamp {
+			t.Fatal("untimed or unordered sample escaped into temporal index")
+		}
+		if tree.SamplePathIDs()[i] != tree.Root.Children[0].Children[0].ID {
+			t.Fatal("timed sample path ID is misaligned")
+		}
+	}
+	if len(tree.Paths()) != 2 || len(tree.Edges()) != 2 || names(tree.HotPath(0)) != "appRoot;sharedLeaf" {
+		t.Fatal("aggregate path, edge, or hot path lost untimed weight")
+	}
+	for _, view := range []*Tree{
+		tree.Window(.9, 1.1),
+		tree.InIntervals([]Interval{{Start: .9, End: 1.1}}),
+		Build(profile.Clip(testgen.UntimedSamples(), 10.9, 11.1)),
+		tree.TimedOnly(),
+	} {
+		near(t, view.Root.TotalMs, 40)
+		if view.UntimedIncluded || len(view.Untimed) != 0 || view.UntimedTotal != tree.UntimedTotal || view.SampleCount() != 10 {
+			t.Fatalf("partial selection lost exclusion metadata: %+v", view)
+		}
+		if view.Window(0, 2).UntimedIncluded {
+			t.Fatal("wider window recovered excluded samples")
+		}
+	}
+	var empty *Tree
+	empty.EachSample(func(Sample) { t.Fatal("nil tree iterated") })
+	if empty.SampleCount() != 0 || empty.TimedOnly().SampleCount() != 0 {
+		t.Fatal("nil aggregate API is not empty")
+	}
+}
+
+func TestUntimedWholeSelectionToleranceAndDiscontinuities(t *testing.T) {
+	rec := testgen.UntimedSamples()
+	rec.Discontinuities = []model.Discontinuity{{StartTime: 10.4, EndTime: 10.6}}
+	tree := Build(rec)
+	allActive := []Interval{{Start: 0, End: .4}, {Start: .6, End: 2}}
+	from, to := 3e-10, 2-3e-10
+	for _, view := range []*Tree{
+		tree.Window(from, to),
+		Build(rec, Options{From: &from, To: &to}),
+		Build(rec, Options{Intervals: allActive}),
+		tree.InIntervals(allActive),
+		tree.InIntervals([]Interval{{Start: from, End: to}}),
+	} {
+		near(t, view.Root.TotalMs, 80)
+		if !view.UntimedIncluded {
+			t.Fatal("whole active selection excluded untimed samples")
+		}
+		near(t, view.ActiveDurationMs, 1800)
+	}
+	to = 2 - 2e-9
+	for _, view := range []*Tree{
+		tree.Window(0, to),
+		Build(rec, Options{To: &to}),
+		tree.InIntervals([]Interval{{Start: 0, End: .3}, {Start: .6, End: 2}}),
+		Build(rec, Options{Intervals: []Interval{}}),
+		tree.InIntervals(nil),
+		tree.Window(math.NaN(), 2),
+		tree.Window(2, 1),
+	} {
+		if view.UntimedIncluded || len(view.Untimed) != 0 || view.UntimedTotal.Count != 40 || view.UntimedTotal.Ms != 40 {
+			t.Fatalf("partial/invalid selection changed untimed totals: %+v", view)
+		}
+	}
+	rec.Samples[0].StackTraces = append(rec.Samples[0].StackTraces,
+		model.StackTrace{Timestamp: 10.5, StackFrames: []model.StackFrame{frame("paused", 1)}},
+		model.StackTrace{Timestamp: 9, StackFrames: []model.StackFrame{frame("outside", 1)}})
+	rec.Samples[0].Durations = append(rec.Samples[0].Durations, .1, .1)
+	near(t, Build(rec).Root.TotalMs, 80)
+}
+
+func TestUntimedClassificationAndZeroOrigin(t *testing.T) {
+	rec := &model.Recording{StartTime: 0, EndTime: 1, Samples: []model.TargetSamples{{
+		StackTraces: []model.StackTrace{
+			{Timestamp: 0, StackFrames: []model.StackFrame{frame("zero", 1)}},
+			{Timestamp: math.NaN(), StackFrames: []model.StackFrame{frame("nan", 2)}},
+			{Timestamp: math.Inf(1), StackFrames: []model.StackFrame{frame("infinity", 3)}},
+			{Timestamp: math.Inf(-1), StackFrames: []model.StackFrame{frame("negativeInfinity", 4)}},
+		},
+	}}}
+	tree := Build(rec)
+	if len(tree.Samples) != 1 || tree.Samples[0].Timestamp != 0 || tree.Samples[0].Untimed || len(tree.Untimed) != 3 {
+		t.Fatalf("zero origin or nonfinite classification failed: %+v", tree)
+	}
+	near(t, tree.Root.TotalMs, 4)
+	near(t, tree.Window(0, .5).Root.TotalMs, 1)
+	if _, err := json.Marshal(tree); err != nil {
+		t.Fatalf("nonfinite timestamps escaped normalization: %v", err)
+	}
+	untimedOnly := testgen.UntimedSamples()
+	untimedOnly.Samples[0].StackTraces = untimedOnly.Samples[0].StackTraces[:40]
+	untimedOnly.Samples[0].Durations = untimedOnly.Samples[0].Durations[:40]
+	tree = Build(untimedOnly)
+	near(t, tree.Root.TotalMs, 40)
+	if len(tree.Samples) != 0 || tree.SampleCount() != 40 || len(tree.Paths()) != 2 {
+		t.Fatal("untimed-only tree lost aggregate evidence")
+	}
+	near(t, tree.Window(0, 1).Root.TotalMs, 0)
+}
+
+func TestUntimedFocusAndInversion(t *testing.T) {
+	tree := Build(testgen.UntimedSamples())
+	untimed := tree.Root.Children[0].Children[1]
+	if untimed.Frame.Name != "untimedLeaf" {
+		t.Fatalf("unexpected context %s", untimed.Frame.Name)
+	}
+	focused := tree.FocusNode(untimed.ID)
+	near(t, focused.Root.TotalMs, 25)
+	if len(focused.Samples) != 0 || len(focused.Untimed) != 25 || focused.UntimedTotal != tree.UntimedTotal || !focused.UntimedIncluded {
+		t.Fatal("focus lost untimed samples or full metadata")
+	}
+	inverted := tree.Inverted()
+	near(t, inverted.Root.TotalMs, 80)
+	near(t, inverted.Root.Children[0].SelfMs, 55)
+	if !reflect.DeepEqual(inverted.Functions(), tree.Functions()) || inverted.Folded() != tree.Folded() {
+		t.Fatal("inversion changed aggregate evidence")
+	}
+	near(t, inverted.Window(0, 2).Root.TotalMs, 80)
+	near(t, inverted.Window(.9, 1.1).Root.TotalMs, 40)
+	near(t, inverted.FocusNode(inverted.Root.Children[1].ID).Root.TotalMs, 25)
+	if focused.FocusNode("missing").UntimedTotal != tree.UntimedTotal {
+		t.Fatal("unknown focus lost recording-wide untimed total")
+	}
+}
+
+func TestUntimedAggregatesStayDeterministicAfterShuffling(t *testing.T) {
+	rec := testgen.UntimedSamples()
+	baseline := Build(rec)
+	aggregateJSON := func(tree *Tree) string {
+		copy := *tree
+		// Aggregates ignore export order; inferred labels intentionally do not.
+		copy.UntimedSpans = nil
+		data, err := json.Marshal(&copy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	want := aggregateJSON(baseline)
+	rng := rand.New(rand.NewPCG(31, 37))
+	for range 12 {
+		rng.Shuffle(len(rec.Samples[0].StackTraces), func(i, j int) {
+			rec.Samples[0].StackTraces[i], rec.Samples[0].StackTraces[j] = rec.Samples[0].StackTraces[j], rec.Samples[0].StackTraces[i]
+			rec.Samples[0].Durations[i], rec.Samples[0].Durations[j] = rec.Samples[0].Durations[j], rec.Samples[0].Durations[i]
+		})
+		got := Build(rec)
+		if aggregateJSON(got) != want || !reflect.DeepEqual(got.Functions(), baseline.Functions()) || !reflect.DeepEqual(got.Edges(), baseline.Edges()) || !reflect.DeepEqual(got.Paths(), baseline.Paths()) {
+			t.Fatal("shuffle changed timed or untimed aggregate output")
+		}
+	}
+}
+
+func TestUntimedSpansUseMonotonicExportOrderOnly(t *testing.T) {
+	rec := testgen.UntimedSamples()
+	tree := Build(rec)
+	want := []UntimedSpan{{FromSec: 0, ToSec: 1, Samples: 40, Ms: 40}}
+	if !reflect.DeepEqual(tree.UntimedSpans, want) || !reflect.DeepEqual(tree.Window(.1, .4).UntimedSpans, want) {
+		t.Fatalf("prefix span: %+v", tree.UntimedSpans)
+	}
+	target := model.TargetSamples{Target: model.Target{Identifier: "other"}}
+	for i, timestamp := range []float64{0, 10.5, 0, 11, 0} {
+		target.StackTraces = append(target.StackTraces, model.StackTrace{Timestamp: timestamp, StackFrames: []model.StackFrame{frame("other", 1)}})
+		target.Durations = append(target.Durations, float64(i+1)*.001)
+	}
+	rec.Samples = append(rec.Samples, target)
+	tree = Build(rec)
+	want = []UntimedSpan{
+		{FromSec: 0, ToSec: .5, Samples: 1, Ms: 1},
+		{FromSec: 0, ToSec: 1, Samples: 40, Ms: 40},
+		{FromSec: .5, ToSec: 1, Samples: 1, Ms: 3},
+		{FromSec: 1, ToSec: 2, Samples: 1, Ms: 5},
+	}
+	if !reflect.DeepEqual(tree.UntimedSpans, want) {
+		t.Fatalf("multi-target spans: %+v", tree.UntimedSpans)
+	}
+	rec.Samples[0].StackTraces[40], rec.Samples[0].StackTraces[49] = rec.Samples[0].StackTraces[49], rec.Samples[0].StackTraces[40]
+	tree = Build(rec)
+	if len(tree.UntimedSpans) != 3 || tree.UntimedTotal.Count != 43 {
+		t.Fatalf("nonmonotonic target invented spans or lost samples: %+v", tree.UntimedSpans)
+	}
+	clip := profile.Clip(rec, 10.1, 10.4)
+	if len(Build(clip).UntimedSpans) != 3 {
+		t.Fatal("clipping erased original nonmonotonic order evidence")
+	}
+}
+
+func TestClippedUntimedEvidenceKeepsOriginalSpanBounds(t *testing.T) {
+	rec := testgen.UntimedSamples()
+	clipped := profile.Clip(rec, 10.9, 11.1)
+	tree := Build(clipped)
+	if len(tree.UntimedSpans) != 1 {
+		t.Fatalf("missing original span after clip: %+v", tree.UntimedSpans)
+	}
+	near(t, tree.UntimedSpans[0].FromSec, -.9)
+	near(t, tree.UntimedSpans[0].ToSec, .1)
+	clipped = profile.Clip(clipped, 10.95, 11.05)
+	tree = Build(clipped)
+	near(t, tree.UntimedSpans[0].FromSec, -.95)
+	near(t, tree.UntimedSpans[0].ToSec, .05)
+	if tree.UntimedTotal != (SampleTotal{Count: 40, Ms: 40}) || tree.UntimedIncluded {
+		t.Fatal("nested clip lost full untimed totals or exclusion")
 	}
 }

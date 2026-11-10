@@ -18,6 +18,20 @@ type Interval struct {
 	End   float64 `json:"end"`
 }
 
+// CoversRecording accepts nanosecond-rounded bounds for a whole recording.
+func CoversRecording(rec *model.Recording, fromRel, toRel float64) bool {
+	return rec != nil && fromRel <= 1e-9 && toRel >= rec.EndTime-rec.StartTime-1e-9
+}
+
+// UntimedTimestamp distinguishes missing sampler clocks from a real zero origin.
+func UntimedTimestamp(rec *model.Recording, timestamp float64) bool {
+	start := rec.StartTime
+	if rec.SampleEvidence != nil {
+		start = rec.SampleEvidence.StartTime
+	}
+	return !finite(timestamp) || timestamp == 0 && start > 0
+}
+
 // ActiveIntervals subtracts the union of stopped/resumed capture intervals.
 // WebKit TimelineRecording exports discontinuities as {startTime,endTime}.
 func ActiveIntervals(rec *model.Recording, start, end float64) []Interval {

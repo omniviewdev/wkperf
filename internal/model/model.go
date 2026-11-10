@@ -36,9 +36,21 @@ type Recording struct {
 	MemoryPressureEvents []MemoryPressure `json:"memoryPressureEvents"`
 	Samples              []TargetSamples  `json:"samples"`
 
+	// Partial clips retain untimed evidence but exclude its weight.
+	UntimedExcluded bool            `json:"-"`
+	SampleEvidence  *SampleEvidence `json:"-"`
+
 	// Legacy (pre-`samples`) fields; Load folds them into Samples.
 	SampleStackTraces []StackTrace `json:"sampleStackTraces,omitempty"`
 	SampleDurations   []float64    `json:"sampleDurations,omitempty"`
+}
+
+// SampleEvidence preserves original export order for inference-only span labels.
+// Clipped recordings share these read-only samples with their source recording.
+type SampleEvidence struct {
+	StartTime float64
+	EndTime   float64
+	Samples   []TargetSamples
 }
 
 // Discontinuity is a stopped/resumed capture interval, not observed page activity.

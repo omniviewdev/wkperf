@@ -37,23 +37,25 @@ type ModuleStat struct {
 // SlowFrame is a rendering frame longer than the jank threshold, with what
 // overlapped it.
 type SlowFrame struct {
-	T        float64 `json:"t"`  // seconds from recording start
-	Ms       float64 `json:"ms"` // frame duration
-	ScriptMs float64 `json:"scriptMs"`
-	LayoutMs float64 `json:"layoutMs"` // layout+style
-	PaintMs  float64 `json:"paintMs"`  // paint+composite
-	GCMs     float64 `json:"gcMs"`
-	TopEvent string  `json:"topEvent"`          // dominant script eventType/details, e.g. "event-dispatched click"
-	TopFunc  string  `json:"topFunc,omitempty"` // hottest sampled function in the frame, if samples cover it
+	T            float64 `json:"t"`  // seconds from recording start
+	Ms           float64 `json:"ms"` // frame duration
+	ScriptMs     float64 `json:"scriptMs"`
+	LayoutMs     float64 `json:"layoutMs"` // layout+style
+	PaintMs      float64 `json:"paintMs"`  // paint+composite
+	GCMs         float64 `json:"gcMs"`
+	TopEvent     string  `json:"topEvent"`          // dominant script eventType/details, e.g. "event-dispatched click"
+	TopFunc      string  `json:"topFunc,omitempty"` // hottest sampled function in the frame, if samples cover it
+	SampleStatus string  `json:"sampleStatus,omitempty"`
 }
 
 // LongTask is a single script/event record longer than the long-task threshold (50ms).
 type LongTask struct {
-	T         float64 `json:"t"`
-	Ms        float64 `json:"ms"`
-	EventType string  `json:"eventType"`
-	Detail    string  `json:"detail,omitempty"` // e.g. event name, timer id, URL
-	TopFunc   string  `json:"topFunc,omitempty"`
+	T            float64 `json:"t"`
+	Ms           float64 `json:"ms"`
+	EventType    string  `json:"eventType"`
+	Detail       string  `json:"detail,omitempty"` // e.g. event name, timer id, URL
+	TopFunc      string  `json:"topFunc,omitempty"`
+	SampleStatus string  `json:"sampleStatus,omitempty"`
 }
 
 // Evidence is one numeric observation. Basis distinguishes measurements from
@@ -105,12 +107,17 @@ type WakeupStats struct {
 }
 
 type SampleCoverage struct {
-	SampleCount    int     `json:"sampleCount"`
-	SampledMs      float64 `json:"sampledMs"`
-	ScriptMs       float64 `json:"scriptMs"`
-	Ratio          float64 `json:"ratio"`
-	Available      bool    `json:"available"`
-	Interpretation string  `json:"interpretation"`
+	SampleCount        int                 `json:"sampleCount"`
+	TimedSampleCount   int                 `json:"timedSampleCount"`
+	UntimedSampleCount int                 `json:"untimedSampleCount"`
+	UntimedMs          float64             `json:"untimedMs"`
+	UntimedExcluded    bool                `json:"untimedExcluded"`
+	UntimedSpans       []flame.UntimedSpan `json:"untimedSpans"`
+	SampledMs          float64             `json:"sampledMs"`
+	ScriptMs           float64             `json:"scriptMs"`
+	Ratio              float64             `json:"ratio"`
+	Available          bool                `json:"available"`
+	Interpretation     string              `json:"interpretation"`
 }
 
 type NodeClue struct {
@@ -150,6 +157,7 @@ type Report struct {
 	Source            string              `json:"source"`
 	WindowStartSec    float64             `json:"windowStartSec"`
 	WindowEndSec      float64             `json:"windowEndSec"`
+	WholeRecording    bool                `json:"-"`
 	ModuleGrouping    string              `json:"moduleGrouping"`
 	JankMs            float64             `json:"jankMs"`
 	LongTaskMs        float64             `json:"longTaskMs"`

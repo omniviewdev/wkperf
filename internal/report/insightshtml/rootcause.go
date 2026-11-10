@@ -2,6 +2,7 @@ package insightshtml
 
 import (
 	"bytes"
+	"fmt"
 	"html/template"
 	"io"
 
@@ -20,6 +21,13 @@ func rootFrameLabel(f flame.Frame) string {
 		name = "(anonymous)"
 	}
 	return name + " @ " + frame.Location()
+}
+
+func stackTime(value *float64) string {
+	if value == nil {
+		return "unknown"
+	}
+	return fmt.Sprintf("%.3f", *value)
 }
 
 func rootCauseHTML(r *rootcause.Report) (template.HTML, error) {
@@ -43,7 +51,7 @@ func RenderStacks(w io.Writer, stacks []rootcause.Stack) error {
 	return nil
 }
 
-var rootTmpl = template.Must(template.New("rootcause").Funcs(template.FuncMap{"frame": rootFrameLabel}).Parse(`
+var rootTmpl = template.Must(template.New("rootcause").Funcs(template.FuncMap{"frame": rootFrameLabel, "time": stackTime}).Parse(`
 <h3>Hot path</h3>
 <div class="card"><p class="mut">Heaviest sampled prefix path, root → leaf. Sample weight estimates execution cost, not instrumented wall time.</p>{{template "path" .HotPath}}{{template "stats" .Stats}}</div>
 <h3>Owner breakdown</h3>
@@ -55,7 +63,7 @@ var rootTmpl = template.Must(template.New("rootcause").Funcs(template.FuncMap{"f
 <h3>Exact-stack findings</h3>
 {{range .Findings}}<div class="card"><h4>{{.Title}} <span class="mut">{{.Severity}} · {{.ID}}</span></h4><p><b>Hypothesis / interpretation:</b> {{.Explanation}}</p>{{template "stats" .Stats}}{{template "command" .Command}}{{range .Evidence}}{{template "stack" .}}{{end}}{{range .Windows}}<p>Window {{printf "%.3f" .FromSec}}–{{printf "%.3f" .ToSec}} s</p>{{template "command" .Command}}{{end}}</div>{{else}}<div class="card mut">No exact-stack findings.</div>{{end}}
 <h3>Periodic roots</h3>
-<div class="card">{{range .PeriodicRoots}}<h4><code>{{frame .Root}}</code></h4><p>{{.FireCount}} fires · period {{printf "%.3f" .PeriodMs}} ms · jitter {{printf "%.3f" .JitterMs}} ms · regularity {{printf "%.3f" .Regularity}} · mean cost {{printf "%.3f" .MeanCostMs}} ms · total {{printf "%.3f" .TotalMs}} ms</p>{{template "stats" .Stats}}{{template "command" .Command}}<table><tr><th>From s</th><th>To s</th><th>Self ms</th><th>Samples</th><th>Event / reproduce</th></tr>{{range .Fires}}<tr><td>{{printf "%.3f" .FromSec}}</td><td>{{printf "%.3f" .ToSec}}</td><td>{{printf "%.3f" .SelfMs}}</td><td>{{.Samples}}</td><td>{{.Event}}{{template "stats" .Stats}}{{template "command" .Command}}</td></tr>{{end}}</table>{{range .Evidence}}{{template "stack" .}}{{end}}{{else}}<p class="mut">No periodic sampled root.</p>{{end}}</div>
+<div class="card">{{range .PeriodicRoots}}<h4><code>{{frame .Root}}</code></h4><p>{{.FireCount}} fires · period {{printf "%.3f" .PeriodMs}} ms · jitter {{printf "%.3f" .JitterMs}} ms · regularity {{printf "%.3f" .Regularity}} · mean cost {{printf "%.3f" .MeanCostMs}} ms · total {{printf "%.3f" .TotalMs}} ms</p>{{if .SampleStatus}}<p class="mut">{{.SampleStatus}}</p>{{end}}{{template "stats" .Stats}}{{template "command" .Command}}<table><tr><th>From s</th><th>To s</th><th>Self ms</th><th>Samples</th><th>Event / reproduce</th></tr>{{range .Fires}}<tr><td>{{printf "%.3f" .FromSec}}</td><td>{{printf "%.3f" .ToSec}}</td><td>{{printf "%.3f" .SelfMs}}</td><td>{{.Samples}}</td><td>{{.Event}}{{template "stats" .Stats}}{{template "command" .Command}}</td></tr>{{end}}</table>{{range .Evidence}}{{template "stack" .}}{{end}}{{else}}<p class="mut">No periodic sampled root.</p>{{end}}</div>
 <h3>GC overlap</h3>
 <div class="card">{{range .GCOverlaps}}<h4>{{printf "%.3f" .FromSec}}–{{printf "%.3f" .ToSec}} s · {{printf "%.3f" .DurationMs}} ms</h4><p>{{.Attribution}}</p>{{template "stats" .Stats}}{{template "command" .Command}}<table><tr><th>Overlapping event</th><th>From s</th><th>To s</th><th>Overlap ms</th><th>Reproduce</th></tr>{{range .Events}}<tr><td>{{.Event}}</td><td>{{printf "%.3f" .FromSec}}</td><td>{{printf "%.3f" .ToSec}}</td><td>{{printf "%.3f" .OverlapMs}}</td><td>{{template "stats" .Stats}}<code>{{.Command}}</code></td></tr>{{end}}</table>{{else}}<p class="mut">No instrumented GC overlap.</p>{{end}}</div>
 <h3>Stack depth</h3>
@@ -68,6 +76,6 @@ var rootTmpl = template.Must(template.New("rootcause").Funcs(template.FuncMap{"f
 {{define "command"}}{{if .}}<div><b>Reproduce:</b> <code>{{.}}</code></div>{{end}}{{end}}
 {{define "stats"}}{{if .}}<table><tr><th>Metric key</th><th class="n">Value</th><th>Basis</th><th>Reproduce</th></tr>{{range .}}<tr><td><code>{{.Key}}</code> {{.Label}}</td><td class="n">{{printf "%.3f" .Value}} {{.Unit}}</td><td>{{.Basis}}</td><td><code>{{.Command}}</code></td></tr>{{end}}</table>{{end}}{{end}}
 {{define "path"}}<p>{{printf "%.3f" .SampledMs}} sampled ms · {{.Samples}} samples</p><ol>{{range .Frames}}<li><code>{{frame .}}</code></li>{{end}}</ol>{{template "stats" .Stats}}{{template "command" .Command}}{{end}}
-{{define "stack"}}<details open><summary>Exact stack: {{printf "%.3f" .SelfMs}} self ms · {{.Samples}} samples · {{printf "%.3f" .FirstSec}}–{{printf "%.3f" .LastSec}} s</summary><ol>{{range .Frames}}<li><code>{{frame .}}</code></li>{{end}}</ol>{{template "stats" .Stats}}{{template "command" .Command}}</details>{{end}}
+{{define "stack"}}<details open><summary>Exact stack: {{printf "%.3f" .SelfMs}} self ms · {{.Samples}} samples · {{if .FirstSec}}{{time .FirstSec}}–{{time .LastSec}} s{{else}}time unknown{{end}}{{if .UntimedSamples}} · {{.UntimedSamples}} untimed samples{{end}}</summary><ol>{{range .Frames}}<li><code>{{frame .}}</code></li>{{end}}</ol>{{template "stats" .Stats}}{{template "command" .Command}}</details>{{end}}
 {{define "window"}}<h4>{{.Kind}}: {{.Label}} · {{printf "%.3f" .FromSec}}–{{printf "%.3f" .ToSec}} s</h4><p>{{printf "%.3f" .DurationMs}} duration ms · {{printf "%.3f" .ActiveMs}} active ms · {{.SampleStatus}}</p>{{template "stats" .Stats}}{{template "command" .Command}}{{with .HotPath}}{{template "path" .}}{{end}}{{with .TopStack}}{{template "stack" .}}{{end}}{{end}}
 `))

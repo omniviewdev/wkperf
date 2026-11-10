@@ -251,7 +251,7 @@ wkperf compare baseline/ --vs candidate/ --format md --fail-on-regression
 
 Ambiguous function names produce candidate IDs instead of silently choosing a function. Use an ID or `url:line:col` to select precisely. Findings include suggested time windows and commands to reproduce their supporting measurements.
 
-Analysis JSON now uses `wkperf-insights/v2`. Run `wkperf schema` for the complete machine-readable contract. Bad files do not discard valid analyze/audit results: failures appear in `errors` and stderr, and the command exits nonzero.
+The unreleased fixes use `wkperf-insights/v3` and `wkperf-audit/v2`; v0.4.0 emits analysis v2 and audit v1. Run `wkperf schema` for the checked-out binary's complete contract. Untimed samples remain in whole-recording rankings but are explicitly excluded from temporal attribution. Bad files do not discard valid analyze/audit results: failures appear in `errors` and stderr, and the command exits nonzero.
 
 Idle timer wakeups are separated from expensive frames. Function identity includes columns, so minified same-line functions stay distinct. Source maps show original and generated locations together; file-level module grouping keeps plugin bundles separate. Use `--module-grouping parent-directory` only when you want a directory roll-up.
 

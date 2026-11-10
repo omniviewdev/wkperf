@@ -127,3 +127,78 @@ func TestForcedLayoutEvidenceExcludesPausedRecords(t *testing.T) {
 		t.Fatalf("paused forced-layout evidence retained: %+v", got)
 	}
 }
+
+func TestClipRetainsUntimedEvidence(t *testing.T) {
+	rec := &model.Recording{StartTime: 10, EndTime: 12, Samples: []model.TargetSamples{{
+		StackTraces: []model.StackTrace{
+			{Timestamp: 0, StackFrames: []model.StackFrame{{Name: "untimed"}}},
+			{Timestamp: 11, StackFrames: []model.StackFrame{{Name: "timed"}}},
+		},
+		Durations: []float64{.001, .004},
+	}}}
+	if got := Clip(rec, 10, 12-3e-10); got != rec {
+		t.Error("whole-recording clip must return original recording")
+	}
+	got := Clip(rec, 10.9, 11.1)
+	if len(got.Samples[0].StackTraces) != 2 {
+		t.Fatalf("partial clip discarded untimed evidence: %+v", got.Samples)
+	}
+	if !got.UntimedExcluded || got.SampleEvidence == nil || got.SampleEvidence.StartTime != 10 || got.SampleEvidence.EndTime != 12 {
+		t.Fatal("partial clip lost original evidence or exclusion")
+	}
+	nested := Clip(got, 10.95, 11.05)
+	if nested.SampleEvidence != got.SampleEvidence || !nested.UntimedExcluded {
+		t.Fatal("nested clip replaced original order evidence")
+	}
+	if Clip(got, got.StartTime, got.EndTime-3e-10) != got {
+		t.Fatal("whole clip of partial recording changed exclusion metadata")
+	}
+	if rec.UntimedExcluded || rec.SampleEvidence != nil {
+		t.Fatal("clip mutated original recording metadata")
+	}
+}
+
+func TestCoversRecordingRoundedBounds(t *testing.T) {
+	rec := testgen.DecimalEnd()
+	duration := rec.EndTime - rec.StartTime
+	for _, test := range []struct {
+		from, to float64
+		want     bool
+	}{
+		{0, 17.628939583, true},
+		{3e-10, duration - 3e-10, true},
+		{-1, duration + 1, true},
+		{2e-9, duration, false},
+		{0, duration - 2e-9, false},
+		{math.NaN(), duration, false},
+		{0, math.NaN(), false},
+	} {
+		if got := CoversRecording(rec, test.from, test.to); got != test.want {
+			t.Errorf("CoversRecording(%g, %g) = %t, want %t", test.from, test.to, got, test.want)
+		}
+	}
+	if CoversRecording(nil, 0, 1) {
+		t.Fatal("nil recording is covered")
+	}
+	if Clip(rec, rec.StartTime, rec.StartTime+17.628939583) != rec {
+		t.Fatal("decimal whole clip filtered original recording")
+	}
+}
+
+func TestClipPreservesUntimedAndRealZeroClassification(t *testing.T) {
+	rec := &model.Recording{EndTime: 1, Samples: []model.TargetSamples{{
+		StackTraces: []model.StackTrace{
+			{Timestamp: 0, StackFrames: []model.StackFrame{{Name: "zero"}}},
+			{Timestamp: .25, StackFrames: []model.StackFrame{{Name: "inside"}}},
+			{Timestamp: math.NaN(), StackFrames: []model.StackFrame{{Name: "nan"}}},
+			{Timestamp: math.Inf(1), StackFrames: []model.StackFrame{{Name: "infinity"}}},
+		},
+	}}}
+	got := Clip(rec, .1, .4)
+	if len(got.Samples[0].StackTraces) != 3 || UntimedTimestamp(got, 0) || !UntimedTimestamp(got, math.NaN()) {
+		t.Fatalf("clip changed original clock classification: %+v", got)
+	}
+	if got.Samples[0].StackTraces[0].Timestamp != .25 {
+		t.Fatal("genuine timestamp zero was retained outside partial window")
+	}
+}

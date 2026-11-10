@@ -54,11 +54,11 @@ func renderSpeedscope(w io.Writer, charts []Chart) error {
 	}
 	frames := make(map[string]core.Frame)
 	for _, in := range inputs {
-		for _, sample := range in.tree.Samples {
+		in.tree.EachSample(func(sample core.Sample) {
 			for _, frame := range sample.Frames {
 				frames[core.FunctionID(frame)] = frame
 			}
-		}
+		})
 	}
 	keys := make([]string, 0, len(frames))
 	for id := range frames {
@@ -93,8 +93,8 @@ func renderSpeedscope(w io.Writer, charts []Chart) error {
 		indices[id] = i
 	}
 	for _, in := range inputs {
-		p := SpeedscopeProfile{Type: "sampled", Name: in.name, Unit: "milliseconds", Samples: make([][]int, 0, len(in.tree.Samples)), Weights: make([]float64, 0, len(in.tree.Samples))}
-		for _, sample := range in.tree.Samples {
+		p := SpeedscopeProfile{Type: "sampled", Name: in.name, Unit: "milliseconds", Samples: make([][]int, 0, in.tree.SampleCount()), Weights: make([]float64, 0, in.tree.SampleCount())}
+		in.tree.EachSample(func(sample core.Sample) {
 			stack := make([]int, len(sample.Frames))
 			for i, frame := range sample.Frames {
 				stack[i] = indices[core.FunctionID(frame)]
@@ -102,7 +102,7 @@ func renderSpeedscope(w io.Writer, charts []Chart) error {
 			p.Samples = append(p.Samples, stack)
 			p.Weights = append(p.Weights, sample.WeightMs)
 			p.EndValue += sample.WeightMs
-		}
+		})
 		doc.Profiles = append(doc.Profiles, p)
 	}
 	enc := json.NewEncoder(w)

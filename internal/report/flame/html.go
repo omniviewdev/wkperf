@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"html"
 	"io"
+
+	core "github.com/omniviewdev/wkperf/internal/flame"
 )
 
 //go:embed flame.js
@@ -88,6 +90,22 @@ func HTMLFragment(w io.Writer, charts []Chart, opts Options) error {
 			root = chart.Inverted.Root
 		}
 		out.printf("<article class=\"wk-flame-chart\"><h3>%s</h3><p class=\"wk-flame-summary\">%s ms</p><nav class=\"wk-flame-breadcrumb\" aria-label=\"Zoom path\"></nav>\n", html.EscapeString(chart.Label), milliseconds(root.TotalMS))
+		note := func(label string, tree *core.Tree) {
+			if tree.UntimedTotal.Count == 0 {
+				return
+			}
+			policy := "included in rankings, excluded from frame, task, trigger, window and periodic attribution"
+			if !tree.UntimedIncluded {
+				policy = "excluded from this window"
+			}
+			out.printf("<p class=\"wk-flame-note\">%sUntimed samples: %d (%g ms): %s.</p>\n", html.EscapeString(label), tree.UntimedTotal.Count, tree.UntimedTotal.Ms, policy)
+		}
+		if charts[i].Comparison != nil {
+			note("Baseline: ", charts[i].Before)
+			note("Current: ", charts[i].After)
+		} else {
+			note("", charts[i].Tree)
+		}
 		if charts[i].Comparison == nil && root.TotalMS == 0 {
 			out.text("<p class=\"wk-flame-empty\">No weighted samples in selected window.</p>")
 		}

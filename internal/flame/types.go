@@ -46,8 +46,8 @@ type FrameMapper func(model.StackFrame) *Location
 // Nil Intervals leaves active time unrestricted; a nonnil empty slice selects
 // no time. Timestamp membership uses half-open intervals and preserves each
 // sample's statistical weight. Missing durations receive one millisecond.
-// Zero, negative, and nonfinite durations, empty stacks, and nonfinite timestamps
-// are skipped.
+// Zero, negative, and nonfinite durations and empty stacks are skipped.
+// Missing/nonfinite timestamps contribute only to whole-recording aggregates.
 type Options struct {
 	Mapper    FrameMapper
 	From      *float64
@@ -74,6 +74,7 @@ type Sample struct {
 	Timestamp float64 `json:"timestamp"`
 	WeightMs  float64 `json:"weightMs"`
 	TargetID  string  `json:"targetID,omitempty"`
+	Untimed   bool    `json:"-"`
 }
 
 // Interval is a half-open recording-relative time range, in seconds.
@@ -82,16 +83,36 @@ type Interval struct {
 	End   float64 `json:"end"`
 }
 
+// SampleTotal describes recording-wide evidence, even when a view excludes it.
+type SampleTotal struct {
+	Count int     `json:"count"`
+	Ms    float64 `json:"ms"`
+}
+
+// UntimedSpan bounds one target's untimed run using its original export order.
+// Bounds are labels, not timestamps or a basis for attributing sample weight.
+// Nonmonotonic timed exports have no inferred spans.
+type UntimedSpan struct {
+	FromSec float64 `json:"from_sec"`
+	ToSec   float64 `json:"to_sec"`
+	Samples int     `json:"samples"`
+	Ms      float64 `json:"ms"`
+}
+
 // Tree retains canonical samples for repeatable windows and deeper analysis.
 // Root is a synthetic frame, never included in function/edge/path aggregates.
 // StartTime and EndTime describe the selected recording-relative wall window.
 type Tree struct {
-	Root             *Node      `json:"root"`
-	Samples          []Sample   `json:"samples"`
-	StartTime        float64    `json:"startTime"`
-	EndTime          float64    `json:"endTime"`
-	ActiveDurationMs float64    `json:"activeDurationMs"`
-	Discontinuities  []Interval `json:"discontinuities,omitempty"`
+	Root             *Node         `json:"root"`
+	Samples          []Sample      `json:"samples"`
+	Untimed          []Sample      `json:"untimed"`
+	UntimedTotal     SampleTotal   `json:"untimedTotal"`
+	UntimedIncluded  bool          `json:"untimedIncluded"`
+	UntimedSpans     []UntimedSpan `json:"untimed_spans,omitempty"`
+	StartTime        float64       `json:"startTime"`
+	EndTime          float64       `json:"endTime"`
+	ActiveDurationMs float64       `json:"activeDurationMs"`
+	Discontinuities  []Interval    `json:"discontinuities,omitempty"`
 	active           []Interval
 	inverted         bool
 	functions        []Function
@@ -99,6 +120,8 @@ type Tree struct {
 	paths            []Path
 	samplePathIDs    []string
 	byID             map[string]*Node
+	recordingEnd     float64
+	recordingActive  []Interval
 }
 
 // Function aggregates all calling contexts for one function. TotalMs and

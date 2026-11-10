@@ -50,10 +50,61 @@ func Document() map[string]any {
 	if definition, ok := b.definitions["insights_Report"].(map[string]any); ok {
 		definition["properties"].(map[string]any)["schemaVersion"] = map[string]any{"type": "string", "const": InsightsVersion}
 	}
+	if definition, ok := b.definitions["rootcause_Report"].(map[string]any); ok {
+		definition["properties"].(map[string]any)["schemaVersion"] = map[string]any{"type": "string", "const": "2"}
+	}
 	errorDefinition := b.definitions[definitionName(reflect.TypeOf(ErrorDocument{}))].(map[string]any)
 	errorDefinition["properties"].(map[string]any)["errors"] = map[string]any{"type": "array", "minItems": 1, "items": b.describe(reflect.TypeOf(Error{}))}
 	flameDefinition := b.definitions[definitionName(reflect.TypeOf(flamereport.Document{}))].(map[string]any)
 	flameDefinition["properties"].(map[string]any)["mode"] = map[string]any{"type": "string", "enum": []string{"profile", "diff"}}
+	for name, fields := range map[string]map[string]string{
+		"insights_SampleCoverage": {
+			"timedSampleCount":   "Included samples with usable timestamps.",
+			"untimedSampleCount": "Untimed sample count from the whole recording, including samples excluded by this window.",
+			"untimedMs":          "Whole-recording untimed sample weight in milliseconds; weights are estimates, not elapsed time.",
+			"untimedExcluded":    "True when untimed samples are excluded from the selected aggregate.",
+			"untimedSpans":       "Export-order inferred spans for labels only; never used for time-based attribution.",
+		},
+		"insights_SlowFrame": {
+			"sampleStatus": "Limit on timed attribution when substantial sampled weight has no timestamp.",
+		},
+		"insights_LongTask": {
+			"sampleStatus": "Limit on timed attribution when substantial sampled weight has no timestamp.",
+		},
+		"rootcause_PeriodicRoot": {
+			"sampleStatus": "Limit on periodic attribution when substantial sampled weight has no timestamp.",
+		},
+		"flame_Tree": {
+			"untimed":         "Included samples without usable timestamps; timestamp values in this separate array must not be interpreted as times.",
+			"untimedTotal":    "Untimed sample count and weight for the whole original recording, including excluded samples.",
+			"untimedIncluded": "True when untimed sample weight contributes to this aggregate.",
+			"untimed_spans":   "Selected-recording-relative export-order spans, inferred only for labels.",
+		},
+		"query_Source": {
+			"untimed_samples":  "Whole-recording untimed sample count, preserved for partial windows.",
+			"untimed_ms":       "Whole-recording untimed sample weight in milliseconds.",
+			"untimed_excluded": "True when this selection excludes untimed sample weight.",
+			"untimed_spans":    "Recording-relative export-order spans, inferred only for labels.",
+		},
+		"rootcause_Stack": {
+			"firstSec":       "First timed sample in recording-relative seconds, or null for an untimed-only stack.",
+			"lastSec":        "Last timed sample in recording-relative seconds, or null for an untimed-only stack.",
+			"untimedSamples": "Included untimed samples contributing to this exact stack.",
+		},
+		"report_flame_Chart": {
+			"untimedSamples":  "Untimed sample count across the chart inputs, including excluded samples.",
+			"untimedMs":       "Untimed sample weight across the chart inputs in milliseconds.",
+			"untimedExcluded": "True when a chart input excludes untimed sample weight.",
+			"empty":           "True when the chart inputs contain no included weighted samples.",
+			"emptyReason":     "Explanation for a valid selection with no weighted samples.",
+		},
+	} {
+		definition := b.definitions[name].(map[string]any)
+		properties := definition["properties"].(map[string]any)
+		for field, description := range fields {
+			properties[field].(map[string]any)["description"] = description
+		}
+	}
 	return map[string]any{
 		"$schema":     "https://json-schema.org/draft/2020-12/schema",
 		"$id":         "https://wkperf.dev/schema/output.json",

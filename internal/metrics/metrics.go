@@ -13,7 +13,7 @@ const (
 	UnitBytes Unit = "bytes"
 	UnitMB    Unit = "MB"
 	UnitFPS   Unit = "fps"
-	UnitRatio Unit = "ratio" // 0..1
+	UnitRatio Unit = "ratio" // dimensionless; estimated coverage may exceed 1
 )
 
 // Direction says which way is an improvement.
