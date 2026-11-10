@@ -56,6 +56,20 @@ type chartView struct {
 	SVG   template.HTML
 }
 
+type warnView struct {
+	Level, Class, Glyph, Code, Message string
+}
+
+// compView is the comparability banner; Show is false when the result carries
+// no comparability data.
+type compView struct {
+	Show       bool
+	Score      string
+	Class      string
+	Normalized bool
+	Warnings   []warnView
+}
+
 type view struct {
 	Title        string
 	Generated    string
@@ -63,6 +77,8 @@ type view struct {
 	Counts       compare.Counts
 	Overall      string
 	OverallClass string
+	Comp         compView
+	Unit         string // function time unit: "ms", or "ms/s" when normalized
 	Cards        []cardView
 	Groups       []groupView
 	Charts       []chartView
@@ -90,6 +106,11 @@ func buildView(r *compare.Result, o Options) view {
 	}
 	v := view{Title: title, Generated: gen, Base: r.Baseline, Cand: r.Cand, Counts: r.Counts}
 	v.Overall, v.OverallClass = overall(r.Counts)
+	v.Comp = makeComp(r.Comparability)
+	v.Unit = "ms"
+	if r.Comparability.Normalized {
+		v.Unit = "ms/s"
+	}
 
 	byKey := map[string]compare.MetricDiff{}
 	var order []string
@@ -139,6 +160,29 @@ func buildView(r *compare.Result, o Options) view {
 	v.Regressed = funcRows(r.FuncRegressed)
 	v.Improved = funcRows(r.FuncImproved)
 	return v
+}
+
+func makeComp(c compare.Comparability) compView {
+	if c.Score <= 0 && len(c.Warnings) == 0 && !c.Normalized {
+		return compView{}
+	}
+	cv := compView{Show: true, Score: fmt.Sprintf("%.2f", c.Score), Normalized: c.Normalized}
+	switch {
+	case c.Score >= 0.8:
+		cv.Class = "good"
+	case c.Score >= 0.5:
+		cv.Class = "noisy"
+	default:
+		cv.Class = "bad"
+	}
+	for _, w := range c.Warnings {
+		wv := warnView{Level: w.Level, Code: w.Code, Message: w.Message, Class: "flat", Glyph: "ℹ"}
+		if w.Level == compare.LevelWarn {
+			wv.Class, wv.Glyph = "noisy", "⚠"
+		}
+		cv.Warnings = append(cv.Warnings, wv)
+	}
+	return cv
 }
 
 func overall(c compare.Counts) (string, string) {

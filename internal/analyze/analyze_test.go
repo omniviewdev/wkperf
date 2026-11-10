@@ -3,6 +3,7 @@ package analyze
 import (
 	"encoding/json"
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/omniviewdev/wkperf/internal/metrics"
@@ -185,5 +186,143 @@ func TestEmptyAndNil(t *testing.T) {
 	}
 	if Summarize(nil, "n") == nil {
 		t.Error("nil rec")
+	}
+}
+
+func windowRec() *model.Recording {
+	f := func(n string) model.StackFrame { return model.StackFrame{Name: n, URL: "https://app/x.js", Line: 3} }
+	return &model.Recording{
+		StartTime: 100, EndTime: 120,
+		InstrumentTypes: []string{"timeline-record-type-script", "timeline-record-type-cpu"},
+		Records: []model.Record{
+			{Type: model.TypeScript, EventType: "event-dispatched", StartTime: 101, EndTime: 101.2, Target: &model.Target{URL: "https://app/"}}, // warm-up, outside
+			{Type: model.TypeScript, EventType: "event-dispatched", StartTime: 109.9, EndTime: 110.1},                                           // straddles 110: clipped to 100ms
+			{Type: model.TypeScript, EventType: "timer-fired", StartTime: 112, EndTime: 112.5},
+			{Type: model.TypeScript, EventType: "timer-installed", StartTime: 113, EndTime: 113},
+			{Type: model.TypeScript, EventType: "timer-installed", StartTime: 119, EndTime: 119}, // after window
+			{Type: model.TypeRenderingFrame, StartTime: 105, EndTime: 105.02},
+			{Type: model.TypeRenderingFrame, StartTime: 111, EndTime: 111.04},
+			{Type: model.TypeCPU, Timestamp: 102, Usage: 90},
+			{Type: model.TypeCPU, Timestamp: 111, Usage: 20},
+			{Type: model.TypeMemory, Timestamp: 111, Categories: []model.MemoryCategory{{Type: "JS", Size: 8 << 20}}},
+		},
+		MemoryPressureEvents: []model.MemoryPressure{{Timestamp: 101}, {Timestamp: 114}},
+		Markers:              []model.Marker{{Time: 111, Type: "navigation", Details: json.RawMessage(`{"url":"https://app/page"}`)}},
+		Samples: []model.TargetSamples{{
+			StackTraces: []model.StackTrace{
+				{Timestamp: 102, StackFrames: []model.StackFrame{f("warm")}},
+				{Timestamp: 111, StackFrames: []model.StackFrame{f("hot")}},
+				{Timestamp: 112, StackFrames: []model.StackFrame{f("hot")}},
+				{Timestamp: 113, StackFrames: []model.StackFrame{f("cold")}},
+			},
+			Durations: []float64{0.001, 0.002, 0.002, 0.001},
+		}},
+	}
+}
+
+func TestWindowTrimAndFixture(t *testing.T) {
+	s := SummarizeWith(windowRec(), "x", Options{TrimStartSec: 10, TrimEndSec: 5})
+	if !approx(s.DurationSec, 5) || !approx(val(t, s, "overview.duration_s"), 5) {
+		t.Fatalf("duration %v", s.DurationSec)
+	}
+	// Window is [110,115): the straddling event is clipped to 100ms.
+	if val(t, s, "script.event-dispatched.count") != 1 || !approx(val(t, s, "script.event-dispatched.total_ms"), 100) {
+		t.Errorf("clip: count %v total %v", val(t, s, "script.event-dispatched.count"), val(t, s, "script.event-dispatched.total_ms"))
+	}
+	if !approx(val(t, s, "script.total_ms"), 600) {
+		t.Errorf("script total %v", val(t, s, "script.total_ms"))
+	}
+	if val(t, s, "script.timer-installed.count") != 1 {
+		t.Error("timer-installed after window must be dropped")
+	}
+	if val(t, s, "frames.count") != 1 || !approx(val(t, s, "frames.mean_ms"), 40) {
+		t.Error("frames outside window must be dropped")
+	}
+	if !approx(val(t, s, "cpu.mean_pct"), 20) || len(s.CPU) != 1 || !approx(s.CPU[0].T, 1) {
+		t.Errorf("cpu windowed/offset by window start: %v", s.CPU)
+	}
+	if len(s.MemoryMB) != 1 || !approx(s.MemoryMB[0].T, 1) {
+		t.Errorf("memory series %v", s.MemoryMB)
+	}
+	if val(t, s, "pressure.events") != 1 {
+		t.Error("pressure events must be filtered by timestamp")
+	}
+	if len(s.Functions) != 2 || s.Functions[0].Name != "hot" || !approx(s.Functions[0].SelfMs, 4) {
+		t.Errorf("functions %+v", s.Functions)
+	}
+
+	fx := s.Fixture
+	if fx.Window != "10.0s-15.0s" || !approx(fx.DurationSec, 5) {
+		t.Errorf("window %q dur %v", fx.Window, fx.DurationSec)
+	}
+	if fx.Frames != 1 || fx.SampleCount != 3 || fx.Records != 6 {
+		t.Errorf("fixture counts %+v", fx)
+	}
+	if len(fx.URLs) != 1 || fx.URLs[0] != "https://app/page" {
+		t.Errorf("urls (record target outside window must not count): %v", fx.URLs)
+	}
+	if len(fx.ScriptEventSet) != 3 || fx.ScriptEventSet[0] != "event-dispatched" {
+		t.Errorf("event set %v", fx.ScriptEventSet)
+	}
+	if len(fx.TopFunctionKeys) != 2 || fx.TopFunctionKeys[0] != s.Functions[0].Key() {
+		t.Errorf("top keys %v", fx.TopFunctionKeys)
+	}
+	if len(fx.Instruments) != 2 || fx.Instruments[0] != "timeline-record-type-cpu" {
+		t.Errorf("instruments (sorted) %v", fx.Instruments)
+	}
+}
+
+func TestWindowFromTo(t *testing.T) {
+	s := SummarizeWith(windowRec(), "x", Options{FromSec: 11, ToSec: 14})
+	if !approx(s.DurationSec, 3) || s.Fixture.Window != "11.0s-14.0s" {
+		t.Fatalf("dur %v window %q", s.DurationSec, s.Fixture.Window)
+	}
+	if val(t, s, "frames.count") != 1 || val(t, s, "script.timer-installed.count") != 1 {
+		t.Error("from/to filtering")
+	}
+	if _, ok := s.Lookup("pressure.events"); ok {
+		t.Error("pressure at +14s is outside [11s,14s)")
+	}
+	// Empty window never panics and yields no work.
+	e := SummarizeWith(windowRec(), "x", Options{TrimStartSec: 30})
+	if e.DurationSec != 0 || e.Fixture.Records != 0 {
+		t.Errorf("empty window: %+v", e.Fixture)
+	}
+}
+
+func TestNoOptionsEqualsSummarize(t *testing.T) {
+	a := Summarize(windowRec(), "x")
+	b := SummarizeWith(windowRec(), "x", Options{})
+	if len(a.Metrics) != len(b.Metrics) || a.DurationSec != 20 || a.Fixture.Window != "" {
+		t.Fatalf("zero options must be the whole recording: dur %v window %q", a.DurationSec, a.Fixture.Window)
+	}
+}
+
+func TestExtensiveFlags(t *testing.T) {
+	gc := json.RawMessage(`{"__type":"GarbageCollection"}`)
+	rec := &model.Recording{StartTime: 0, EndTime: 10,
+		MemoryPressureEvents: []model.MemoryPressure{{Timestamp: 1}},
+		Records: []model.Record{
+			frame(0, 0.02),
+			{Type: model.TypeScript, EventType: "event-dispatched", StartTime: 1, EndTime: 1.1},
+			{Type: model.TypeScript, EventType: "timer-installed", StartTime: 1, EndTime: 1},
+			{Type: model.TypeScript, EventType: "script-evaluated", Details: gc, StartTime: 2, EndTime: 2.01},
+			{Type: model.TypeLayout, EventType: "layout", StartTime: 3, EndTime: 3.01},
+			{Type: model.TypeCPU, Timestamp: 1, Usage: 5},
+			{Type: model.TypeMemory, Timestamp: 1, Categories: []model.MemoryCategory{{Type: "JS", Size: 1 << 20}}},
+			{Type: model.TypeNetwork, Entry: json.RawMessage(`{"time":10,"response":{"_transferSize":5}}`)},
+		}}
+	s := Summarize(rec, "x")
+	for _, m := range s.Metrics {
+		want := strings.HasSuffix(m.Key, ".count") || strings.HasSuffix(m.Key, ".total_ms") ||
+			strings.HasPrefix(m.Key, "frames.jank_") && m.Key != "frames.jank_ratio" ||
+			m.Key == "network.requests" || m.Key == "network.transfer_bytes" || m.Key == "pressure.events" ||
+			m.Key == "overview.records"
+		if m.Extensive != want {
+			t.Errorf("%s: Extensive=%v want %v", m.Key, m.Extensive, want)
+		}
+	}
+	if len(s.Metrics) < 20 {
+		t.Errorf("expected broad metric coverage, got %d", len(s.Metrics))
 	}
 }

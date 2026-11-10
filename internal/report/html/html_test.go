@@ -104,3 +104,48 @@ func TestEmptyResult(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestComparabilityBanner(t *testing.T) {
+	r := sample()
+	r.Comparability = compare.Comparability{
+		Score: 0.72, Normalized: true,
+		Warnings: []compare.Warning{
+			{Level: "info", Code: "duration-mismatch", Message: "capture durations differ"},
+			{Level: "warn", Code: "workload-mismatch", Message: "different <code> paths & stuff"},
+		},
+	}
+	out := render(t, r)
+	for _, want := range []string{
+		`class="banner noisy"`, `>0.72<`, "normalized per second",
+		`data-level="info"`, `data-level="warn"`, "<code>duration-mismatch</code>",
+		"different &lt;code&gt; paths &amp; stuff",
+		"Base ms/s", "Δ ms/s",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	if strings.Contains(out, "different <code> paths") {
+		t.Error("warning message not escaped")
+	}
+	if strings.Index(out, `class="banner`) > strings.Index(out, "<h2>Summary</h2>") {
+		t.Error("banner must be in the header, before the summary")
+	}
+}
+
+func TestComparabilityBannerAbsentOrClean(t *testing.T) {
+	out := render(t, sample())
+	if strings.Contains(out, `class="banner`) || strings.Contains(out, "Base ms/s") || !strings.Contains(out, "Base ms<") {
+		t.Error("zero-value Comparability must render no banner and raw ms columns")
+	}
+	r := sample()
+	r.Comparability = compare.Comparability{Score: 1}
+	out = render(t, r)
+	if !strings.Contains(out, `class="banner good"`) || !strings.Contains(out, "same fixture") || strings.Contains(out, "normalized per second") {
+		t.Error("perfect score banner wrong")
+	}
+	r.Comparability.Score = 0.3
+	if !strings.Contains(render(t, r), `class="banner bad"`) {
+		t.Error("low score should be bad")
+	}
+}

@@ -65,8 +65,8 @@ func Render(w io.Writer, r *compare.Result, o Options) error {
 	renderHeader(&b, p, r)
 	renderHeadline(&b, p, r)
 	renderGroups(&b, p, r, o)
-	renderFuncs(&b, p, "Top regressed functions", r.FuncRegressed, compare.Regressed, o)
-	renderFuncs(&b, p, "Top improved functions", r.FuncImproved, compare.Improved, o)
+	renderFuncs(&b, p, "Top regressed functions", r.FuncRegressed, compare.Regressed, r.Comparability.Normalized, o)
+	renderFuncs(&b, p, "Top improved functions", r.FuncImproved, compare.Improved, r.Comparability.Normalized, o)
 
 	_, err := io.WriteString(w, b.String())
 	return err
@@ -83,7 +83,36 @@ func renderHeader(b *strings.Builder, p painter, r *compare.Result) {
 	}
 	side("baseline", r.Baseline)
 	side("candidate", r.Cand)
+	renderComparability(b, p, r.Comparability)
 	b.WriteString("\n")
+}
+
+// renderComparability prints the score line and one bullet per warning. A
+// zero Comparability (no score, no warnings) is not rendered.
+func renderComparability(b *strings.Builder, p painter, c compare.Comparability) {
+	if c.Score <= 0 && len(c.Warnings) == 0 && !c.Normalized {
+		return
+	}
+	line := fmt.Sprintf("Comparability: %.2f", c.Score)
+	if c.Normalized {
+		line += " (normalized per second)"
+	}
+	code := ansiRed
+	switch {
+	case c.Score >= 0.8:
+		code = ansiGreen
+	case c.Score >= 0.5:
+		code = ansiYellow
+	}
+	b.WriteString("  " + p.paint(code, line) + "\n")
+	for _, w := range c.Warnings {
+		text := fmt.Sprintf("[%s] %s", w.Code, w.Message)
+		if w.Level == compare.LevelWarn {
+			b.WriteString("    " + p.paint(ansiYellow, "! "+text) + "\n")
+		} else {
+			b.WriteString("    " + p.paint(ansiDim, "· "+text) + "\n")
+		}
+	}
 }
 
 func sourceList(src []string) string {
@@ -267,7 +296,7 @@ func writeTable(b *strings.Builder, p painter, rows []row, width int) {
 	}
 }
 
-func renderFuncs(b *strings.Builder, p painter, title string, fs []compare.FuncDiff, v compare.Verdict, o Options) {
+func renderFuncs(b *strings.Builder, p painter, title string, fs []compare.FuncDiff, v compare.Verdict, perSecond bool, o Options) {
 	if len(fs) == 0 {
 		return
 	}
@@ -293,8 +322,12 @@ func renderFuncs(b *strings.Builder, p painter, title string, fs []compare.FuncD
 		}
 	}
 	nameW := max(o.Width-(2+w[0]+w[1]+w[2]+w[3]+4*2), 20)
+	col := "Function (self ms)"
+	if perSecond {
+		col = "Function (self ms per s)"
+	}
 	hdr := fmt.Sprintf("  %s  %s  %s  %s  %s", padLeft("Base", w[0]), padLeft("Cand", w[1]),
-		padLeft("Δ", w[2]), padLeft("Δ%", w[3]), "Function (self ms)")
+		padLeft("Δ", w[2]), padLeft("Δ%", w[3]), col)
 	b.WriteString(p.paint(ansiDim, hdr) + "\n")
 	for _, r := range rows {
 		line := fmt.Sprintf("  %s  %s  %s  %s  %s", padLeft(r.base, w[0]), padLeft(r.cand, w[1]),
@@ -370,6 +403,9 @@ func FormatValue(v float64, u metrics.Unit) string {
 	case metrics.UnitMs:
 		return thousands(fmt.Sprintf("%.2f", v)) + " ms"
 	case metrics.UnitCount:
+		if v != math.Trunc(v) {
+			return thousands(fmt.Sprintf("%.2f", v))
+		}
 		return thousands(fmt.Sprintf("%.0f", v))
 	case metrics.UnitPct:
 		return fmt.Sprintf("%.1f%%", v)

@@ -23,7 +23,83 @@ func DefaultOptions() Options {
 			metrics.UnitRatio: 0.01,
 		},
 		TopFunctions: 15,
+		Normalize:    NormalizeAuto,
 	}
+}
+
+// Normalize modes for Options.Normalize.
+const (
+	NormalizeAuto      = "auto"       // per second only when durations differ by more than durationTolerance
+	NormalizePerSecond = "per-second" // always
+	NormalizeNone      = "none"       // never
+)
+
+// durationTolerance is the relative median-duration difference (against the
+// baseline) above which auto mode normalizes and a mismatch is reported.
+const durationTolerance = 0.10
+
+// normalizedFloorScale shrinks absolute floors for per-second values, which
+// are about 10x smaller than the totals they were derived from on typical
+// 5-30 s captures.
+const normalizedFloorScale = 0.1
+
+// normalizeMode resolves the effective mode; an empty value means auto.
+func normalizeMode(o Options) string {
+	switch o.Normalize {
+	case NormalizePerSecond, NormalizeNone:
+		return o.Normalize
+	}
+	return NormalizeAuto
+}
+
+// durations returns every run's DurationSec, and false if any is not positive
+// (per-second rescaling would be meaningless).
+func durations(group []*metrics.Summary) ([]float64, bool) {
+	out := make([]float64, 0, len(group))
+	for _, s := range group {
+		if s.DurationSec <= 0 {
+			return nil, false
+		}
+		out = append(out, s.DurationSec)
+	}
+	return out, len(out) > 0
+}
+
+// durationsDiffer reports whether the median durations differ by more than
+// durationTolerance, relative to the baseline.
+func durationsDiffer(bd, cd float64) bool {
+	return bd > 0 && math.Abs(cd-bd)/bd > durationTolerance
+}
+
+// shouldNormalize decides whether Extensive metrics and function times are
+// rescaled per second.
+func shouldNormalize(base, cand []*metrics.Summary, opts Options) bool {
+	mode := normalizeMode(opts)
+	if mode == NormalizeNone {
+		return false
+	}
+	bd, ok1 := durations(base)
+	cd, ok2 := durations(cand)
+	if !ok1 || !ok2 {
+		return false
+	}
+	return mode == NormalizePerSecond || durationsDiffer(median(bd), median(cd))
+}
+
+// perSecond returns v scaled by the run duration when norm is set.
+func perSecond(v float64, s *metrics.Summary, norm bool) float64 {
+	if norm {
+		return v / s.DurationSec
+	}
+	return v
+}
+
+// normalizedLabel appends the per-second suffix to a metric label.
+func normalizedLabel(label string, u metrics.Unit) string {
+	if u == metrics.UnitMs {
+		return label + " (ms per s)"
+	}
+	return label + " /s"
 }
 
 var groupOrder = map[string]int{
@@ -44,7 +120,9 @@ func Compare(base, cand []*metrics.Summary, opts Options) *Result {
 		Baseline: side("baseline", base),
 		Cand:     side("candidate", cand),
 	}
-	res.Metrics = compareMetrics(base, cand, opts)
+	norm := shouldNormalize(base, cand, opts)
+	res.Comparability = assess(base, cand, norm)
+	res.Metrics = compareMetrics(base, cand, opts, norm)
 	for _, m := range res.Metrics {
 		switch m.Verdict {
 		case Improved:
@@ -57,7 +135,7 @@ func Compare(base, cand []*metrics.Summary, opts Options) *Result {
 			res.Counts.Noisy++
 		}
 	}
-	res.FuncRegressed, res.FuncImproved = compareFuncs(base, cand, opts)
+	res.FuncRegressed, res.FuncImproved = compareFuncs(base, cand, opts, norm)
 	res.BaseRep = representative(base)
 	res.CandRep = representative(cand)
 	return res
@@ -72,13 +150,18 @@ func side(label string, group []*metrics.Summary) Side {
 }
 
 // collect gathers per-run values for each metric key, plus the first-seen
-// metric definition.
-func collect(group []*metrics.Summary) (map[string][]float64, map[string]metrics.Metric) {
+// metric definition. With norm, Extensive values are divided by the run's
+// DurationSec.
+func collect(group []*metrics.Summary, norm bool) (map[string][]float64, map[string]metrics.Metric) {
 	vals := map[string][]float64{}
 	defs := map[string]metrics.Metric{}
 	for _, s := range group {
 		for _, m := range s.Metrics {
-			vals[m.Key] = append(vals[m.Key], m.Value)
+			v := m.Value
+			if m.Extensive {
+				v = perSecond(v, s, norm)
+			}
+			vals[m.Key] = append(vals[m.Key], v)
 			if _, ok := defs[m.Key]; !ok {
 				defs[m.Key] = m
 			}
@@ -87,9 +170,9 @@ func collect(group []*metrics.Summary) (map[string][]float64, map[string]metrics
 	return vals, defs
 }
 
-func compareMetrics(base, cand []*metrics.Summary, opts Options) []MetricDiff {
-	bv, bd := collect(base)
-	cv, cd := collect(cand)
+func compareMetrics(base, cand []*metrics.Summary, opts Options, norm bool) []MetricDiff {
+	bv, bd := collect(base, norm)
+	cv, cd := collect(cand, norm)
 
 	keys := map[string]struct{}{}
 	for k := range bv {
@@ -107,6 +190,10 @@ func compareMetrics(base, cand []*metrics.Summary, opts Options) []MetricDiff {
 		} else {
 			d.Metric = bd[k]
 		}
+		scaled := norm && d.Metric.Extensive
+		if scaled {
+			d.Metric.Label = normalizedLabel(d.Metric.Label, d.Metric.Unit)
+		}
 		d.Base = median(d.BaseRuns)
 		d.Cand = median(d.CandRuns)
 		d.Metric.Value = d.Cand
@@ -114,7 +201,7 @@ func compareMetrics(base, cand []*metrics.Summary, opts Options) []MetricDiff {
 		if d.Base != 0 {
 			d.Pct = d.Delta / d.Base
 		}
-		d.Verdict, d.Confidence = verdict(d, opts)
+		d.Verdict, d.Confidence = verdict(d, opts, scaled)
 		out = append(out, d)
 	}
 
@@ -131,7 +218,9 @@ func compareMetrics(base, cand []*metrics.Summary, opts Options) []MetricDiff {
 	return out
 }
 
-func verdict(d MetricDiff, opts Options) (Verdict, string) {
+// verdict classifies d. scaled marks per-second values, which use shrunken
+// absolute floors.
+func verdict(d MetricDiff, opts Options, scaled bool) (Verdict, string) {
 	nb, nc := len(d.BaseRuns), len(d.CandRuns)
 	multi := nb >= 2 || nc >= 2
 
@@ -159,7 +248,11 @@ func verdict(d MetricDiff, opts Options) (Verdict, string) {
 		return Removed, confidence
 	}
 
-	if math.Abs(d.Delta) < opts.AbsFloor[d.Metric.Unit] ||
+	floor := opts.AbsFloor[d.Metric.Unit]
+	if scaled {
+		floor *= normalizedFloorScale
+	}
+	if math.Abs(d.Delta) < floor ||
 		(d.Base != 0 && math.Abs(d.Pct) < opts.RelThreshold) {
 		return Unchanged, confidence
 	}
@@ -187,8 +280,8 @@ type funcAgg struct {
 }
 
 // collectFuncs returns per-function per-run values; a run lacking the
-// function contributes 0.
-func collectFuncs(group []*metrics.Summary) map[string]*funcAgg {
+// function contributes 0. With norm, times are ms per second of the run.
+func collectFuncs(group []*metrics.Summary, norm bool) map[string]*funcAgg {
 	out := map[string]*funcAgg{}
 	for i, s := range group {
 		for _, f := range s.Functions {
@@ -202,16 +295,20 @@ func collectFuncs(group []*metrics.Summary) map[string]*funcAgg {
 				}
 				out[k] = a
 			}
-			a.self[i] += f.SelfMs
-			a.total[i] += f.TotalMs
+			a.self[i] += perSecond(f.SelfMs, s, norm)
+			a.total[i] += perSecond(f.TotalMs, s, norm)
 			a.present = true
 		}
 	}
 	return out
 }
 
-func compareFuncs(base, cand []*metrics.Summary, opts Options) (regressed, improved []FuncDiff) {
-	bf, cf := collectFuncs(base), collectFuncs(cand)
+func compareFuncs(base, cand []*metrics.Summary, opts Options, norm bool) (regressed, improved []FuncDiff) {
+	bf, cf := collectFuncs(base, norm), collectFuncs(cand, norm)
+	floor := funcAbsFloorMs
+	if norm {
+		floor *= normalizedFloorScale
+	}
 	keys := map[string]struct{}{}
 	for k := range bf {
 		keys[k] = struct{}{}
@@ -244,16 +341,16 @@ func compareFuncs(base, cand []*metrics.Summary, opts Options) (regressed, impro
 
 		isNew := b == nil
 		isGone := c == nil
-		significant := math.Abs(d.Delta) > funcAbsFloorMs &&
+		significant := math.Abs(d.Delta) > floor &&
 			(d.BaseSelf == 0 || math.Abs(d.Pct) >= opts.RelThreshold)
 		switch {
-		case d.Delta > 0 && (significant || (isNew && d.Delta > funcAbsFloorMs)):
+		case d.Delta > 0 && (significant || (isNew && d.Delta > floor)):
 			d.Verdict = Regressed
 			if isNew {
 				d.Verdict = NewMetric
 			}
 			regressed = append(regressed, d)
-		case d.Delta < 0 && (significant || (isGone && -d.Delta > funcAbsFloorMs)):
+		case d.Delta < 0 && (significant || (isGone && -d.Delta > floor)):
 			d.Verdict = Improved
 			if isGone {
 				d.Verdict = Removed

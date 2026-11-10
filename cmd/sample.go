@@ -42,7 +42,30 @@ func newSampleCmd() *cobra.Command {
 					fmt.Fprintln(cmd.OutOrStdout(), "wrote", path)
 				}
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "\ntry: wkperf compare %s/baseline-*.json --vs %s/candidate-*.json\n", dir, dir)
+			// A deliberately different-length pair to try --normalize / windowing.
+			long := testgen.Improved()
+			long.DurationSec *= 1.5
+			for _, g := range []struct {
+				name string
+				seed int64
+				p    testgen.Params
+			}{
+				{"different-length-baseline", 301, testgen.Baseline()},
+				{"different-length-candidate", 302, long},
+			} {
+				path := filepath.Join(dir, g.name+".json")
+				data, err := json.Marshal(testgen.Generate(g.seed, g.p))
+				if err != nil {
+					return err
+				}
+				if err := os.WriteFile(path, data, 0o644); err != nil {
+					return err
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), "wrote", path)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "\ntry: wkperf analyze %s/baseline-1.json\n", dir)
+			fmt.Fprintf(cmd.OutOrStdout(), "try: wkperf compare %s/different-length-baseline.json %s/different-length-candidate.json   (10s vs 15s; normalized per second)\n", dir, dir)
+			fmt.Fprintf(cmd.OutOrStdout(), "try: wkperf compare %s/baseline-*.json --vs %s/candidate-*.json\n", dir, dir)
 			return nil
 		},
 	}

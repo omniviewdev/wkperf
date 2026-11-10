@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -13,8 +14,13 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"github.com/omniviewdev/wkperf/internal/ai"
+	"github.com/omniviewdev/wkperf/internal/analyze"
 	"github.com/omniviewdev/wkperf/internal/compare"
+	"github.com/omniviewdev/wkperf/internal/insights"
+	"github.com/omniviewdev/wkperf/internal/metrics"
 	"github.com/omniviewdev/wkperf/internal/report/html"
+	"github.com/omniviewdev/wkperf/internal/report/insightshtml"
 	"github.com/omniviewdev/wkperf/internal/report/jsonout"
 	"github.com/omniviewdev/wkperf/internal/report/term"
 )
@@ -32,12 +38,14 @@ positional args and no --vs, the two files are compared 1v1.`,
   wkperf compare before.json after.json
   wkperf compare ./baseline --vs ./candidate --format all --out reports/`,
 		PreRunE: func(cmd *cobra.Command, _ []string) error {
-			for _, k := range []string{"format", "out", "threshold", "top", "verbose", "no-color", "fail-on-regression", "open", "title"} {
-				if err := viper.BindPFlag(k, cmd.Flags().Lookup(k)); err != nil {
-					return err
-				}
+			if err := bindFlags(cmd, "format", "out", "threshold", "top", "verbose", "no-color", "fail-on-regression", "open", "title",
+				"normalize", "strict-fixture", "min-comparability"); err != nil {
+				return err
 			}
-			return nil
+			if err := bindFlags(cmd, windowKeys...); err != nil {
+				return err
+			}
+			return bindAIFlags(cmd)
 		},
 		RunE: runCompare,
 	}
@@ -52,6 +60,11 @@ positional args and no --vs, the two files are compared 1v1.`,
 	f.Bool("fail-on-regression", false, "exit with code 2 on a confident regression in frames/script/layout/cpu")
 	f.Bool("open", false, "open the HTML report after writing it")
 	f.String("title", "", "title for the HTML report")
+	f.String("normalize", "auto", "normalize totals for different recording lengths: auto|per-second|none")
+	f.Bool("strict-fixture", false, "exit with code 3 when the comparability score is below --min-comparability")
+	f.Float64("min-comparability", 0.6, "minimum comparability score (0..1) for --strict-fixture")
+	addWindowFlags(c)
+	addAIFlags(c)
 	return c
 }
 
@@ -84,11 +97,19 @@ func runCompare(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("unknown --format %q (want term|html|json|all)", format)
 	}
 
-	base, baseFiles, err := loadGroup(baseP)
+	norm := strings.ToLower(viper.GetString("normalize"))
+	switch norm {
+	case "auto", "per-second", "none":
+	default:
+		return fmt.Errorf("unknown --normalize %q (want auto|per-second|none)", norm)
+	}
+
+	wo := windowOpts()
+	baseL, baseFiles, err := loadGroup(baseP, wo)
 	if err != nil {
 		return fmt.Errorf("baseline: %w", err)
 	}
-	cand, candFiles, err := loadGroup(candP)
+	candL, candFiles, err := loadGroup(candP, wo)
 	if err != nil {
 		return fmt.Errorf("candidate: %w", err)
 	}
@@ -96,7 +117,8 @@ func runCompare(cmd *cobra.Command, args []string) error {
 	opts := compare.DefaultOptions()
 	opts.RelThreshold = viper.GetFloat64("threshold")
 	opts.TopFunctions = viper.GetInt("top")
-	res := compare.Compare(base, cand, opts)
+	opts.Normalize = norm
+	res := compare.Compare(summaries(baseL), summaries(candL), opts)
 	if res.Baseline.Sources == nil {
 		res.Baseline.Sources = baseFiles
 	}
@@ -107,6 +129,25 @@ func runCompare(cmd *cobra.Command, args []string) error {
 	out := viper.GetString("out")
 	stdout := cmd.OutOrStdout()
 	var htmlPath string
+
+	emit := viper.GetString("emit-prompt")
+	wantAI := viper.GetBool("ai")
+	var prompt ai.Prompt
+	if emit != "" || wantAI {
+		top := viper.GetInt("top")
+		bRep, err := repReport(baseL, res.BaseRep, wo, top)
+		if err != nil {
+			return err
+		}
+		cRep, err := repReport(candL, res.CandRep, wo, top)
+		if err != nil {
+			return err
+		}
+		prompt = ai.BuildComparePrompt(res, bRep, cRep, aiContext(top))
+	}
+	if emit != "" {
+		return emitPrompt(stdout, cmd.ErrOrStderr(), emit, prompt)
+	}
 
 	if format == "term" || format == "all" {
 		o := term.Options{
@@ -119,10 +160,28 @@ func runCompare(cmd *cobra.Command, args []string) error {
 			return err
 		}
 	}
+	var aiText string
+	if wantAI {
+		var err error
+		if aiText, err = runAI(cmd.Context(), prompt); err != nil {
+			return err
+		}
+		printAI(cmd, format, aiText)
+	}
 	if format == "html" || format == "all" {
 		htmlPath = reportPath(out, format, ".html")
 		o := html.Options{Title: viper.GetString("title"), Generated: time.Now()}
-		if err := writeFile(htmlPath, func(w io.Writer) error { return html.Render(w, res, o) }); err != nil {
+		if err := writeFile(htmlPath, func(w io.Writer) error {
+			if aiText == "" {
+				return html.Render(w, res, o)
+			}
+			var buf bytes.Buffer
+			if err := html.Render(&buf, res, o); err != nil {
+				return err
+			}
+			_, err := io.WriteString(w, injectAI(buf.String(), aiText))
+			return err
+		}); err != nil {
 			return err
 		}
 		fmt.Fprintln(cmd.ErrOrStderr(), "wrote", htmlPath)
@@ -150,6 +209,12 @@ func runCompare(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	if viper.GetBool("strict-fixture") {
+		min := viper.GetFloat64("min-comparability")
+		if sc := res.Comparability.Score; sc < min {
+			return &ExitError{Code: 3, Msg: fmt.Sprintf("fixtures not comparable: score %.2f < --min-comparability %.2f (capture the same scenario and duration, or use --trim-*/--from/--to)", sc, min)}
+		}
+	}
 	if viper.GetBool("fail-on-regression") {
 		if n := confidentRegressions(res); n > 0 {
 			return &ExitError{Code: 2, Msg: fmt.Sprintf("%d regressed metric(s) in frames/script/layout/cpu", n)}
@@ -178,20 +243,63 @@ func confidentRegressions(r *compare.Result) int {
 // reportPath computes where a report of the given extension is written.
 // With --format all, out is a directory or a file prefix.
 func reportPath(out, format, ext string) string {
+	return reportPathBase(out, format, ext, defaultReportBase)
+}
+
+func reportPathBase(out, format, ext, base string) string {
 	if format != "all" {
 		if out == "" {
-			return defaultReportBase + ext
+			return base + ext
 		}
 		return out
 	}
 	if out == "" {
-		return defaultReportBase + ext
+		return base + ext
 	}
 	if st, err := os.Stat(out); (err == nil && st.IsDir()) || strings.HasSuffix(out, string(filepath.Separator)) {
-		return filepath.Join(out, defaultReportBase+ext)
+		return filepath.Join(out, base+ext)
 	}
-	prefix := strings.TrimSuffix(strings.TrimSuffix(out, ".html"), ".json")
+	prefix := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(out, ".html"), ".json"), ".md")
 	return prefix + ext
+}
+
+// repReport builds the insights report for the loaded recording whose
+// summary is rep (the representative run), honoring the window.
+func repReport(group []*loaded, rep *metrics.Summary, wo analyze.Options, top int) (*insights.Report, error) {
+	if rep == nil {
+		return nil, nil
+	}
+	for _, l := range group {
+		if l.Sum.Source == rep.Source {
+			rec, err := clipRecording(l.Rec, wo)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", rep.Source, err)
+			}
+			return insights.Analyze(rec, rep.Source, insights.Options{Top: top}), nil
+		}
+	}
+	return nil, nil
+}
+
+// printAI shows the model answer: stdout for text formats, stderr when stdout
+// carries JSON, nowhere extra for html-only (it lands in the report).
+func printAI(cmd *cobra.Command, format, text string) {
+	switch format {
+	case "term", "md", "all":
+		fmt.Fprintf(cmd.OutOrStdout(), "\n## AI analysis\n\n%s\n", text)
+	case "json":
+		fmt.Fprintf(cmd.ErrOrStderr(), "\n## AI analysis\n\n%s\n", text)
+	}
+}
+
+// injectAI inserts the AI section before the closing </body> of page.
+func injectAI(page, text string) string {
+	sec := `<div style="max-width:1000px;margin:0 auto;padding:0 16px 48px;font:14px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif"><h2>AI analysis</h2><div class="ai" style="border:1px solid rgba(128,128,128,.35);border-radius:8px;padding:12px 16px"><style>.ai pre.code{background:rgba(128,128,128,.15);padding:10px;border-radius:6px;overflow:auto}.ai code{background:rgba(128,128,128,.15);padding:0 4px;border-radius:3px}</style>` +
+		string(insightshtml.AISection(text)) + `</div></div>`
+	if i := strings.LastIndex(page, "</body>"); i >= 0 {
+		return page[:i] + sec + page[i:]
+	}
+	return page + sec
 }
 
 func writeFile(path string, render func(io.Writer) error) error {

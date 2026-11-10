@@ -17,13 +17,17 @@ func newSummaryCmd() *cobra.Command {
 		Use:   "summary FILES...",
 		Short: "Print key metrics for one group of recordings (median across runs)",
 		Args:  cobra.MinimumNArgs(1),
+		PreRunE: func(cmd *cobra.Command, _ []string) error {
+			return bindFlags(cmd, windowKeys...)
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			format, _ := cmd.Flags().GetString("format")
 			if format != "term" && format != "json" {
 				return fmt.Errorf("unknown --format %q (want term|json)", format)
 			}
 			cmd.SilenceUsage = true
-			sums, files, err := loadGroup(args)
+			loaded, files, err := loadGroup(args, windowOpts())
+			sums := summaries(loaded)
 			if err != nil {
 				return err
 			}
@@ -52,6 +56,7 @@ func newSummaryCmd() *cobra.Command {
 		},
 	}
 	c.Flags().String("format", "term", "output format: term|json")
+	addWindowFlags(c)
 	return c
 }
 

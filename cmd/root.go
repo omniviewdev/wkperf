@@ -21,12 +21,12 @@ func (e *ExitError) Error() string { return e.Msg }
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "wkperf",
-		Short:         "Compare WebKit Web Inspector Timelines exports",
+		Short:         "Compare and analyze WebKit Web Inspector Timelines exports",
 		Long:          "wkperf compares two groups of WebKit Web Inspector Timelines exports (baseline vs candidate) and reports regressions and improvements.",
 		SilenceUsage:  false,
 		SilenceErrors: true,
 	}
-	root.AddCommand(newCompareCmd(), newSummaryCmd(), newSampleCmd(), newVersionCmd())
+	root.AddCommand(newCompareCmd(), newAnalyzeCmd(), newSummaryCmd(), newSampleCmd(), newVersionCmd())
 	return root
 }
 
@@ -34,14 +34,14 @@ func newRootCmd() *cobra.Command {
 func Execute(args []string) error {
 	initConfig()
 	root := newRootCmd()
-	root.SetArgs(expandVS(args))
+	root.SetArgs(expandEmitPrompt(expandVS(args)))
 	return root.Execute()
 }
 
 // initConfig wires env vars (WKPERF_*) and the optional config file.
 func initConfig() {
 	viper.SetEnvPrefix("WKPERF")
-	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
+	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_", ".", "_"))
 	viper.AutomaticEnv()
 
 	candidates := []string{".wkperf.yaml"}

@@ -27,3 +27,10 @@ overview: duration, record counts. frames: count, mean/p50/p95/p99/max ms, fps, 
 script: per eventType count/total/mean/p95/max ms + overall script total/busy ratio. layout: per eventType (layout, recalculate-styles, paint, composite, forced-layout...) count/total/mean/p95/max.
 gc: count/total ms. cpu: mean/p95/max total + main-thread mean/p95. memory: peak/final/mean MB + per-category peak. network: requests, total transfer bytes, mean/p95 time.
 memory-pressure event count. samples: function self/total ms, sample count, top-N.
+
+## CLI additions
+- `analyze FILE...`: per-recording insights (internal/insights), formats term|md|json(`wkperf-insights/v1`)|html (internal/report/insightshtml)|all.
+- Window flags (`--trim-start/--trim-end/--from/--to`) on compare/summary/analyze; `analyze` clips the recording (cmd.clipRecording), compare/summary use analyze.SummarizeWith.
+- compare: `--normalize auto|per-second|none`, `--strict-fixture` + `--min-comparability` (exit 3).
+- AI: `--ai`, `--ai-provider/model/base-url/max-tokens/timeout`, `--app-name/--app-context/--ai-notes`, `--emit-prompt[=FILE|-]`; config `ai.*`, env WKPERF_AI_*; API keys from env only.
+- `sample` also writes `different-length-{baseline,candidate}.json` (10s vs 15s).

@@ -182,3 +182,66 @@ func TestBarAndTruncate(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+func withComparability() *compare.Result {
+	r := sample()
+	r.Comparability = compare.Comparability{
+		Score: 0.72, Normalized: true,
+		Warnings: []compare.Warning{
+			{Level: "info", Code: "duration-mismatch", Message: "capture durations differ"},
+			{Level: "warn", Code: "workload-mismatch", Message: "different code paths exercised"},
+		},
+	}
+	return r
+}
+
+func TestComparabilitySection(t *testing.T) {
+	out := render(t, withComparability(), Options{})
+	for _, want := range []string{
+		"Comparability: 0.72 (normalized per second)",
+		"[duration-mismatch] capture durations differ",
+		"[workload-mismatch] different code paths exercised",
+		"Function (self ms per s)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	// Under the header, before the headline.
+	c, h := strings.Index(out, "Comparability:"), strings.Index(out, "1 improved")
+	if c < strings.Index(out, "candidate:") || c > h {
+		t.Errorf("comparability must sit between header and headline:\n%s", out)
+	}
+	if strings.Index(out, "[workload-mismatch]") > h {
+		t.Errorf("warnings must precede the headline")
+	}
+}
+
+func TestComparabilityColorsAndZeroValue(t *testing.T) {
+	out := render(t, withComparability(), Options{Color: true})
+	if !strings.Contains(out, ansiYellow+"! [workload-mismatch]") {
+		t.Errorf("warn bullet should be yellow:\n%q", out)
+	}
+	if strings.Contains(out, ansiYellow+"! [duration-mismatch]") || !strings.Contains(out, ansiDim+"· [duration-mismatch]") {
+		t.Errorf("info bullet should be dim, not yellow:\n%q", out)
+	}
+	// A result without comparability data prints nothing about it.
+	if strings.Contains(render(t, sample(), Options{}), "Comparability") {
+		t.Error("zero-value Comparability rendered")
+	}
+	r := sample()
+	r.Comparability = compare.Comparability{Score: 1}
+	out = render(t, r, Options{})
+	if !strings.Contains(out, "Comparability: 1.00") || strings.Contains(out, "normalized") || strings.Contains(out, "per s)") {
+		t.Errorf("perfect score line wrong:\n%s", out)
+	}
+}
+
+func TestFormatFractionalCount(t *testing.T) {
+	if got := FormatValue(0.45, metrics.UnitCount); got != "0.45" {
+		t.Errorf("per-second count lost precision: %q", got)
+	}
+	if got := FormatValue(1234, metrics.UnitCount); got != "1,234" {
+		t.Errorf("integral count: %q", got)
+	}
+}

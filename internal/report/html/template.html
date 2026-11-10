@@ -27,6 +27,10 @@ svg text.lt{fill:var(--muted);font-size:10px}
 code{font-family:ui-monospace,Menlo,monospace;font-size:12px}
 button.copy{font-size:11px;margin-left:6px;cursor:pointer}
 tr.hidden{display:none}
+.banner{margin-top:12px;background:var(--card);border:1px solid var(--line);border-left:4px solid var(--flat);border-radius:8px;padding:10px 16px}
+.banner.good{border-left-color:var(--good)}.banner.noisy{border-left-color:var(--noisy)}.banner.bad{border-left-color:var(--bad)}
+.banner .score{font-size:18px;font-weight:600}
+.banner ul{margin:6px 0 0;padding-left:0;list-style:none}.banner li{margin:2px 0}
 .sources{margin:4px 0;padding-left:18px;color:var(--muted);font-size:12px}
 </style>
 </head>
@@ -40,6 +44,11 @@ tr.hidden{display:none}
 <div class="card"><div class="l">Candidate: {{.Cand.Label}}</div><div class="v">{{.Cand.Runs}} run(s)</div>
 <ul class="sources">{{range .Cand.Sources}}<li>{{.}}</li>{{end}}</ul></div>
 </div>
+{{if .Comp.Show}}<div class="banner {{.Comp.Class}}" role="note" aria-label="Comparability">
+<span class="muted">Comparability</span> <span class="score {{.Comp.Class}}">{{.Comp.Score}}</span>{{if .Comp.Normalized}} <span class="muted">(normalized per second: counts and totals are per second of capture)</span>{{end}}
+{{if .Comp.Warnings}}<ul>{{range .Comp.Warnings}}<li class="{{.Class}}" data-level="{{.Level}}">{{.Glyph}} <code>{{.Code}}</code> {{.Message}}</li>
+{{end}}</ul>{{else}}<div class="muted">Captures look like the same fixture.</div>{{end}}
+</div>{{end}}
 </header>
 
 <h2>Summary</h2>
@@ -94,7 +103,7 @@ tr.hidden{display:none}
 {{if .Regressed}}
 <h2>Top regressed functions (self time)</h2>
 <table class="funcs">
-<thead><tr><th class="nosort">Function</th><th class="n">Base ms</th><th class="n">Cand ms</th><th class="n">Δ ms</th><th class="n">Δ%</th><th class="nosort">Base / Cand</th></tr></thead>
+<thead><tr><th class="nosort">Function</th><th class="n">Base {{.Unit}}</th><th class="n">Cand {{.Unit}}</th><th class="n">Δ {{.Unit}}</th><th class="n">Δ%</th><th class="nosort">Base / Cand</th></tr></thead>
 <tbody>
 {{range .Regressed}}<tr><td><code class="fn">{{.Name}}</code><button class="copy" type="button">copy</button><div class="muted"><code>{{.Loc}}</code></div></td>
 <td class="n">{{.Base}}</td><td class="n">{{.Cand}}</td><td class="n {{.Class}}">{{.Glyph}} {{.Delta}}</td><td class="n {{.Class}}">{{.Pct}}</td><td>{{.Bars}}</td></tr>
@@ -104,7 +113,7 @@ tr.hidden{display:none}
 {{if .Improved}}
 <h2>Top improved functions (self time)</h2>
 <table class="funcs">
-<thead><tr><th class="nosort">Function</th><th class="n">Base ms</th><th class="n">Cand ms</th><th class="n">Δ ms</th><th class="n">Δ%</th><th class="nosort">Base / Cand</th></tr></thead>
+<thead><tr><th class="nosort">Function</th><th class="n">Base {{.Unit}}</th><th class="n">Cand {{.Unit}}</th><th class="n">Δ {{.Unit}}</th><th class="n">Δ%</th><th class="nosort">Base / Cand</th></tr></thead>
 <tbody>
 {{range .Improved}}<tr><td><code class="fn">{{.Name}}</code><button class="copy" type="button">copy</button><div class="muted"><code>{{.Loc}}</code></div></td>
 <td class="n">{{.Base}}</td><td class="n">{{.Cand}}</td><td class="n {{.Class}}">{{.Glyph}} {{.Delta}}</td><td class="n {{.Class}}">{{.Pct}}</td><td>{{.Bars}}</td></tr>

@@ -3,8 +3,10 @@ package analyze
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"sort"
+	"strings"
 
 	"github.com/omniviewdev/wkperf/internal/metrics"
 	"github.com/omniviewdev/wkperf/internal/model"
@@ -88,13 +90,17 @@ func (b *builder) add(key, group, label string, unit metrics.Unit, dir metrics.D
 	b.m = append(b.m, metrics.Metric{Key: key, Group: group, Label: label, Unit: unit, Dir: dir, Value: v})
 }
 
+func (b *builder) addExt(key, group, label string, unit metrics.Unit, dir metrics.Direction, v float64) {
+	b.m = append(b.m, metrics.Metric{Key: key, Group: group, Label: label, Unit: unit, Dir: dir, Value: v, Extensive: true})
+}
+
 // timeStats emits count/total/mean/p95/max for durations in ms under prefix.
 func (b *builder) timeStats(prefix, group, label string, ms []float64, countOnly bool) {
-	b.add(prefix+".count", group, label+" count", metrics.UnitCount, metrics.LowerBetter, float64(len(ms)))
+	b.addExt(prefix+".count", group, label+" count", metrics.UnitCount, metrics.LowerBetter, float64(len(ms)))
 	if countOnly || len(ms) == 0 {
 		return
 	}
-	b.add(prefix+".total_ms", group, label+" total", metrics.UnitMs, metrics.LowerBetter, sum(ms))
+	b.addExt(prefix+".total_ms", group, label+" total", metrics.UnitMs, metrics.LowerBetter, sum(ms))
 	b.add(prefix+".mean_ms", group, label+" mean", metrics.UnitMs, metrics.LowerBetter, mean(ms))
 	b.add(prefix+".p95_ms", group, label+" p95", metrics.UnitMs, metrics.LowerBetter, Percentile(ms, 95))
 	b.add(prefix+".max_ms", group, label+" max", metrics.UnitMs, metrics.LowerBetter, maxOf(ms))
@@ -113,18 +119,87 @@ func sortedKeys[V any](m map[string]V) []string {
 	return keys
 }
 
-// Summarize analyzes rec and returns flat metrics, function stats and chart series.
+// Options select the part of a recording to analyze. All values are seconds
+// relative to the recording start. The zero value analyzes the whole recording.
+type Options struct {
+	TrimStartSec float64 // drop the first N seconds (e.g. warm-up)
+	TrimEndSec   float64 // drop the last N seconds
+	FromSec      float64 // explicit window start
+	ToSec        float64 // explicit window end; 0 = recording end
+}
+
+// window is an absolute [lo,hi] time range; active is false when it covers the
+// whole recording unchanged.
+type window struct {
+	lo, hi float64
+	active bool
+}
+
+func (o Options) window(rec *model.Recording) window {
+	lo := rec.StartTime + math.Max(0, math.Max(o.TrimStartSec, o.FromSec))
+	hi := rec.EndTime - math.Max(0, o.TrimEndSec)
+	if o.ToSec > 0 {
+		hi = math.Min(hi, rec.StartTime+o.ToSec)
+	}
+	return window{lo: lo, hi: hi, active: lo != rec.StartTime || hi != rec.EndTime}
+}
+
+func (w window) dur() float64 {
+	if w.hi > w.lo {
+		return w.hi - w.lo
+	}
+	return 0
+}
+
+// at reports whether instant t lies in the window.
+func (w window) at(t float64) bool {
+	return !w.active || (t >= w.lo && t < w.hi)
+}
+
+// span clips [start,end] to the window and reports whether anything remains.
+// Zero-length spans count when their start lies in the window.
+func (w window) span(start, end float64) (float64, float64, bool) {
+	if !w.active {
+		return start, end, true
+	}
+	if end <= start {
+		return start, end, w.at(start)
+	}
+	if end <= w.lo || start >= w.hi {
+		return 0, 0, false
+	}
+	return math.Max(start, w.lo), math.Min(end, w.hi), true
+}
+
+// Summarize analyzes the whole of rec and returns flat metrics, function
+// stats and chart series.
 func Summarize(rec *model.Recording, source string) *metrics.Summary {
+	return SummarizeWith(rec, source, Options{})
+}
+
+// SummarizeWith is Summarize restricted to the window selected by o. Records
+// are kept when they overlap the window and their spans clipped to it;
+// samples, CPU, memory and pressure events are kept by timestamp. DurationSec
+// and chart series offsets are relative to the window start.
+func SummarizeWith(rec *model.Recording, source string, o Options) *metrics.Summary {
 	s := &metrics.Summary{Source: source}
 	if rec == nil {
 		return s
 	}
 	s.Name = rec.DisplayName
-	duration := rec.EndTime - rec.StartTime
-	if duration < 0 {
-		duration = 0
+	win := o.window(rec)
+	duration := win.dur()
+	if !win.active {
+		duration = rec.EndTime - rec.StartTime
+		if duration < 0 {
+			duration = 0
+		}
 	}
 	s.DurationSec = duration
+	origin := rec.StartTime
+	if win.active {
+		origin = win.lo
+	}
 
 	var (
 		frames       []timedPoint
@@ -144,31 +219,59 @@ func Summarize(rec *model.Recording, source string) *metrics.Summary {
 		haveLayout   bool
 		scriptTimeMs float64
 		layoutTimeMs float64
+		nRecords     int
+		urls         = map[string]bool{}
 	)
 
 	for i := range rec.Records {
 		r := &rec.Records[i]
+		var start, end float64
+		var keep bool
+		switch r.Type {
+		case model.TypeCPU, model.TypeMemory:
+			keep = win.at(r.Timestamp)
+		case model.TypeNetwork:
+			// Network records may lack timing; keep those rather than guess.
+			if r.StartTime == 0 && r.EndTime == 0 {
+				keep = true
+			} else {
+				start, end, keep = win.span(r.StartTime, r.EndTime)
+			}
+		default:
+			start, end, keep = win.span(r.StartTime, r.EndTime)
+		}
+		if !keep {
+			continue
+		}
+		nRecords++
+		if r.Target != nil && r.Target.URL != "" {
+			urls[r.Target.URL] = true
+		}
+		clipped := end - start
+		if clipped < 0 {
+			clipped = 0
+		}
 		switch r.Type {
 		case model.TypeRenderingFrame:
-			if d := r.Duration(); d > 0 {
-				frames = append(frames, timedPoint{r.StartTime, d * 1000})
+			if clipped > 0 {
+				frames = append(frames, timedPoint{start, clipped * 1000})
 			}
 		case model.TypeScript:
 			if isGC(r) {
-				gcMs = append(gcMs, r.Duration()*1000)
+				gcMs = append(gcMs, clipped*1000)
 				continue
 			}
 			haveScript = true
 			scriptCount[r.EventType]++
 			if !countOnlyEvents[r.EventType] {
-				ms := r.Duration() * 1000
+				ms := clipped * 1000
 				scriptMs[r.EventType] = append(scriptMs[r.EventType], ms)
 				scriptTimeMs += ms
 			}
 		case model.TypeLayout:
 			haveLayout = true
 			layoutCount[r.EventType]++
-			ms := r.Duration() * 1000
+			ms := clipped * 1000
 			layoutMs[r.EventType] = append(layoutMs[r.EventType], ms)
 			layoutTimeMs += ms
 		case model.TypeCPU:
@@ -196,6 +299,19 @@ func Summarize(rec *model.Recording, source string) *metrics.Summary {
 			}
 		}
 	}
+	nPressure := 0
+	for _, e := range rec.MemoryPressureEvents {
+		if win.at(e.Timestamp) {
+			nPressure++
+		}
+	}
+	for _, mk := range rec.Markers {
+		if win.at(mk.Time) {
+			if u := markerURL(mk.Details); u != "" {
+				urls[u] = true
+			}
+		}
+	}
 
 	sort.SliceStable(frames, func(i, j int) bool { return frames[i].t < frames[j].t })
 	sort.SliceStable(cpuTotal, func(i, j int) bool { return cpuTotal[i].t < cpuTotal[j].t })
@@ -203,7 +319,7 @@ func Summarize(rec *model.Recording, source string) *metrics.Summary {
 
 	b := &builder{}
 	b.add("overview.duration_s", "overview", "Recording duration", "s", metrics.Neutral, duration)
-	b.add("overview.records", "overview", "Records", metrics.UnitCount, metrics.Neutral, float64(len(rec.Records)))
+	b.addExt("overview.records", "overview", "Records", metrics.UnitCount, metrics.Neutral, float64(nRecords))
 
 	if len(frames) > 0 {
 		ms := make([]float64, len(frames))
@@ -214,7 +330,7 @@ func Summarize(rec *model.Recording, source string) *metrics.Summary {
 		sorted := append([]float64(nil), ms...)
 		sort.Float64s(sorted)
 		meanMs := mean(ms)
-		b.add("frames.count", "frames", "Frames", metrics.UnitCount, metrics.Neutral, float64(len(ms)))
+		b.addExt("frames.count", "frames", "Frames", metrics.UnitCount, metrics.Neutral, float64(len(ms)))
 		b.add("frames.mean_ms", "frames", "Frame time mean", metrics.UnitMs, metrics.LowerBetter, meanMs)
 		b.add("frames.p50_ms", "frames", "Frame time p50", metrics.UnitMs, metrics.LowerBetter, percentileSorted(sorted, 50))
 		b.add("frames.p95_ms", "frames", "Frame time p95", metrics.UnitMs, metrics.LowerBetter, percentileSorted(sorted, 95))
@@ -233,20 +349,22 @@ func Summarize(rec *model.Recording, source string) *metrics.Summary {
 				j50++
 			}
 		}
-		b.add("frames.jank_16ms", "frames", "Frames > 16.7ms", metrics.UnitCount, metrics.LowerBetter, float64(j16))
-		b.add("frames.jank_33ms", "frames", "Frames > 33.4ms", metrics.UnitCount, metrics.LowerBetter, float64(j33))
-		b.add("frames.jank_50ms", "frames", "Frames > 50ms", metrics.UnitCount, metrics.LowerBetter, float64(j50))
+		b.addExt("frames.jank_16ms", "frames", "Frames > 16.7ms", metrics.UnitCount, metrics.LowerBetter, float64(j16))
+		b.addExt("frames.jank_33ms", "frames", "Frames > 33.4ms", metrics.UnitCount, metrics.LowerBetter, float64(j33))
+		b.addExt("frames.jank_50ms", "frames", "Frames > 50ms", metrics.UnitCount, metrics.LowerBetter, float64(j50))
 		b.add("frames.jank_ratio", "frames", "Jank ratio (>16.7ms)", metrics.UnitRatio, metrics.LowerBetter, float64(j16)/float64(len(ms)))
 	}
 
+	var eventSet []string
 	if haveScript {
-		b.add("script.total_ms", "script", "Script total", metrics.UnitMs, metrics.LowerBetter, scriptTimeMs)
+		b.addExt("script.total_ms", "script", "Script total", metrics.UnitMs, metrics.LowerBetter, scriptTimeMs)
 		if duration > 0 {
 			b.add("script.busy_ratio", "script", "Script busy ratio", metrics.UnitRatio, metrics.LowerBetter, scriptTimeMs/1000/duration)
 		}
 		for _, et := range sortedKeys(scriptCount) {
+			eventSet = append(eventSet, et)
 			if countOnlyEvents[et] {
-				b.add("script."+et+".count", "script", et+" count", metrics.UnitCount, metrics.LowerBetter, float64(scriptCount[et]))
+				b.addExt("script."+et+".count", "script", et+" count", metrics.UnitCount, metrics.LowerBetter, float64(scriptCount[et]))
 				continue
 			}
 			b.timeStats("script."+et, "script", et, scriptMs[et], false)
@@ -254,22 +372,22 @@ func Summarize(rec *model.Recording, source string) *metrics.Summary {
 	}
 
 	if haveLayout {
-		b.add("layout.total_ms", "layout", "Layout total", metrics.UnitMs, metrics.LowerBetter, layoutTimeMs)
+		b.addExt("layout.total_ms", "layout", "Layout total", metrics.UnitMs, metrics.LowerBetter, layoutTimeMs)
 		for _, et := range sortedKeys(layoutCount) {
 			b.timeStats("layout."+et, "layout", et, layoutMs[et], false)
 		}
 	}
 
 	if len(gcMs) > 0 {
-		b.add("gc.count", "gc", "GC count", metrics.UnitCount, metrics.LowerBetter, float64(len(gcMs)))
-		b.add("gc.total_ms", "gc", "GC total", metrics.UnitMs, metrics.LowerBetter, sum(gcMs))
+		b.addExt("gc.count", "gc", "GC count", metrics.UnitCount, metrics.LowerBetter, float64(len(gcMs)))
+		b.addExt("gc.total_ms", "gc", "GC total", metrics.UnitMs, metrics.LowerBetter, sum(gcMs))
 	}
 
 	if len(cpuTotal) > 0 {
 		vals := make([]float64, len(cpuTotal))
 		for i, p := range cpuTotal {
 			vals[i] = p.v
-			s.CPU = append(s.CPU, metrics.Point{T: p.t - rec.StartTime, V: p.v})
+			s.CPU = append(s.CPU, metrics.Point{T: p.t - origin, V: p.v})
 		}
 		b.add("cpu.mean_pct", "cpu", "CPU mean", metrics.UnitPct, metrics.LowerBetter, mean(vals))
 		b.add("cpu.p95_pct", "cpu", "CPU p95", metrics.UnitPct, metrics.LowerBetter, Percentile(vals, 95))
@@ -284,7 +402,7 @@ func Summarize(rec *model.Recording, source string) *metrics.Summary {
 		vals := make([]float64, len(memTotal))
 		for i, p := range memTotal {
 			vals[i] = p.v / mb
-			s.MemoryMB = append(s.MemoryMB, metrics.Point{T: p.t - rec.StartTime, V: vals[i]})
+			s.MemoryMB = append(s.MemoryMB, metrics.Point{T: p.t - origin, V: vals[i]})
 		}
 		b.add("memory.peak_mb", "memory", "Memory peak", "MB", metrics.LowerBetter, maxOf(vals))
 		b.add("memory.final_mb", "memory", "Memory final", "MB", metrics.LowerBetter, vals[len(vals)-1])
@@ -295,19 +413,74 @@ func Summarize(rec *model.Recording, source string) *metrics.Summary {
 	}
 
 	if haveNetwork {
-		b.add("network.requests", "network", "Requests", metrics.UnitCount, metrics.Neutral, float64(len(netMs)))
-		b.add("network.transfer_bytes", "network", "Transferred", metrics.UnitBytes, metrics.LowerBetter, netBytes)
+		b.addExt("network.requests", "network", "Requests", metrics.UnitCount, metrics.Neutral, float64(len(netMs)))
+		b.addExt("network.transfer_bytes", "network", "Transferred", metrics.UnitBytes, metrics.LowerBetter, netBytes)
 		b.add("network.mean_ms", "network", "Request time mean", metrics.UnitMs, metrics.LowerBetter, mean(netMs))
 		b.add("network.p95_ms", "network", "Request time p95", metrics.UnitMs, metrics.LowerBetter, Percentile(netMs, 95))
 	}
 
-	if n := len(rec.MemoryPressureEvents); n > 0 {
-		b.add("pressure.events", "memory", "Memory pressure events", metrics.UnitCount, metrics.LowerBetter, float64(n))
+	if nPressure > 0 {
+		b.addExt("pressure.events", "memory", "Memory pressure events", metrics.UnitCount, metrics.LowerBetter, float64(nPressure))
 	}
 
 	s.Metrics = b.m
-	s.Functions = aggregateFunctions(rec.Samples)
+	var nSamples int
+	s.Functions, nSamples = aggregateFunctions(rec.Samples, win)
+
+	instruments := append([]string(nil), rec.InstrumentTypes...)
+	sort.Strings(instruments)
+	s.Fixture = metrics.Fixture{
+		DurationSec:     duration,
+		Frames:          len(frames),
+		Records:         nRecords,
+		SampleCount:     nSamples,
+		URLs:            sortedKeys(urls),
+		Instruments:     instruments,
+		ScriptEventSet:  eventSet,
+		TopFunctionKeys: topFunctionKeys(s.Functions, topFunctionCount),
+	}
+	if win.active {
+		s.Fixture.Window = fmt.Sprintf("%.1fs-%.1fs", win.lo-rec.StartTime, math.Max(win.lo, win.hi)-rec.StartTime)
+	}
 	return s
+}
+
+// topFunctionCount is the size of the workload fingerprint in Fixture.
+const topFunctionCount = 20
+
+// topFunctionKeys returns the Key of the first n functions with self time;
+// fs must be sorted by self time descending.
+func topFunctionKeys(fs []metrics.FuncStat, n int) []string {
+	var out []string
+	for _, f := range fs {
+		if len(out) == n || f.SelfMs <= 0 {
+			break
+		}
+		out = append(out, f.Key())
+	}
+	return out
+}
+
+// markerURL extracts a URL from a marker's details: either a JSON string that
+// looks like a URL or an object with a "url" field.
+func markerURL(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var str string
+	if json.Unmarshal(raw, &str) == nil {
+		if strings.HasPrefix(str, "http://") || strings.HasPrefix(str, "https://") {
+			return str
+		}
+		return ""
+	}
+	var obj struct {
+		URL string `json:"url"`
+	}
+	if json.Unmarshal(raw, &obj) == nil {
+		return obj.URL
+	}
+	return ""
 }
 
 func isGC(r *model.Record) bool {
@@ -355,7 +528,9 @@ func parseHAR(raw json.RawMessage) (timeMs, bytes float64, ok bool) {
 	return t, b, true
 }
 
-func aggregateFunctions(targets []model.TargetSamples) []metrics.FuncStat {
+// aggregateFunctions folds sampling-profiler data into per-function stats,
+// ignoring samples outside win, and also returns the number of samples used.
+func aggregateFunctions(targets []model.TargetSamples, win window) ([]metrics.FuncStat, int) {
 	type key struct {
 		name, url string
 		line      int
@@ -374,11 +549,13 @@ func aggregateFunctions(targets []model.TargetSamples) []metrics.FuncStat {
 		}
 		return st, k
 	}
+	n := 0
 	for _, t := range targets {
 		for i, st := range t.StackTraces {
-			if len(st.StackFrames) == 0 {
+			if len(st.StackFrames) == 0 || !win.at(st.Timestamp) {
 				continue
 			}
+			n++
 			w := defaultSampleSeconds
 			if i < len(t.Durations) {
 				w = t.Durations[i]
@@ -417,5 +594,5 @@ func aggregateFunctions(targets []model.TargetSamples) []metrics.FuncStat {
 		}
 		return a.Line < b.Line
 	})
-	return out
+	return out, n
 }

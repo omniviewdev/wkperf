@@ -2,6 +2,8 @@
 
 `wkperf` compares two groups of WebKit Web Inspector **Timelines** exports (a baseline and a candidate) and reports what got faster, what got slower, and by how much. It writes a terminal report, a single self-contained HTML report, and a JSON report.
 
+It can also **analyze a single recording** (`wkperf analyze`): where wall time goes, hot functions and modules, slow frames, long tasks, and findings with optimization hints, optionally interpreted by an LLM (`--ai`).
+
 It analyzes rendering frames (frame time, FPS, jank), script and layout events, GC, CPU, memory, network, and sampling-profiler function self time.
 
 ## Install
@@ -30,6 +32,19 @@ go build -o wkperf .
 - Capture **at least 5 runs per side**. With several runs wkperf compares medians and marks changes inside run-to-run noise as `noisy`.
 - Keep runs in one directory per side, e.g. `baseline/` and `candidate/`.
 
+### Fixture handling: comparing like with like
+
+A comparison only means something if both sides measured the same scenario. wkperf checks this and tells you when they differ:
+
+- **Normalization** (`--normalize auto|per-second|none`, default `auto`). Totals and counts (script ms, layout ms, GC count, network bytes, ...) grow with recording length, so a 15s capture looks "worse" than a 10s one. With `auto`, when durations differ by more than 10%, these metrics are rescaled per second. `per-second` always rescales; `none` never does.
+- **Windowing** (`--trim-start SEC`, `--trim-end SEC`, `--from SEC`, `--to SEC`) on `compare`, `summary` and `analyze`: cut warm-up or tail noise, or compare only the same slice of each recording. Times are seconds from the recording start; records are clipped to the window.
+- **Comparability score and warnings**. The comparison carries a 0..1 score (1 = same fixture) and warnings: `duration-mismatch`, `frame-count-mismatch`, `url-mismatch`, `instrument-mismatch`, `workload-mismatch` (different hot functions), `sample-sparse`, `run-variance`. They are shown in the terminal and HTML reports and included in the JSON.
+- **Gate in CI**: `--strict-fixture` exits with code 3 when the score is below `--min-comparability` (default `0.6`).
+
+Recommendation: capture the same scenario, with the same steps and the same duration, on both sides. Use windowing and normalization as a safety net, not a substitute.
+
+`wkperf sample` writes a deliberately mismatched pair (`different-length-baseline.json` 10s, `different-length-candidate.json` 15s) to try this.
+
 ## Usage
 
 ```bash
@@ -55,6 +70,17 @@ wkperf compare ./baseline --vs ./candidate --format all --out reports/
 wkperf summary ./baseline
 wkperf summary ./baseline --format json
 
+# Profile one recording (each file analyzed separately)
+wkperf analyze recording.json
+wkperf analyze recording.json --format md
+wkperf analyze recording.json --format html --out analysis.html --open
+wkperf analyze ./baseline --format json
+
+# Ask an LLM, or just get the prompt
+ANTHROPIC_API_KEY=... wkperf analyze recording.json --ai
+wkperf analyze recording.json --emit-prompt=prompt.md
+wkperf compare ./baseline --vs ./candidate --emit-prompt -
+
 wkperf version
 ```
 
@@ -74,6 +100,97 @@ wkperf version
 | `--fail-on-regression` | off | exit 2 on a confident regression |
 | `--open` | off | open the HTML report |
 | `--title` | | HTML report title |
+| `--normalize` | `auto` | `auto`, `per-second`, or `none` (see Fixture handling) |
+| `--trim-start`, `--trim-end`, `--from`, `--to` | `0` | window in seconds (also on `summary` and `analyze`) |
+| `--strict-fixture` | off | exit 3 when comparability score < `--min-comparability` |
+| `--min-comparability` | `0.6` | threshold for `--strict-fixture` |
+| `--ai`, `--emit-prompt`, `--ai-*`, `--app-*` | | see AI workflow |
+
+## analyze
+
+`wkperf analyze FILE...` takes files or directories and analyzes each recording on its own; nothing is aggregated.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--format` | `term` | `term`, `md`, `json`, `html`, or `all` |
+| `--out` | `wkperf-analysis.html` | output file; directory or prefix with `all` (writes `.md`, `.json`, `.html`). `md` and `json` print to stdout without `--out` |
+| `--top` | `10` | list length for hotspots, modules, slow frames, long tasks |
+| `--jank-ms` | `16.7` | slow-frame threshold |
+| `--long-task-ms` | `50` | long-task threshold |
+| `--open`, `--no-color` | | as in `compare` |
+
+JSON output is `{"schema": "wkperf-insights/v1", "reports": [...]}`. The HTML report is self-contained (inline SVG, light/dark): a stacked wall-time bar with legend, hotspot and module tables, slow frames, long tasks, and finding cards with severity, evidence and suggestion.
+
+### Findings catalogue
+
+| ID | Looks for |
+| --- | --- |
+| `long-tasks` | script records over `--long-task-ms` blocking the main thread |
+| `forced-layout` | layout/style running after script in the same frame (layout thrashing) |
+| `layout-heavy`, `style-recalc-heavy`, `paint-heavy` | large share of wall time in layout, style recalculation, paint |
+| `jank` | frames over the jank budget, with the dominant cause |
+| `raf-load` | expensive requestAnimationFrame callbacks |
+| `timer-storm` | very many timer firings |
+| `event-handler-heavy` | costly event dispatches |
+| `microtask-heavy`, `observer-callback-heavy` | promise/microtask and observer callback cost |
+| `gc-pressure` | garbage collection share and frequency |
+| `memory-growth` | steady memory growth (possible leak) |
+| `cpu-high` | sustained high CPU usage |
+| `hot-function`, `hot-module` | one function or module dominating sampled self time |
+| `network` | heavy or slow network activity |
+| `low-sample-coverage` | sampling profiler covers little of script time (hotspots may mislead) |
+
+Severity is `high`, `medium`, `low`, or `info`, derived from the share of wall time affected. Findings are heuristics: treat them as leads and verify with a second capture.
+
+## AI workflow
+
+`--ai` on `analyze` and `compare` sends the profile (or comparison plus the median-run profiles) to an LLM and prints its Markdown answer after the report. With `--format html` or `all` it is also added to the HTML report; with `--format json` on `compare` it goes to stderr, on `analyze` it is added as an `ai` field.
+
+`--emit-prompt` needs no network and no key: it writes the exact prompt as Markdown and exits, so you can paste it into Claude Code or another agent. Use `--emit-prompt` for stdout (`--emit-prompt -`) or `--emit-prompt=FILE`.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--ai` | off | call the model |
+| `--ai-provider` | `anthropic` | `anthropic` or `openai` (any OpenAI-compatible server) |
+| `--ai-model` | provider default | model name |
+| `--ai-base-url` | provider default | API base URL |
+| `--ai-max-tokens` | `4096` | answer limit |
+| `--ai-timeout` | `180s` | request timeout |
+| `--app-name` | `Omniview` | application name in the prompt |
+| `--app-context` | | extra context; platform defaults to "macOS WKWebView (Wails)", framework to React |
+| `--ai-notes` | | free-form notes for the model |
+| `--emit-prompt [FILE\|-]` | | write the prompt and exit |
+
+API keys come only from the environment: `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. They are never read from flags or config files. Without a key, `--ai` fails with an error pointing at `--emit-prompt`. Ctrl-C cancels the request.
+
+Local models: run any OpenAI-compatible server and point wkperf at it, e.g. Ollama:
+
+```bash
+wkperf analyze recording.json --ai --ai-provider openai \
+  --ai-base-url http://localhost:11434/v1 --ai-model llama3.1
+```
+
+(`OPENAI_API_KEY` may be unset for local servers.)
+
+Config file keys live under `ai:` and env vars use `WKPERF_AI_*`:
+
+```yaml
+ai:
+  provider: openai
+  model: llama3.1
+  base_url: http://localhost:11434/v1
+  max_tokens: 4096
+  timeout: 180s
+```
+
+## Continuous improvement loop
+
+1. **Capture a baseline**: record the scenario 5 times and export into `baseline/`.
+2. **Analyze**: `wkperf analyze baseline/baseline-1.json --ai` (or `--emit-prompt=prompt.md` and hand it to your coding agent) to find what to fix.
+3. **Change** the code.
+4. **Capture a candidate** of the *same scenario and duration* into `candidate/`.
+5. **Compare**: `wkperf compare baseline/ --vs candidate/ --ai`; the verification plan in the answer names the metrics that should move.
+6. **Gate in CI**: `wkperf compare baseline/ --vs candidate/ --strict-fixture --fail-on-regression` (exit 3 for non-comparable captures, 2 for regressions). Promote the candidate to the new baseline and repeat.
 
 ## Configuration
 
@@ -86,6 +203,8 @@ threshold: 0.03
 top: 15
 no-color: false
 fail-on-regression: true
+ai:
+  provider: anthropic
 ```
 
 ## Metric glossary
@@ -111,6 +230,7 @@ Verdicts: `improved`, `regressed`, `unchanged`, `noisy` (change within run-to-ru
 | 0 | success |
 | 1 | error (bad input, unreadable file, write failure) |
 | 2 | `--fail-on-regression` and a regressed metric with confidence other than `low` in the frames, script, layout, or cpu groups |
+| 3 | `--strict-fixture` and the comparability score is below `--min-comparability` |
 
 ## CI usage
 
