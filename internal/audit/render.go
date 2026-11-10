@@ -142,6 +142,7 @@ func funcLabel(h HotFunction) string {
 
 func priorityDetails(pr Priority) []string {
 	var lines []string
+	lines = append(lines, insights.FacetLabels(pr.NativeReads, pr.Depth, pr.RelatedFindings)...)
 	if pr.Command != "" {
 		lines = append(lines, "Reproduce: "+pr.Command)
 	}

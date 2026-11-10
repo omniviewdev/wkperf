@@ -19,7 +19,7 @@ func digest(parts ...string) string {
 func (b builder) window(kind, label string, from, to, durationMs, workMs float64) Window {
 	from = seconds(math.Max(from, b.from))
 	to = seconds(math.Min(to, b.to))
-	w := Window{Kind: kind, Label: label, FromSec: b.exportTime(from), ToSec: b.exportTime(to), DurationMs: number(durationMs), ActiveMs: number(workMs), Command: b.query("hot-path --min-share 0", from, to)}
+	w := Window{Kind: kind, Label: label, FromSec: b.exportTime(from), ToSec: b.exportTime(to), DurationMs: number(durationMs), ActiveMs: number(workMs), Command: b.query("hot-path --min-share 0.05", from, to)}
 	key := windowKey(w)
 	w.Stats = []Stat{
 		b.stat(key+".from_sec", "Window start", w.FromSec, "s", timelineBasis),
@@ -93,6 +93,7 @@ func (b builder) completeWindows(windows []Window) {
 				w.SampleStatus = "No overlapping sampler samples; timeline evidence only."
 			}
 		} else {
+			w.Command = w.TopStack.Command
 			w.SampleStatus = "Duration-weighted sampler estimates at timestamps inside this interval; overlap is not causal attribution."
 		}
 		if note != "" {

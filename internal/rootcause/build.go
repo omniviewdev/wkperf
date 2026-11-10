@@ -39,7 +39,12 @@ func Build(rec *model.Recording, tree *flame.Tree, o Options) *Report {
 	}
 	from, to = seconds(from), seconds(to)
 	if tree == nil {
-		tree = flame.Build(rec)
+		tree = flame.Build(rec, flame.Options{Ownership: o.Ownership})
+	}
+	o.Ownership = tree.Ownership
+	r.Ownership = flame.OwnershipRules{
+		AppURLs:     append([]string(nil), o.Ownership.AppURLs...),
+		LibraryURLs: append([]string(nil), o.Ownership.LibraryURLs...),
 	}
 	from = seconds(math.Max(from, tree.StartTime))
 	to = seconds(math.Min(to, tree.EndTime))
@@ -63,7 +68,7 @@ func Build(rec *model.Recording, tree *flame.Tree, o Options) *Report {
 		b.pathByID[p.ID] = p
 	}
 	r.Commands = Commands{
-		HotPath: b.query("hot-path --min-share 0", from, to), Window: b.query("hot-path --min-share 0", from, to),
+		HotPath: b.query("hot-path --min-share 0.05", from, to), Window: b.query("hot-path --min-share 0.05", from, to),
 		Depth: b.query("depth", from, to), Stacks: b.query("stacks", from, to),
 		Owners: b.query("rootcause", from, to), GC: b.query("rootcause", from, to),
 	}
@@ -78,7 +83,8 @@ func Build(rec *model.Recording, tree *flame.Tree, o Options) *Report {
 	r.HotPath = b.hotPath(tree, "hot_path", from, to)
 	r.Commands.HotPath = r.HotPath.Command
 	r.Commands.Window = r.HotPath.Command
-	r.Owners, r.AppAttribution = b.ownership()
+	r.Owners, r.ContextAttribution, r.ContextUnavailable = b.ownership()
+	b.indexSamples()
 	r.Findings = b.stackFindings()
 	r.PeriodicRoots = b.periodicRoots()
 	totalMs := tree.Root.TotalMs
@@ -87,7 +93,7 @@ func Build(rec *model.Recording, tree *flame.Tree, o Options) *Report {
 	}
 	note := UntimedAttributionNote(tree.UntimedTotal.Ms, totalMs)
 	for i := range r.Findings {
-		if r.Findings[i].ID == "react-sync-in-trigger" || r.Findings[i].ID == "suspected-layout-read" {
+		if r.Findings[i].ID == "react-sync-in-trigger" || r.Findings[i].ID == "react-sync" || r.Findings[i].ID == "forced-style-or-layout-read" {
 			if note != "" {
 				r.Findings[i].Explanation += " " + note
 			}
@@ -120,24 +126,19 @@ func Build(rec *model.Recording, tree *flame.Tree, o Options) *Report {
 		b.stat("triage.input_stalls", "Input-driven rendering stalls with little measured work", float64(len(r.InputStalls)), "count", timelineBasis),
 		b.stat("triage.event_bursts", "Clustered script-event bursts", float64(len(r.EventBursts)), "count", timelineBasis),
 	}
-	sort.Slice(r.Findings, func(i, j int) bool {
-		if severityRank(r.Findings[i].Severity) != severityRank(r.Findings[j].Severity) {
-			return severityRank(r.Findings[i].Severity) < severityRank(r.Findings[j].Severity)
-		}
-		return r.Findings[i].ID < r.Findings[j].ID
-	})
 	return r
 }
 
 type builder struct {
-	rec      *model.Recording
-	tree     *flame.Tree
-	o        Options
-	from, to float64
-	pathIDs  map[string]string
-	paths    []flame.Path
-	pathKeys map[string]string
-	pathByID map[string]flame.Path
+	rec            *model.Recording
+	tree           *flame.Tree
+	o              Options
+	from, to       float64
+	pathIDs        map[string]string
+	paths          []flame.Path
+	pathKeys       map[string]string
+	pathByID       map[string]flame.Path
+	sampleEvidence map[sampleRef][]string
 }
 
 func defaults(o Options) Options {
@@ -199,6 +200,12 @@ func (b builder) query(op string, from, to float64) string {
 	}
 	for _, path := range b.o.Sourcemaps {
 		flags += " --sourcemap " + quote(path)
+	}
+	for _, pattern := range b.o.Ownership.AppURLs {
+		flags += " --app-url " + quote(pattern)
+	}
+	for _, pattern := range b.o.Ownership.LibraryURLs {
+		flags += " --library-url " + quote(pattern)
 	}
 	window := ""
 	if b.o.OffsetSec > 1e-9 || b.rec.UntimedExcluded || !profile.CoversRecording(b.rec, from, to) {
@@ -313,19 +320,40 @@ func (b builder) finishStack(v Stack, prefix, key string) Stack {
 }
 
 func (b builder) hotPath(tree *flame.Tree, key string, from, to float64) Path {
-	p := Path{Command: b.query("hot-path --min-share 0", from, to)}
-	for _, node := range tree.HotPath(0) {
+	p := Path{Command: b.query("hot-path --min-share 0.05", from, to)}
+	selected := tree.SupportedHotPath(.05, 5, .8)
+	p.StopReason = selected.StopReason
+	p.BranchesTotal = len(selected.Branches)
+	describe := func(node *flame.Node, kind string) PathNode {
+		share := 0.0
+		if tree.Root.TotalMs > 0 {
+			share = node.TotalMs / tree.Root.TotalMs
+		}
+		id := key + "." + kind + "." + node.ID
+		return PathNode{Frame: node.Frame, TotalMs: number(node.TotalMs), SelfMs: number(node.SelfMs), Share: number(share), Samples: node.Samples, Stats: []Stat{
+			b.stat(id+".total_ms", "Calling-context inclusive sampled time", node.TotalMs, "ms", sampledBasis),
+			b.stat(id+".self_ms", "Calling-context exclusive sampled self time", node.SelfMs, "ms", sampledBasis),
+			b.stat(id+".share", "Calling-context inclusive share of selected samples", share, "ratio", sampledBasis),
+			b.stat(id+".samples", "Samples supporting this calling context", float64(node.Samples), "count", sampledBasis),
+		}}
+	}
+	for _, node := range selected.Nodes {
 		p.Frames = append(p.Frames, node.Frame)
+		p.Nodes = append(p.Nodes, describe(node, "node"))
 		p.SampledMs = number(node.TotalMs)
 		p.Samples = node.Samples
 	}
-	p.Stats = []Stat{
-		b.stat(key+".self_ms", "Hot path terminal sampled time", p.SampledMs, "ms", sampledBasis),
-		b.stat(key+".samples", "Hot path terminal samples", float64(p.Samples), "count", sampledBasis),
-		b.stat(key+".depth", "Hot path depth", float64(len(p.Frames)), "frames", sampledBasis),
+	for _, node := range selected.Branches {
+		p.Branches = append(p.Branches, describe(node, "branch"))
 	}
-	if len(p.Frames) == 0 {
-		p.Command = b.reproduce(key + ".self_ms")
+	p.Stats = []Stat{
+		b.stat(key+".total_ms", "Hot path terminal inclusive sampled time", p.SampledMs, "ms", sampledBasis),
+		b.stat(key+".samples", "Hot path terminal supporting samples", float64(p.Samples), "count", sampledBasis),
+		b.stat(key+".depth", "Hot path depth", float64(len(p.Frames)), "frames", sampledBasis),
+		b.stat(key+".branches", "Competing calling-context branches", float64(len(p.Branches)), "count", sampledBasis),
+	}
+	if len(p.Nodes) == 0 {
+		p.Command = b.reproduce(key + ".total_ms")
 	}
 	return p
 }
@@ -366,17 +394,4 @@ func eventName(r model.Record) string {
 	}
 	data, _ := json.Marshal(v)
 	return r.EventType + " " + string(data)
-}
-
-func severityRank(s string) int {
-	switch s {
-	case "high":
-		return 0
-	case "medium":
-		return 1
-	case "low":
-		return 2
-	default:
-		return 3
-	}
 }

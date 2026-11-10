@@ -12,20 +12,21 @@ import (
 
 func TestOutputCommandsUseStableFunctionSelectors(t *testing.T) {
 	rec := recording()
+	rec.EndTime = rec.StartTime + 4
 	for i, name := range []string{"", "heartbeat", "heartbeat"} {
 		f := app(name)
 		f.Column += i
-		for fire := range 5 {
-			sample(rec, .1+float64(fire)*.1+float64(i)*.01, 1, f)
+		for fire := range 6 {
+			sample(rec, .1+float64(fire)*.5+float64(i)*.01, 1, f)
 		}
 	}
 	report := build(rec)
-	for _, attribution := range report.AppAttribution {
-		id := flame.FunctionID(attribution.App)
+	for _, attribution := range report.ContextAttribution {
+		id := flame.FunctionID(attribution.Frame)
 		if !strings.Contains(attribution.Command, "paths '"+id+"'") {
 			t.Errorf("ambiguous attribution command: %s", attribution.Command)
 		}
-		payload, err := json.Marshal(attribution.App)
+		payload, err := json.Marshal(attribution.Frame)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -92,6 +93,32 @@ func TestOutputUnsampledEntryCommandsReturnScalarEvidence(t *testing.T) {
 			if !strings.Contains(event.Command, " rootcause '") || !strings.Contains(event.Command, ".overlap_ms'") {
 				t.Errorf("GC event overlap queries trigger rows instead of measured scalar: %s", event.Command)
 			}
+		}
+	}
+}
+
+func TestSparseWindowCommandsKeepRetrievableEvidence(t *testing.T) {
+	rec := recording()
+	event(rec, "event-dispatched", .1, .2)
+	sample(rec, .15, 2, app("rare"))
+	report := build(rec)
+	if len(report.LongTasks) != 1 || report.LongTasks[0].TopStack == nil || report.LongTasks[0].HotPath == nil {
+		t.Fatal("sparse fixture must retain both timeline and sampled evidence")
+	}
+	window := report.LongTasks[0]
+	if len(window.HotPath.Nodes) != 0 || window.HotPath.StopReason != "sample-support" {
+		t.Fatal("one observation must not establish a supported hot path")
+	}
+	if !strings.Contains(window.Command, " stacks '"+window.TopStack.StackID+"'") {
+		t.Errorf("sparse window must retrieve its exact observed stack: %s", window.Command)
+	}
+	for _, command := range []string{report.HotPath.Command, window.HotPath.Command} {
+		found := false
+		for _, stat := range rootcause.Stats(report) {
+			found = found || command == stat.Command
+		}
+		if !found {
+			t.Errorf("unsupported hot path must retrieve retained scalar evidence: %s", command)
 		}
 	}
 }

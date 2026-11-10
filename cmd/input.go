@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"github.com/omniviewdev/wkperf/internal/flame"
 	"github.com/omniviewdev/wkperf/internal/model"
 	"github.com/omniviewdev/wkperf/internal/schema"
 	"github.com/omniviewdev/wkperf/internal/sourcemap"
@@ -14,9 +15,23 @@ import (
 
 func addSourceMapFlags(cmd *cobra.Command) {
 	cmd.Flags().StringArray("sourcemap", nil, "source map path (repeatable); adjacent maps are also discovered before analysis")
+	cmd.Flags().StringArray("app-url", nil, "first-party URL glob (repeatable; config app-url); ** crosses path separators")
+	cmd.Flags().StringArray("library-url", nil, "library URL glob (repeatable; config library-url); takes precedence over app-url")
 }
 
-func bindSourceMapFlags(cmd *cobra.Command) error { return bindFlags(cmd, "sourcemap") }
+func bindSourceMapFlags(cmd *cobra.Command) error {
+	if err := bindFlags(cmd, "sourcemap", "app-url", "library-url"); err != nil {
+		return err
+	}
+	if err := ownershipRules().Validate(); err != nil {
+		return fmt.Errorf("ownership URL patterns (--app-url/--library-url): %w", err)
+	}
+	return nil
+}
+
+func ownershipRules() flame.OwnershipRules {
+	return flame.OwnershipRules{AppURLs: viper.GetStringSlice("app-url"), LibraryURLs: viper.GetStringSlice("library-url")}
+}
 
 func addModuleGroupingFlag(cmd *cobra.Command) {
 	cmd.Flags().String("module-grouping", "file", "module rollup: file|parent-directory (npm packages remain package-scoped)")

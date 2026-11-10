@@ -309,6 +309,9 @@ func buildPriorities(scenes []SceneResult, top int) []Priority {
 				a.p.Nodes = f.Nodes
 				a.p.Stacks, a.p.Command = f.Stacks, f.Command
 				a.p.StackIDs, a.p.StacksTotal = f.StackIDs, f.StacksTotal
+				a.p.RelatedFindings = f.RelatedFindings
+				a.p.NativeReads, a.p.NativeReadsTotal = f.NativeReads, f.NativeReadsTotal
+				a.p.Depth = f.Depth
 				a.p.Evidence = nil
 				for _, e := range f.Evidence {
 					a.p.Evidence = append(a.p.Evidence, s.Name+": "+e)

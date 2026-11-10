@@ -76,10 +76,10 @@ func TestAnalysisJSONStoresCanonicalEvidenceOnce(t *testing.T) {
 		}
 	}
 	root := wire["rootCause"].(map[string]any)
-	if len(root["appAttribution"].([]any)) > 10 || root["appAttributionTotal"].(float64) < 81 {
-		t.Fatalf("uncapped attributions or missing total: %v", root["appAttributionTotal"])
+	if len(root["contextAttribution"].([]any)) > 10 || root["contextAttributionTotal"].(float64) < 81 {
+		t.Fatalf("uncapped attributions or missing total: %v", root["contextAttributionTotal"])
 	}
-	if len(report.RootCause.AppAttribution) < 81 || len(report.RootCause.Depth.Outliers) != 80 {
+	if len(report.RootCause.ContextAttribution) < 81 || len(report.RootCause.Depth.Outliers) != 80 {
 		t.Fatal("wire selection corrupted full numeric evidence")
 	}
 	for _, raw := range wire["findings"].([]any) {
@@ -136,10 +136,10 @@ func TestAnalysisEvidenceCapsPreserveTotals(t *testing.T) {
 	before, _ := json.Marshal(rootcause.Stats(r.RootCause))
 	selected := SelectEvidence(r)
 	root := selected.RootCause
-	if len(root.AppAttribution) != 3 || root.AppAttributionTotal != 81 || len(root.Depth.Outliers) != 3 || root.Depth.OutliersTotal != 80 {
-		t.Fatalf("wrong selected list counts: apps=%d/%d outliers=%d/%d", len(root.AppAttribution), root.AppAttributionTotal, len(root.Depth.Outliers), root.Depth.OutliersTotal)
+	if len(root.ContextAttribution) != 3 || root.ContextAttributionTotal != 81 || len(root.Depth.Outliers) != 3 || root.Depth.OutliersTotal != 80 {
+		t.Fatalf("wrong selected list counts: apps=%d/%d outliers=%d/%d", len(root.ContextAttribution), root.ContextAttributionTotal, len(root.Depth.Outliers), root.Depth.OutliersTotal)
 	}
-	for _, attribution := range root.AppAttribution {
+	for _, attribution := range root.ContextAttribution {
 		if len(attribution.Stacks) > 3 || attribution.StacksTotal < len(attribution.Stacks) {
 			t.Fatal("attribution stack cap lacks total")
 		}
@@ -155,7 +155,7 @@ func TestAnalysisEvidenceCapsPreserveTotals(t *testing.T) {
 		}
 	}
 	after, _ := json.Marshal(rootcause.Stats(r.RootCause))
-	if string(before) != string(after) || len(r.RootCause.AppAttribution) != 81 {
+	if string(before) != string(after) || len(r.RootCause.ContextAttribution) != 81 {
 		t.Fatal("selection mutated full numeric analysis")
 	}
 	first, _ := json.Marshal(selected)
@@ -164,7 +164,7 @@ func TestAnalysisEvidenceCapsPreserveTotals(t *testing.T) {
 		t.Fatal("selection loses totals when repeated")
 	}
 	periodic := SelectEvidence(Analyze(testgen.Periodic(), "periodic.json", Options{Top: 2})).RootCause.PeriodicRoots
-	if len(periodic) != 1 || len(periodic[0].Fires) != 2 || periodic[0].FiresTotal != 5 || periodic[0].FireCount != 5 {
+	if len(periodic) != 1 || len(periodic[0].Fires) != 2 || periodic[0].FiresTotal != 6 || periodic[0].FireCount != 6 {
 		t.Fatalf("periodic fires lack full counts: %+v", periodic)
 	}
 	rec := testgen.Empty()
@@ -222,7 +222,7 @@ func TestAnalysisExternalCaptureSize(t *testing.T) {
 }
 
 func TestAnalysisMoreEvidenceCommandRevealsCappedLists(t *testing.T) {
-	report := Analyze(testgen.DeepStacks(400, 80, 200), "capture space's|name.json", Options{Top: 3, JankMs: 20, LongTaskMs: 70, ModuleGrouping: "parent-directory", Sourcemaps: []string{"source map.js.map"}})
+	report := Analyze(testgen.DeepStacks(400, 80, 200), "capture space's|name.json", Options{Top: 3, JankMs: 20, LongTaskMs: 70, ModuleGrouping: "parent-directory", Sourcemaps: []string{"source map.js.map"}, Ownership: flame.OwnershipRules{AppURLs: []string{"**/app*.js"}, LibraryURLs: []string{"**/vendor/**"}}})
 	payload, err := json.Marshal(report)
 	if err != nil {
 		t.Fatal(err)
@@ -233,7 +233,7 @@ func TestAnalysisMoreEvidenceCommandRevealsCappedLists(t *testing.T) {
 	if err := json.Unmarshal(payload, &wire); err != nil {
 		t.Fatal(err)
 	}
-	for _, fragment := range []string{"wkperf analyze " + shellQuote(report.Source), "--top 81", "--format json", "--jank-ms 20", "--long-task-ms 70", "--module-grouping 'parent-directory'", "--sourcemap 'source map.js.map'"} {
+	for _, fragment := range []string{"wkperf analyze " + shellQuote(report.Source), "--top 81", "--format json", "--jank-ms 20", "--long-task-ms 70", "--module-grouping 'parent-directory'", "--sourcemap 'source map.js.map'", "--app-url '**/app*.js'", "--library-url '**/vendor/**'"} {
 		if !strings.Contains(wire.MoreEvidenceCommand, fragment) {
 			t.Errorf("full evidence rerun omits %q: %s", fragment, wire.MoreEvidenceCommand)
 		}

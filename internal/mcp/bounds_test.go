@@ -57,8 +57,8 @@ func TestProtocolExplicitZeroAndWindow(t *testing.T) {
 	input := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`,
 		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
-		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hot-path","arguments":{"file":"x","min_share":0}}}`,
-		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"hot-path","arguments":{"file":"x"}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hot-path","arguments":{"file":"x","min_share":0,"min_samples":0,"tie_ratio":0}}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"hot-path","arguments":{"file":"x","min_samples":0,"tie_ratio":0}}}`,
 		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"window","arguments":{"file":"x","from":0.15,"to":0.5,"query_operation":"top"}}}`,
 		`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"subtree","arguments":{"file":"x","selector":"root","depth":0}}}`,
 	}, "\n") + "\n"

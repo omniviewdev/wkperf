@@ -53,6 +53,8 @@ func SelectEvidence(report *Report) *Report {
 	for i := range r.Findings {
 		f := &r.Findings[i]
 		f.StacksTotal = max(f.StacksTotal, max(len(f.Stacks), len(f.StackIDs)))
+		f.NativeReadsTotal = max(f.NativeReadsTotal, len(f.NativeReads))
+		f.NativeReads = f.NativeReads[:min(len(f.NativeReads), top)]
 		f.Stacks = f.Stacks[:min(len(f.Stacks), top)]
 		if len(f.Stacks) > 0 {
 			f.StackIDs = stackIDs(f.Stacks)
@@ -77,10 +79,19 @@ type catalogBuilder struct {
 	paths       map[string][]flame.Frame
 	metricPaths map[string][]metrics.FunctionFrame
 	frames      map[string]flame.Frame
+	classifier  *flame.Classifier
 }
 
 func newCatalog(r *Report) *catalogBuilder {
 	c := &catalogBuilder{EvidenceCatalog: EvidenceCatalog{Stacks: map[string]CatalogStack{}}, indices: map[string]int{}, paths: map[string][]flame.Frame{}, metricPaths: map[string][]metrics.FunctionFrame{}, frames: map[string]flame.Frame{}}
+	rules := flame.OwnershipRules{}
+	if r != nil {
+		rules = r.Ownership
+		if r.FlameTree != nil {
+			rules = r.FlameTree.Ownership
+		}
+	}
+	c.classifier = flame.NewClassifier(rules)
 	if r != nil {
 		c.functions(r.Hotspots)
 		c.functions(r.InclusiveHotspots)
@@ -95,15 +106,19 @@ func newCatalog(r *Report) *catalogBuilder {
 		}
 		for _, f := range r.Findings {
 			c.stacks(f.Stacks)
+			c.depth(f.Depth)
 		}
 		if root := r.RootCause; root != nil {
 			c.path(root.HotPath.Frames)
-			for _, attribution := range root.AppAttribution {
-				c.frame(attribution.App)
+			c.pathNodes(root.HotPath.Nodes)
+			c.pathNodes(root.HotPath.Branches)
+			for _, attribution := range root.ContextAttribution {
+				c.frame(attribution.Frame)
 				c.stacks(attribution.Stacks)
 			}
 			for _, f := range root.Findings {
 				c.stacks(f.Evidence)
+				c.depth(f.Depth)
 			}
 			for _, periodic := range root.PeriodicRoots {
 				c.frame(periodic.Root)
@@ -116,10 +131,21 @@ func newCatalog(r *Report) *catalogBuilder {
 				for _, window := range windows {
 					if window.HotPath != nil {
 						c.path(window.HotPath.Frames)
+						c.pathNodes(window.HotPath.Nodes)
+						c.pathNodes(window.HotPath.Branches)
 					}
 					if window.TopStack != nil {
 						c.stacks([]rootcause.Stack{*window.TopStack})
 					}
+				}
+			}
+		}
+		if r.FlameTree != nil {
+			for _, function := range r.FlameTree.Functions() {
+				if _, selected := c.frames[function.ID]; selected {
+					frame := function.Frame
+					frame.ID = function.ID
+					c.frames[function.ID] = frame
 				}
 			}
 		}
@@ -147,6 +173,7 @@ func newCatalog(r *Report) *catalogBuilder {
 
 func (c *catalogBuilder) frame(frame flame.Frame) {
 	frame.ID = flame.FunctionID(frame)
+	frame.Category = c.classifier.Categorize(frame)
 	if current, exists := c.frames[frame.ID]; !exists || compareCatalogFrame(frame, current) < 0 {
 		c.frames[frame.ID] = frame
 	}
@@ -206,7 +233,6 @@ func metricFrame(frame metrics.FunctionFrame) flame.Frame {
 	if frame.Original != nil {
 		f.Original = (*flame.Location)(frame.Original)
 	}
-	f.Category = flame.Categorize(f)
 	return f
 }
 
@@ -273,20 +299,28 @@ func moreEvidenceCommand(r *Report, top int) string {
 		required = max(required, task.ChildrenTotal, len(task.Children))
 	}
 	for _, finding := range r.Findings {
-		required = max(required, finding.StacksTotal, len(finding.Stacks), len(finding.StackIDs))
+		required = max(required, finding.StacksTotal, len(finding.Stacks), len(finding.StackIDs), finding.NativeReadsTotal, len(finding.NativeReads))
 	}
 	if root := r.RootCause; root != nil {
-		required = max(required, root.AppAttributionTotal, len(root.AppAttribution),
+		required = max(required, root.HotPath.BranchesTotal, len(root.HotPath.Branches))
+		for _, windows := range [][]rootcause.Window{root.Windows, root.LongTasks, root.SlowFrames, root.InputStalls, root.EventBursts} {
+			for _, window := range windows {
+				if window.HotPath != nil {
+					required = max(required, window.HotPath.BranchesTotal, len(window.HotPath.Branches))
+				}
+			}
+		}
+		required = max(required, root.ContextAttributionTotal, len(root.ContextAttribution),
 			root.PeriodicRootsTotal, len(root.PeriodicRoots), root.GCOverlapsTotal, len(root.GCOverlaps),
 			root.WindowsTotal, len(root.Windows), root.LongTasksTotal, len(root.LongTasks),
 			root.SlowFramesTotal, len(root.SlowFrames), root.InputStallsTotal, len(root.InputStalls), root.EventBurstsTotal, len(root.EventBursts),
 			root.Depth.OutliersTotal, len(root.Depth.Outliers))
 		required = max(required, max(root.LongTasksTotal, len(root.LongTasks))+max(root.SlowFramesTotal, len(root.SlowFrames))+max(root.InputStallsTotal, len(root.InputStalls))+max(root.EventBurstsTotal, len(root.EventBursts)))
-		for _, attribution := range root.AppAttribution {
+		for _, attribution := range root.ContextAttribution {
 			required = max(required, attribution.StacksTotal, len(attribution.Stacks))
 		}
 		for _, finding := range root.Findings {
-			required = max(required, finding.EvidenceTotal, len(finding.Evidence), finding.WindowsTotal, len(finding.Windows))
+			required = max(required, finding.EvidenceTotal, len(finding.Evidence), finding.WindowsTotal, len(finding.Windows), finding.NativeReadsTotal, len(finding.NativeReads))
 		}
 		for _, periodic := range root.PeriodicRoots {
 			required = max(required, periodic.FiresTotal, len(periodic.Fires), periodic.EvidenceTotal, len(periodic.Evidence))
@@ -309,4 +343,22 @@ func moreEvidenceCommand(r *Report, top int) string {
 		command += " --module-grouping " + shellQuote(r.ModuleGrouping)
 	}
 	return command
+}
+
+func (c *catalogBuilder) pathNodes(nodes []rootcause.PathNode) {
+	for _, node := range nodes {
+		c.frame(node.Frame)
+	}
+}
+
+func (c *catalogBuilder) depth(depth *rootcause.DepthFacets) {
+	if depth == nil {
+		return
+	}
+	if depth.RepeatedFrame != nil {
+		c.frame(depth.RepeatedFrame.Frame)
+	}
+	if depth.Recursion != nil {
+		c.frame(depth.Recursion.Frame)
+	}
 }

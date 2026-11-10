@@ -296,7 +296,7 @@ func repReport(group []*loaded, rep *metrics.Summary, wo analyze.Options, top in
 			if err != nil {
 				return nil, fmt.Errorf("%s: %w", rep.Source, err)
 			}
-			return insights.Analyze(rec, rep.Source, insights.Options{Top: top, WindowStartSec: rec.StartTime - l.Rec.StartTime, Sourcemaps: viper.GetStringSlice("sourcemap"), ModuleGrouping: grouping}), nil
+			return insights.Analyze(rec, rep.Source, insights.Options{Top: top, WindowStartSec: rec.StartTime - l.Rec.StartTime, Sourcemaps: viper.GetStringSlice("sourcemap"), Ownership: ownershipRules(), ModuleGrouping: grouping}), nil
 		}
 	}
 	return nil, nil

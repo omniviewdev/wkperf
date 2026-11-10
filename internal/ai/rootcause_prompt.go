@@ -27,16 +27,41 @@ func rootStats(b *strings.Builder, stats []rootcause.Stat, n int) {
 	}
 }
 
-func rootFrames(b *strings.Builder, frames []flame.Frame) {
-	root, leaf, elided := insights.PreviewFrames(frames, false)
-	for _, frame := range root {
-		fmt.Fprintf(b, "  → %s\n", rootFrame(frame))
+func rootPath(b *strings.Builder, path rootcause.Path) {
+	root, leaf, elided := insights.PreviewFrames(path.Frames, false)
+	printFrame := func(i int, frame flame.Frame) {
+		if i < len(path.Nodes) {
+			node := path.Nodes[i]
+			fmt.Fprintf(b, "  → %s: inclusive=%sms share=%s%% samples=%d\n", rootFrame(frame), num(node.TotalMs), num(node.Share*100), node.Samples)
+			if len(node.Stats) > 0 {
+				stat := node.Stats[0]
+				fmt.Fprintf(b, "    inclusive metric: %s=%s %s; reproduce: %s\n", stat.Key, num(stat.Value), stat.Unit, stat.Command)
+			}
+		} else {
+			fmt.Fprintf(b, "  → %s\n", rootFrame(frame))
+		}
+	}
+	for i, frame := range root {
+		printFrame(i, frame)
 	}
 	if elided > 0 {
 		fmt.Fprintf(b, "  → [%d frames elided; use reproduction command for exact stack]\n", elided)
 	}
-	for _, frame := range leaf {
-		fmt.Fprintf(b, "  → %s\n", rootFrame(frame))
+	for i, frame := range leaf {
+		printFrame(len(path.Frames)-len(leaf)+i, frame)
+	}
+	if path.StopReason != "" {
+		fmt.Fprintf(b, "  Hot path stop: %s\n", oneLine(path.StopReason))
+	}
+	if path.BranchesTotal > 0 {
+		fmt.Fprintf(b, "  Competing branches: %d of %d shown\n", len(path.Branches), path.BranchesTotal)
+		for _, branch := range path.Branches {
+			fmt.Fprintf(b, "  - %s: inclusive=%sms share=%s%% samples=%d\n", rootFrame(branch.Frame), num(branch.TotalMs), num(branch.Share*100), branch.Samples)
+			if len(branch.Stats) > 0 {
+				stat := branch.Stats[0]
+				fmt.Fprintf(b, "    inclusive metric: %s=%s %s; reproduce: %s\n", stat.Key, num(stat.Value), stat.Unit, stat.Command)
+			}
+		}
 	}
 }
 
@@ -60,6 +85,9 @@ func rootStack(b *strings.Builder, stack rootcause.Stack) {
 func rootWindow(b *strings.Builder, window rootcause.Window) {
 	fmt.Fprintf(b, "- %s %s, %s–%ss: observed interval=%sms instrumented main-thread work=%sms; %s; reproduce: %s\n", clip(oneLine(window.Kind), 60), clip(oneLine(window.Label), 100), num(window.FromSec), num(window.ToSec), num(window.DurationMs), num(window.ActiveMs), clip(oneLine(window.SampleStatus), 150), window.Command)
 	rootStats(b, window.Stats, 6)
+	if window.HotPath != nil {
+		rootPath(b, *window.HotPath)
+	}
 	if window.TopStack != nil {
 		rootStack(b, *window.TopStack)
 	}
@@ -75,28 +103,38 @@ func rootCauseSections(label string, r *rootcause.Report, c Context, value int) 
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "### %s: Hot path (heaviest sampled prefix, root → leaf)\nSampled time is an estimate, not instrumented wall time. Reproduce: %s\n", label, r.HotPath.Command)
-	rootFrames(&b, r.HotPath.Frames)
+	rootPath(&b, r.HotPath)
 	rootStats(&b, r.HotPath.Stats, 6)
 	add("hot path", value, b.String())
 	b.Reset()
-	b.WriteString("### Owner breakdown and nearest application attribution\nExclusive sampled self time; framework/native charges follow the nearest application ancestor, not proven causation.\n")
+	b.WriteString("### Owner breakdown and nearest non-framework frames\nOwnership heuristic: name table + URL rules; bundled code without source maps may belong to a library. Framework/native charges follow nearest non-framework context, not proven causation.\n")
 	for _, owner := range limitSlice(r.Owners, c.TopN) {
 		fmt.Fprintf(&b, "- Owner %s: self=%sms share=%s%% samples=%d; reproduce: %s\n", clip(oneLine(owner.Category), 60), num(owner.SelfMs), num(owner.Pct), owner.Samples, owner.Command)
 		rootStats(&b, owner.Stats, 4)
 	}
-	for _, app := range limitSlice(r.AppAttribution, c.TopN) {
-		fmt.Fprintf(&b, "- Nearest app %s: app self=%sms framework=%sms native=%sms total=%sms; reproduce: %s\n", rootFrame(app.App), num(app.SelfMs), num(app.FrameworkMs), num(app.NativeMs), num(app.TotalMs), app.Command)
-		rootStats(&b, app.Stats, 6)
-		for _, stack := range limitSlice(app.Stacks, 1) {
+	for _, attribution := range limitSlice(r.ContextAttribution, c.TopN) {
+		fmt.Fprintf(&b, "- Nearest non-framework frame %s [%s]: context self=%sms framework=%sms native=%sms total=%sms; reproduce: %s\n", rootFrame(attribution.Frame), oneLine(string(attribution.Frame.Category)), num(attribution.SelfMs), num(attribution.FrameworkMs), num(attribution.NativeMs), num(attribution.TotalMs), attribution.Command)
+		rootStats(&b, attribution.Stats, 6)
+		for _, stack := range limitSlice(attribution.Stacks, 1) {
 			rootStack(&b, stack)
 		}
+	}
+	if unavailable := r.ContextUnavailable; unavailable.Samples > 0 {
+		fmt.Fprintf(&b, "- No non-framework frame on this stack: self=%sms samples=%d; %s\n", num(unavailable.SelfMs), unavailable.Samples, clip(oneLine(unavailable.Reason), 500))
+		rootStats(&b, unavailable.Stats, 4)
 	}
 	add("owners", value-1, b.String())
 	if len(r.Findings) > 0 {
 		b.Reset()
 		b.WriteString("### Exact-stack root-cause findings (interpretations remain hypotheses)\n")
 		for _, finding := range limitSlice(r.Findings, c.MaxFindings) {
-			fmt.Fprintf(&b, "- %s [%s] %s: %s; reproduce: %s\n", clip(oneLine(finding.ID), 80), clip(oneLine(finding.Severity), 40), clip(oneLine(finding.Title), 150), clip(oneLine(finding.Explanation), 500), finding.Command)
+			fmt.Fprintf(&b, "- %s %s: %s; reproduce: %s\n", clip(oneLine(finding.ID), 80), clip(oneLine(finding.Title), 150), clip(oneLine(finding.Explanation), 500), finding.Command)
+			if finding.Severity != "" {
+				fmt.Fprintf(&b, "  Canonical severity: %s\n", oneLine(finding.Severity))
+			}
+			for _, facet := range insights.FacetLabels(finding.NativeReads, finding.Depth, finding.RelatedFindings) {
+				fmt.Fprintf(&b, "  - %s\n", oneLine(facet))
+			}
 			rootStats(&b, finding.Stats, 6)
 			for _, stack := range limitSlice(finding.Evidence, 2) {
 				rootStack(&b, stack)
@@ -111,7 +149,7 @@ func rootCauseSections(label string, r *rootcause.Report, c Context, value int) 
 		b.Reset()
 		b.WriteString("### Periodic roots\n")
 		for _, periodic := range limitSlice(r.PeriodicRoots, c.TopN) {
-			fmt.Fprintf(&b, "- %s: fires=%d period=%sms jitter=%sms regularity=%s mean cost=%sms total=%sms; reproduce: %s\n", rootFrame(periodic.Root), periodic.FireCount, num(periodic.PeriodMs), num(periodic.JitterMs), num(periodic.Regularity), num(periodic.MeanCostMs), num(periodic.TotalMs), periodic.Command)
+			fmt.Fprintf(&b, "- %s [%s]: fires=%d (%d rAF, %d input-overlapped) period=%sms jitter=%sms regularity=%s mean cost=%sms total=%sms; reproduce: %s\n", rootFrame(periodic.Root), periodic.Kind, periodic.FireCount, periodic.RAFFires, periodic.InputFires, num(periodic.PeriodMs), num(periodic.JitterMs), num(periodic.Regularity), num(periodic.MeanCostMs), num(periodic.TotalMs), periodic.Command)
 			rootStats(&b, periodic.Stats, 7)
 			for _, fire := range limitSlice(periodic.Fires, 3) {
 				fmt.Fprintf(&b, "  fire %s–%ss self=%sms samples=%d event=%s; reproduce: %s\n", num(fire.FromSec), num(fire.ToSec), num(fire.SelfMs), fire.Samples, clip(oneLine(fire.Event), 100), fire.Command)

@@ -56,7 +56,7 @@ func RequestSchema(operation string) map[string]any {
 	properties["file"] = map[string]any{"type": "string", "minLength": 1, "description": "Local WebKit recording path; never executed as a command."}
 	properties["limit"] = map[string]any{"type": "integer", "minimum": 0, "maximum": MaxLimit, "default": DefaultLimit, "description": "Maximum rows; zero selects the bounded default."}
 	properties["by"] = map[string]any{"type": "string", "enum": []string{"self", "total"}, "default": "self"}
-	properties["category"] = map[string]any{"type": "string", "enum": []string{"", "app", "framework", "native", "gc"}}
+	properties["category"] = map[string]any{"type": "string", "enum": []string{"", "app", "framework", "native", "gc", "unknown-bundled", "injected"}}
 	properties["depth"] = map[string]any{"type": "integer", "minimum": 0, "default": 8}
 	properties["top"] = map[string]any{"type": "integer", "minimum": 0, "default": 10, "description": "Root-cause detail size, independent of returned row limit; zero selects ten."}
 	for _, name := range []string{"from", "to", "trim_start", "trim_end", "min_ms", "min_share", "long_task_ms", "jank_ms"} {
@@ -65,8 +65,13 @@ func RequestSchema(operation string) map[string]any {
 		}
 	}
 	properties["min_share"] = map[string]any{"type": "number", "minimum": 0, "maximum": 1, "default": .05}
+	properties["min_samples"] = map[string]any{"type": "integer", "minimum": 0, "default": 5, "description": "Hot-path support floor in sample count; zero disables support gating."}
+	properties["tie_ratio"] = map[string]any{"type": "number", "minimum": 0, "maximum": 1, "default": .8, "description": "Stop before second/best branch ratio reaches this threshold; zero disables near-tie stopping."}
 	properties["jank_ms"] = map[string]any{"type": "number", "minimum": 0, "default": 16.7, "description": "Slow-frame and findings.jank.* threshold in milliseconds; zero selects 16.7. Fixed frames.* scorecard standards remain at 16.7 ms."}
 	properties["long_task_ms"] = map[string]any{"type": "number", "minimum": 0, "default": float64(50), "description": "Maximal script-task threshold for derived finding and root-cause evidence in milliseconds; zero selects 50. Fixed long-task scorecard standards remain at 50 ms."}
+	for _, key := range []string{"app_url", "library_url"} {
+		properties[key].(map[string]any)["description"] = "Repeatable whole-URL ownership globs; ** crosses path separators. Library rules take precedence. Invalid patterns fail before loading."
+	}
 	return out
 }
 

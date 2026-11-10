@@ -64,6 +64,10 @@ type Priority struct {
 	StackIDs           []string                   `json:"stackIds"`
 	StacksTotal        int                        `json:"stacksTotal"`
 	Command            string                     `json:"command,omitempty"`
+	RelatedFindings    []string                   `json:"relatedFindings,omitempty"`
+	NativeReads        []rootcause.NativeRead     `json:"nativeReads,omitempty"`
+	NativeReadsTotal   int                        `json:"nativeReadsTotal"`
+	Depth              *rootcause.DepthFacets     `json:"depth,omitempty"`
 }
 
 // HotFunction is a function merged across scenes by FuncStat.Key.

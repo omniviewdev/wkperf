@@ -147,15 +147,17 @@ func runFlameCommand(cmd *cobra.Command, args []string) error {
 
 func buildFlameTree(rec *model.Recording, wo analyze.Options, around int) (*core.Tree, error) {
 	duration := rec.EndTime - rec.StartTime
+	rules := ownershipRules()
 	var tree *core.Tree
 	if !flameFinite(duration) || duration <= 0 {
-		tree = core.Build(rec)
+		tree = core.Build(rec, core.Options{Ownership: rules})
 		duration = tree.EndTime
 	}
 	opts, err := flameBuildOptions(rec, wo, around, duration)
 	if err != nil {
 		return nil, err
 	}
+	opts.Ownership = rules
 	if tree == nil {
 		return core.Build(rec, opts), nil
 	}

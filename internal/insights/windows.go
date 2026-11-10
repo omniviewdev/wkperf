@@ -5,6 +5,7 @@ import (
 	"math"
 	"sort"
 
+	"github.com/omniviewdev/wkperf/internal/flame"
 	"github.com/omniviewdev/wkperf/internal/model"
 	"github.com/omniviewdev/wkperf/internal/profile"
 )
@@ -155,15 +156,24 @@ func contextForFinding(c *ruleCtx, f Finding) findingContext {
 	}
 	if f.ID == "hot-function" || f.ID == "hot-module" {
 		bestWeight := -1.0
+		moduleName := ""
+		if f.ID == "hot-module" {
+			for _, module := range c.mods {
+				if module.Name != "(native)" {
+					moduleName = module.Name
+					break
+				}
+			}
+		}
 		for _, sample := range c.rep.FlameTree.Samples {
 			if len(sample.Frames) == 0 {
 				continue
 			}
 			leaf := sample.Frames[len(sample.Frames)-1]
-			match := f.ID == "hot-module" && len(c.mods) > 0 && moduleGroup(leaf.URL, c.opt.ModuleGrouping) == c.mods[0].Name
+			match := f.ID == "hot-module" && moduleGroup(leaf.URL, c.opt.ModuleGrouping) == moduleName
 			if f.ID == "hot-function" && len(c.rep.Hotspots) > 0 {
 				h := c.rep.Hotspots[0]
-				match = h.Name == leaf.Name && h.URL == leaf.URL && h.Line == leaf.Line && h.Column == leaf.Column
+				match = h.ID == flame.FunctionID(leaf)
 			}
 			at := c.rec.StartTime + sample.Timestamp
 			if match && (sample.WeightMs > bestWeight || (sample.WeightMs == bestWeight && at < context.s)) {

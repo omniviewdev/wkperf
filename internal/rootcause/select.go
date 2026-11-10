@@ -14,10 +14,11 @@ func SelectEvidence(report *Report, top int) *Report {
 	}
 	r := *report
 	r.Top = top
-	r.AppAttributionTotal = max(r.AppAttributionTotal, len(r.AppAttribution))
-	r.AppAttribution = append([]Attribution{}, head(r.AppAttribution, top)...)
-	for i := range r.AppAttribution {
-		a := &r.AppAttribution[i]
+	r.HotPath = selectPath(r.HotPath, top)
+	r.ContextAttributionTotal = max(r.ContextAttributionTotal, len(r.ContextAttribution))
+	r.ContextAttribution = append([]Attribution{}, head(r.ContextAttribution, top)...)
+	for i := range r.ContextAttribution {
+		a := &r.ContextAttribution[i]
 		a.StacksTotal = max(a.StacksTotal, len(a.Stacks))
 		a.Stacks = head(a.Stacks, top)
 	}
@@ -28,6 +29,8 @@ func SelectEvidence(report *Report, top int) *Report {
 		f.Evidence = head(f.Evidence, top)
 		f.WindowsTotal = max(f.WindowsTotal, len(f.Windows))
 		f.Windows = head(f.Windows, top)
+		f.NativeReadsTotal = max(f.NativeReadsTotal, len(f.NativeReads))
+		f.NativeReads = head(f.NativeReads, top)
 	}
 	r.PeriodicRootsTotal = max(r.PeriodicRootsTotal, len(r.PeriodicRoots))
 	r.PeriodicRoots = append([]PeriodicRoot{}, head(r.PeriodicRoots, top)...)
@@ -52,14 +55,31 @@ func SelectEvidence(report *Report, top int) *Report {
 	r.InputStallsTotal = max(r.InputStallsTotal, len(r.InputStalls))
 	r.EventBurstsTotal = max(r.EventBurstsTotal, len(r.EventBursts))
 	r.WindowsTotal = max(r.WindowsTotal, len(r.Windows), r.LongTasksTotal+r.SlowFramesTotal+r.InputStallsTotal+r.EventBurstsTotal)
-	r.LongTasks = head(r.LongTasks, top)
-	r.SlowFrames = head(r.SlowFrames, top)
-	r.InputStalls = head(r.InputStalls, top)
-	r.EventBursts = head(r.EventBursts, top)
-	r.Windows = head(r.Windows, top)
+	r.LongTasks = selectWindows(r.LongTasks, top)
+	r.SlowFrames = selectWindows(r.SlowFrames, top)
+	r.InputStalls = selectWindows(r.InputStalls, top)
+	r.EventBursts = selectWindows(r.EventBursts, top)
+	r.Windows = selectWindows(r.Windows, top)
 	return &r
 }
 
 func head[T any](values []T, top int) []T {
 	return values[:min(len(values), top)]
+}
+
+func selectPath(path Path, top int) Path {
+	path.BranchesTotal = max(path.BranchesTotal, len(path.Branches))
+	path.Branches = head(path.Branches, top)
+	return path
+}
+
+func selectWindows(windows []Window, top int) []Window {
+	out := append([]Window{}, head(windows, top)...)
+	for i := range out {
+		if out[i].HotPath != nil {
+			path := selectPath(*out[i].HotPath, top)
+			out[i].HotPath = &path
+		}
+	}
+	return out
 }

@@ -18,6 +18,9 @@ const (
 	SevInfo   Severity = "info"
 )
 
+// MinFunctionSamples is the minimum self-sample support for a concentration lead.
+const MinFunctionSamples = 5
+
 // Slice is one exclusive part of active wall time. Idle includes unused
 // portions of idle-gap frames; unattributed frame time is not measured work.
 type Slice struct {
@@ -29,9 +32,10 @@ type Slice struct {
 // ModuleStat groups sampled self time by normalized file URL by default.
 // Parent-directory grouping is available explicitly through Options.
 type ModuleStat struct {
-	Name   string  `json:"name"`
-	SelfMs float64 `json:"selfMs"`
-	Pct    float64 `json:"pct"` // of total sampled self time
+	Name        string  `json:"name"`
+	SelfMs      float64 `json:"selfMs"`
+	Pct         float64 `json:"pct"` // of total sampled self time
+	SelfSamples int     `json:"selfSamples"`
 }
 
 // SlowFrame is a work-bound active rendering interval above the jank threshold.
@@ -143,64 +147,70 @@ type NodeClue struct {
 
 // Finding retains numeric evidence and testable optimization hypotheses.
 type Finding struct {
-	ID                string            `json:"id"`
-	Title             string            `json:"title"`
-	Severity          Severity          `json:"severity"`
-	Category          string            `json:"category"`
-	ImpactMs          float64           `json:"impactMs"`
-	ImpactPct         float64           `json:"impactPct"`
-	Evidence          []string          `json:"evidence"`
-	NumericEvidence   []Evidence        `json:"numericEvidence"`
-	MetricKeys        []string          `json:"metricKeys"`
-	Verify            []Verification    `json:"verify"`
-	Confidence        string            `json:"confidence"`
-	ConfidenceReasons []string          `json:"confidenceReasons"`
-	SuggestedWindows  []SuggestedWindow `json:"suggestedWindows"`
-	Functions         []string          `json:"functions"`
-	Triggers          []string          `json:"triggers"`
-	Nodes             []NodeClue        `json:"nodes"`
-	Suggestion        string            `json:"suggestion"`
-	Stacks            []rootcause.Stack `json:"-"`
-	StackIDs          []string          `json:"stackIds"`
-	StacksTotal       int               `json:"stacksTotal"`
-	Command           string            `json:"command"`
+	ID                string                 `json:"id"`
+	Title             string                 `json:"title"`
+	Severity          Severity               `json:"severity"`
+	Category          string                 `json:"category"`
+	ImpactMs          float64                `json:"impactMs"`
+	ImpactPct         float64                `json:"impactPct"`
+	Evidence          []string               `json:"evidence"`
+	NumericEvidence   []Evidence             `json:"numericEvidence"`
+	MetricKeys        []string               `json:"metricKeys"`
+	Verify            []Verification         `json:"verify"`
+	Confidence        string                 `json:"confidence"`
+	ConfidenceReasons []string               `json:"confidenceReasons"`
+	SuggestedWindows  []SuggestedWindow      `json:"suggestedWindows"`
+	Functions         []string               `json:"functions"`
+	Triggers          []string               `json:"triggers"`
+	Nodes             []NodeClue             `json:"nodes"`
+	Suggestion        string                 `json:"suggestion"`
+	Stacks            []rootcause.Stack      `json:"-"`
+	StackIDs          []string               `json:"stackIds"`
+	StacksTotal       int                    `json:"stacksTotal"`
+	Command           string                 `json:"command"`
+	SampleIDs         []string               `json:"-"`
+	RelatedFindings   []string               `json:"relatedFindings,omitempty"`
+	NativeReads       []rootcause.NativeRead `json:"nativeReads,omitempty"`
+	NativeReadsTotal  int                    `json:"nativeReadsTotal"`
+	Depth             *rootcause.DepthFacets `json:"depth,omitempty"`
 }
 
 // Report is the analysis of one recording.
 type Report struct {
-	Top                 int                 `json:"-"`
-	RootCause           *rootcause.Report   `json:"rootCause"`
-	FlameTree           *flame.Tree         `json:"-"`
-	SchemaVersion       string              `json:"schemaVersion"`
-	Source              string              `json:"source"`
-	MoreEvidenceCommand string              `json:"moreEvidenceCommand,omitempty"`
-	WindowStartSec      float64             `json:"windowStartSec"`
-	WindowEndSec        float64             `json:"windowEndSec"`
-	WholeRecording      bool                `json:"-"`
-	ModuleGrouping      string              `json:"moduleGrouping"`
-	JankMs              float64             `json:"jankMs"`
-	LongTaskMs          float64             `json:"longTaskMs"`
-	Sourcemaps          []string            `json:"sourcemaps"`
-	Name                string              `json:"name"`
-	DurationSec         float64             `json:"durationSec"`
-	Breakdown           []Slice             `json:"breakdown"`
-	GCMs                float64             `json:"gcMs"`
-	GCOverlapWithWorkMs float64             `json:"gcOverlapWithWorkMs"`
-	Hotspots            []metrics.FuncStat  `json:"hotspots"` // top N by self time
-	InclusiveHotspots   []metrics.FuncStat  `json:"inclusiveHotspots"`
-	CommonStacks        []metrics.StackStat `json:"commonStacks"`
-	Triggers            []TriggerStat       `json:"triggers"`
-	Wakeups             WakeupStats         `json:"wakeups"`
-	SampleCoverage      SampleCoverage      `json:"sampleCoverage"`
-	Modules             []ModuleStat        `json:"modules"`    // top N
-	SlowFrames          []SlowFrame         `json:"slowFrames"` // worst N active frames by measured work
-	SlowFramesTotal     int                 `json:"slowFramesTotal"`
-	InputStalls         []InputStall        `json:"inputStalls"` // longest N observed input stalls
-	InputStallsTotal    int                 `json:"inputStallsTotal"`
-	LongTasks           []LongTask          `json:"longTasks"` // worst N by duration
-	LongTasksTotal      int                 `json:"longTasksTotal"`
-	Findings            []Finding           `json:"findings"` // sorted by severity then ImpactMs desc
-	Summary             *metrics.Summary    `json:"-"`
+	Top                 int                  `json:"-"`
+	RootCause           *rootcause.Report    `json:"rootCause"`
+	FlameTree           *flame.Tree          `json:"-"`
+	SchemaVersion       string               `json:"schemaVersion"`
+	Source              string               `json:"source"`
+	MoreEvidenceCommand string               `json:"moreEvidenceCommand,omitempty"`
+	WindowStartSec      float64              `json:"windowStartSec"`
+	WindowEndSec        float64              `json:"windowEndSec"`
+	WholeRecording      bool                 `json:"-"`
+	ModuleGrouping      string               `json:"moduleGrouping"`
+	JankMs              float64              `json:"jankMs"`
+	LongTaskMs          float64              `json:"longTaskMs"`
+	Sourcemaps          []string             `json:"sourcemaps"`
+	Ownership           flame.OwnershipRules `json:"ownership"`
+	Name                string               `json:"name"`
+	DurationSec         float64              `json:"durationSec"`
+	Breakdown           []Slice              `json:"breakdown"`
+	GCMs                float64              `json:"gcMs"`
+	GCOverlapWithWorkMs float64              `json:"gcOverlapWithWorkMs"`
+	Hotspots            []metrics.FuncStat   `json:"hotspots"` // top N by self time
+	InclusiveHotspots   []metrics.FuncStat   `json:"inclusiveHotspots"`
+	CommonStacks        []metrics.StackStat  `json:"commonStacks"`
+	Triggers            []TriggerStat        `json:"triggers"`
+	Wakeups             WakeupStats          `json:"wakeups"`
+	SampleCoverage      SampleCoverage       `json:"sampleCoverage"`
+	Modules             []ModuleStat         `json:"modules"`    // top N
+	SlowFrames          []SlowFrame          `json:"slowFrames"` // worst N active frames by measured work
+	SlowFramesTotal     int                  `json:"slowFramesTotal"`
+	InputStalls         []InputStall         `json:"inputStalls"` // longest N observed input stalls
+	InputStallsTotal    int                  `json:"inputStallsTotal"`
+	LongTasks           []LongTask           `json:"longTasks"` // worst N by duration
+	LongTasksTotal      int                  `json:"longTasksTotal"`
+	Findings            []Finding            `json:"findings"` // sorted by severity then ImpactMs desc
+	Summary             *metrics.Summary     `json:"-"`
 }
 
 // Options tune the analyzer.
@@ -211,4 +221,5 @@ type Options struct {
 	ModuleGrouping string  // "file" (default) or "parent-directory"
 	WindowStartSec float64 // original recording-relative start when rec was trimmed
 	Sourcemaps     []string
+	Ownership      flame.OwnershipRules
 }

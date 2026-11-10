@@ -16,7 +16,8 @@ const (
 
 // SourceOptions controls source-map resolution before a shared flame tree is built.
 type SourceOptions struct {
-	Sourcemaps []string `json:"sourcemaps,omitempty"`
+	Sourcemaps []string             `json:"sourcemaps,omitempty"`
+	Ownership  flame.OwnershipRules `json:"ownership,omitempty"`
 }
 
 // Request selects one operation. Times are seconds relative to each source start.
@@ -39,12 +40,18 @@ type Request struct {
 	MinMS          float64  `json:"min_ms,omitempty"`
 	MinShare       float64  `json:"min_share,omitempty"`
 	MinShareSet    bool     `json:"-"`
+	MinSamples     int      `json:"min_samples,omitempty"`
+	MinSamplesSet  bool     `json:"-"`
+	TieRatio       float64  `json:"tie_ratio,omitempty"`
+	TieRatioSet    bool     `json:"-"`
 	LongTaskMS     float64  `json:"long_task_ms,omitempty"`
 	JankMS         float64  `json:"jank_ms,omitempty"`
 	From           float64  `json:"from,omitempty"`
 	To             float64  `json:"to,omitempty"`
 	TrimStart      float64  `json:"trim_start,omitempty"`
 	TrimEnd        float64  `json:"trim_end,omitempty"`
+	AppURLs        []string `json:"app_url,omitempty"`
+	LibraryURLs    []string `json:"library_url,omitempty"`
 	Sourcemaps     []string `json:"sourcemaps,omitempty"`
 }
 
@@ -123,21 +130,24 @@ type Row struct {
 // Result always reports complete row count before limit, even for ambiguity.
 // Ambiguous selectors return candidates, never an arbitrarily selected function.
 type Result struct {
-	Schema       string     `json:"schema"`
-	Operation    string     `json:"operation"`
-	Status       string     `json:"status"`
-	Sources      []Source   `json:"sources"`
-	Command      []string   `json:"command"`
-	Selector     string     `json:"selector,omitempty"`
-	By           string     `json:"by"`
-	TotalMS      float64    `json:"total_ms"`
-	TotalCount   int        `json:"total_count"`
-	Limit        int        `json:"limit"`
-	Truncated    bool       `json:"truncated"`
-	Rows         []Row      `json:"rows"`
-	Candidates   []Function `json:"candidates,omitempty"`
-	DeepestStack []Function `json:"deepest_stack,omitempty"`
-	Errors       []Error    `json:"errors,omitempty"`
+	Schema               string     `json:"schema"`
+	Operation            string     `json:"operation"`
+	Status               string     `json:"status"`
+	Sources              []Source   `json:"sources"`
+	Command              []string   `json:"command"`
+	Selector             string     `json:"selector,omitempty"`
+	By                   string     `json:"by"`
+	TotalMS              float64    `json:"total_ms"`
+	TotalCount           int        `json:"total_count"`
+	Limit                int        `json:"limit"`
+	Truncated            bool       `json:"truncated"`
+	Rows                 []Row      `json:"rows"`
+	Candidates           []Function `json:"candidates,omitempty"`
+	DeepestStack         []Function `json:"deepest_stack,omitempty"`
+	HotPathBranches      []Row      `json:"hot_path_branches,omitempty"`
+	HotPathBranchesTotal int        `json:"hot_path_branches_total,omitempty"`
+	HotPathStopReason    string     `json:"hot_path_stop_reason,omitempty"`
+	Errors               []Error    `json:"errors,omitempty"`
 }
 
 type Error struct {

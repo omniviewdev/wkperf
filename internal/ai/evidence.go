@@ -38,10 +38,13 @@ func auditLocation(f audit.HotFunction) string {
 }
 
 func priorityFinding(p audit.Priority) insights.Finding {
-	return insights.Finding{NumericEvidence: p.NumericEvidence, MetricKeys: p.MetricKeys, Verify: p.Verify, Confidence: p.Confidence, ConfidenceReasons: p.ConfidenceReasons, SuggestedWindows: p.SuggestedWindows, Functions: p.Functions, Triggers: p.Triggers, Nodes: p.Nodes, Stacks: p.Stacks, StackIDs: p.StackIDs, StacksTotal: p.StacksTotal, Command: p.Command}
+	return insights.Finding{NumericEvidence: p.NumericEvidence, MetricKeys: p.MetricKeys, Verify: p.Verify, Confidence: p.Confidence, ConfidenceReasons: p.ConfidenceReasons, SuggestedWindows: p.SuggestedWindows, Functions: p.Functions, Triggers: p.Triggers, Nodes: p.Nodes, Stacks: p.Stacks, StackIDs: p.StackIDs, StacksTotal: p.StacksTotal, Command: p.Command, RelatedFindings: p.RelatedFindings, NativeReads: p.NativeReads, NativeReadsTotal: p.NativeReadsTotal, Depth: p.Depth}
 }
 
 func writeFindingDetails(b *strings.Builder, f insights.Finding) {
+	for _, facet := range insights.FacetLabels(f.NativeReads, f.Depth, f.RelatedFindings) {
+		fmt.Fprintf(b, "   - %s\n", oneLine(facet))
+	}
 	if f.Command != "" {
 		fmt.Fprintf(b, "   - reproduce: %s\n", f.Command)
 	}
@@ -86,6 +89,7 @@ func writeMetricStack(b *strings.Builder, frames []metrics.FunctionFrame) {
 }
 
 func writeProfileFunction(b *strings.Builder, r *insights.Report, f metrics.FuncStat) {
+	fmt.Fprintf(b, "   samples=%d (self)\n", f.SelfSamples)
 	if f.ID != "" {
 		fmt.Fprintf(b, "   id=%s\n", f.ID)
 	}

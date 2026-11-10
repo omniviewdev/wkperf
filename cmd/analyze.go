@@ -107,6 +107,7 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		JankMs:         viper.GetFloat64("jank-ms"),
 		LongTaskMs:     viper.GetFloat64("long-task-ms"),
 		Sourcemaps:     viper.GetStringSlice("sourcemap"),
+		Ownership:      ownershipRules(),
 		ModuleGrouping: grouping,
 	}
 	var reps []*insights.Report
@@ -134,7 +135,7 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 			continue
 		}
 		if format == "folded" {
-			foldedCharts = append(foldedCharts, flamereport.Chart{Label: f, Tree: core.Build(rec)})
+			foldedCharts = append(foldedCharts, flamereport.Chart{Label: f, Tree: core.Build(rec, core.Options{Ownership: iopts.Ownership})})
 			continue
 		}
 		options := iopts

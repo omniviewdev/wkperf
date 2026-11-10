@@ -152,23 +152,65 @@ func (v *markdownRenderer) findings() []string {
 	return rows
 }
 
+func (v *markdownRenderer) findingFacets() []string {
+	var rows []string
+	for _, f := range v.r.Findings {
+		var b strings.Builder
+		for _, facet := range FacetLabels(f.NativeReads, f.Depth, f.RelatedFindings) {
+			fmt.Fprintf(&b, "- %s\n", mdEscape(facet))
+		}
+		for _, evidence := range f.NumericEvidence {
+			if strings.Contains(evidence.MetricKey, "react.render.") || strings.Contains(evidence.MetricKey, "react.commit.") || strings.HasSuffix(evidence.MetricKey, ".samples") {
+				fmt.Fprintf(&b, "- %s: %.6g %s. %s\n", mdEscape(evidence.Description), evidence.Value, evidence.Unit, v.valueRef(evidence.Command, evidence.MetricKey))
+			}
+		}
+		if b.Len() > 0 {
+			rows = append(rows, "\n### Evidence facets: "+code(f.ID)+"\n\n"+b.String())
+		}
+	}
+	return rows
+}
+
 func (v *markdownRenderer) context() string {
 	metric := NumericCommand(v.r, "")
 	metric = strings.Replace(metric, " metrics ''", " metrics", 1)
 	root := "wkperf query " + shellQuote(v.r.Source) + " rootcause --format json" + queryFlags(v.r)
-	return "\nReproduce values using the metric key after its operation; source, window and source maps apply throughout this report.\n\n- Metrics: " + code(metric) + "\n- Root cause: " + code(root) + "\n"
+	return "\nReproduce values using the metric key after its operation; source, window, source maps and ownership URL rules apply throughout this report.\n\n- Metrics: " + code(metric) + "\n- Root cause: " + code(root) + "\n"
 }
 
-func renderPathFrames(b *strings.Builder, frames []flame.Frame, brief bool) {
-	root, leaf, elided := PreviewFrames(frames, brief)
-	for _, frame := range root {
-		fmt.Fprintf(b, "- %s\n", code(frameLabel(frame)))
+func renderPath(b *strings.Builder, path rootcause.Path, brief bool) {
+	root, leaf, elided := PreviewFrames(path.Frames, brief)
+	printFrame := func(i int, frame flame.Frame) {
+		if i < len(path.Nodes) {
+			node := path.Nodes[i]
+			fmt.Fprintf(b, "- %s: %.6gms inclusive, %.6g%% share, %d samples.\n", code(frameLabel(frame)), node.TotalMs, node.Share*100, node.Samples)
+			if len(node.Stats) > 0 {
+				fmt.Fprintf(b, "  Inclusive value: %s\n", numericRef("rootcause", node.Stats[0].Key))
+			}
+		} else {
+			fmt.Fprintf(b, "- %s\n", code(frameLabel(frame)))
+		}
+	}
+	for i, frame := range root {
+		printFrame(i, frame)
 	}
 	if elided > 0 {
 		fmt.Fprintf(b, "- _… %d frames elided; exact evidence remains available through the query._\n", elided)
 	}
-	for _, frame := range leaf {
-		fmt.Fprintf(b, "- %s\n", code(frameLabel(frame)))
+	for i, frame := range leaf {
+		printFrame(len(path.Frames)-len(leaf)+i, frame)
+	}
+	if path.StopReason != "" {
+		fmt.Fprintf(b, "- Hot path stop: %s.\n", mdEscape(path.StopReason))
+	}
+	if path.BranchesTotal > 0 {
+		fmt.Fprintf(b, "- Competing branches: %d of %d shown.\n", len(path.Branches), path.BranchesTotal)
+		for _, node := range path.Branches {
+			fmt.Fprintf(b, "  - %s: %.6gms inclusive, %.6g%% share, %d samples.\n", code(frameLabel(node.Frame)), node.TotalMs, node.Share*100, node.Samples)
+			if len(node.Stats) > 0 {
+				fmt.Fprintf(b, "    Inclusive value: %s\n", numericRef("rootcause", node.Stats[0].Key))
+			}
+		}
 	}
 }
 
@@ -176,39 +218,48 @@ func (v *markdownRenderer) hotPath() string {
 	var b strings.Builder
 	b.WriteString("\n## Hot path\n\n")
 	root := v.r.RootCause
-	if root == nil || len(root.HotPath.Frames) == 0 {
+	if root == nil {
 		b.WriteString("_No sampled hot path available._\n")
 		return b.String()
 	}
+	if len(root.HotPath.Frames) == 0 {
+		b.WriteString("_No supported sampled hot path available._\n")
+	}
 	b.WriteString("Heaviest root-to-leaf prefix; sampled weight estimates cost, not measured script wall time.\n\n")
-	renderPathFrames(&b, root.HotPath.Frames, v.brief)
+	renderPath(&b, root.HotPath, v.brief)
 	renderRootStats(&b, root.HotPath.Stats)
 	if !v.brief && root.HotPath.Command != "" {
 		fmt.Fprintf(&b, "Reproduce hot path: %s\n", code(root.HotPath.Command))
 	}
-	b.WriteString("\n### Owners and nearest application ancestors\n\n")
+	b.WriteString("\n### Owners and nearest non-framework frames\n\nOwnership heuristic: name table + URL rules; bundled code without source maps may belong to a library. Attribution is context, not proof of causation.\n\n")
 	for _, owner := range root.Owners {
 		fmt.Fprintf(&b, "- Owner %s: %.6gms, %.6g%%, %d samples.\n", owner.Category, owner.SelfMs, owner.Pct, owner.Samples)
 		if !v.brief {
 			renderRootStats(&b, owner.Stats)
 		}
 	}
-	attributions := root.AppAttribution
+	attributions := root.ContextAttribution
 	if v.brief {
 		attributions = attributions[:min(3, len(attributions))]
 	}
-	for _, app := range attributions {
-		fmt.Fprintf(&b, "- Nearest application ancestor %s: %.6gms total (%.6gms framework, %.6gms native).\n", code(frameLabel(app.App)), app.TotalMs, app.FrameworkMs, app.NativeMs)
+	for _, attribution := range attributions {
+		fmt.Fprintf(&b, "- Nearest non-framework frame %s [%s]: %.6gms total (%.6gms self, %.6gms framework, %.6gms native).\n", code(frameLabel(attribution.Frame)), attribution.Frame.Category, attribution.TotalMs, attribution.SelfMs, attribution.FrameworkMs, attribution.NativeMs)
 		if !v.brief {
-			renderRootStats(&b, app.Stats)
-			for _, stack := range app.Stacks {
+			renderRootStats(&b, attribution.Stats)
+			for _, stack := range attribution.Stacks {
 				v.renderStack(&b, stack)
 			}
-			fmt.Fprintf(&b, "  Reproduce attribution: %s\n", code(app.Command))
+			fmt.Fprintf(&b, "  Reproduce attribution: %s\n", code(attribution.Command))
 		}
 	}
-	if root.AppAttributionTotal > len(attributions) {
-		fmt.Fprintf(&b, "- Application attributions: %d of %d shown; inspect rootcause for remaining evidence.\n", len(attributions), root.AppAttributionTotal)
+	if root.ContextAttributionTotal > len(attributions) {
+		fmt.Fprintf(&b, "- Context attributions: %d of %d shown; inspect rootcause for remaining evidence.\n", len(attributions), root.ContextAttributionTotal)
+	}
+	if unavailable := root.ContextUnavailable; unavailable.Samples > 0 {
+		fmt.Fprintf(&b, "- No non-framework frame on this stack: %.6gms, %d samples. %s\n", unavailable.SelfMs, unavailable.Samples, mdEscape(unavailable.Reason))
+		if !v.brief {
+			renderRootStats(&b, unavailable.Stats)
+		}
 	}
 	return b.String()
 }
@@ -225,14 +276,14 @@ func (v *markdownRenderer) functions() string {
 			b.WriteString("_No samples._\n")
 			continue
 		}
-		b.WriteString("| Function | Self ms | Inclusive ms | Metric keys |\n|---|---:|---:|---|\n")
+		b.WriteString("| Function | Self ms | Inclusive ms | Self samples | Metric keys |\n|---|---:|---:|---:|---|\n")
 		functions := ranking.functions
 		if v.brief {
 			functions = functions[:min(3, len(functions))]
 		}
 		for _, f := range functions {
 			prefix := functionMetricPrefix(f)
-			fmt.Fprintf(&b, "| %s | %.6g | %.6g | %s / %s |\n", codeCell(functionLabel(f)), f.SelfMs, f.TotalMs, codeCell(prefix+".self_ms"), codeCell(prefix+".total_ms"))
+			fmt.Fprintf(&b, "| %s | %.6g | %.6g | %d | %s / %s |\n", codeCell(functionLabel(f)), f.SelfMs, f.TotalMs, f.SelfSamples, codeCell(prefix+".self_ms"), codeCell(prefix+".total_ms"))
 			if v.brief {
 				continue
 			}
@@ -242,7 +293,7 @@ func (v *markdownRenderer) functions() string {
 			}{{"caller", f.Callers}, {"callee", f.Callees}} {
 				for _, edge := range relation.edges {
 					key := prefix + "." + relation.name + "s." + url.PathEscape(edge.Function.Key()) + ".weight_ms"
-					fmt.Fprintf(&b, "| ↳ %s: %s | | %.6g | %s |\n", relation.name, codeCell(functionFrameLabel(edge.Function)), edge.WeightMs, codeCell(key))
+					fmt.Fprintf(&b, "| ↳ %s: %s | | %.6g | %d | %s |\n", relation.name, codeCell(functionFrameLabel(edge.Function)), edge.WeightMs, edge.Samples, codeCell(key))
 				}
 			}
 		}
@@ -253,7 +304,7 @@ func (v *markdownRenderer) functions() string {
 					if id == "" {
 						id = MetricStackID(f.CommonStack)
 					}
-					fmt.Fprintf(&b, "- Common sampled stack for %s: %s.\n", code(f.Name), code(v.stackReference(id)))
+					fmt.Fprintf(&b, "- Common sampled stack for %s: %s.\n", code(functionLabel(f)), code(v.stackReference(id)))
 				}
 			}
 		}
@@ -367,7 +418,7 @@ func (v *markdownRenderer) rootDetails() string {
 	var b strings.Builder
 	b.WriteString("\n## Periodic roots\n\n")
 	for _, periodic := range root.PeriodicRoots {
-		fmt.Fprintf(&b, "### %s\n\n%s\n", mdEscape(frameLabel(periodic.Root)), mdEscape(periodic.SampleStatus))
+		fmt.Fprintf(&b, "### %s [%s]\n\n%s\n", mdEscape(frameLabel(periodic.Root)), mdEscape(periodic.Kind), mdEscape(periodic.SampleStatus))
 		renderRootStats(&b, periodic.Stats)
 		for _, stack := range periodic.Evidence {
 			v.renderStack(&b, stack)
@@ -397,6 +448,9 @@ func (v *markdownRenderer) rootDetails() string {
 	for _, window := range allRootWindows(root) {
 		fmt.Fprintf(&b, "### %s — %s\n\n", mdEscape(window.Kind), mdEscape(window.Label))
 		renderRootStats(&b, window.Stats)
+		if window.HotPath != nil {
+			renderPath(&b, *window.HotPath, false)
+		}
 		if window.TopStack != nil {
 			v.renderStack(&b, *window.TopStack)
 		}

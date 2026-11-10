@@ -89,7 +89,7 @@ func TestOutputDistinctStackAppendixAndPreview(t *testing.T) {
 		metricFrames[i] = metrics.FunctionFrame{Name: frames[i].Name, URL: frames[i].URL, Line: 1, Column: i + 1}
 	}
 	stack := rootcause.Stack{Frames: frames, SelfMs: 10, Samples: 5, Command: "wkperf query capture.json stacks n_exact --format json"}
-	r := &Report{Name: "Deep", Source: "capture.json", DurationSec: 1, CommonStacks: []metrics.StackStat{{Frames: metricFrames, WeightMs: 10, Samples: 5}}, Hotspots: []metrics.FuncStat{{Name: "frame-399", CommonStack: metricFrames}}, RootCause: &rootcause.Report{HotPath: rootcause.Path{Frames: frames}, Depth: rootcause.DepthStats{Outliers: []rootcause.DepthOutlier{{Stack: stack}}}, AppAttribution: []rootcause.Attribution{{App: frames[0], Stacks: []rootcause.Stack{stack}}}}, Findings: []Finding{{ID: "deep-stack", Stacks: []rootcause.Stack{stack}}}}
+	r := &Report{Name: "Deep", Source: "capture.json", DurationSec: 1, CommonStacks: []metrics.StackStat{{Frames: metricFrames, WeightMs: 10, Samples: 5}}, Hotspots: []metrics.FuncStat{{Name: "frame-399", CommonStack: metricFrames}}, RootCause: &rootcause.Report{HotPath: rootcause.Path{Frames: frames}, Depth: rootcause.DepthStats{Outliers: []rootcause.DepthOutlier{{Stack: stack}}}, ContextAttribution: []rootcause.Attribution{{Frame: frames[0], Stacks: []rootcause.Stack{stack}}}}, Findings: []Finding{{ID: "deep-stack", Stacks: []rootcause.Stack{stack}}}}
 	var b bytes.Buffer
 	if err := RenderMarkdown(&b, r); err != nil {
 		t.Fatal(err)

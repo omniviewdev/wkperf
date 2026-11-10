@@ -226,7 +226,7 @@ func TestOutputReproduceCommands(t *testing.T) {
 			walk(doc)
 			reports := doc.(map[string]any)["reports"].([]any)
 			root := reports[0].(map[string]any)["rootCause"].(map[string]any)
-			attributions, _ := root["appAttribution"].([]any)
+			attributions, _ := root["contextAttribution"].([]any)
 			for _, value := range attributions {
 				command := value.(map[string]any)["command"].(string)
 				args := outputCommandArgs(t, command)
@@ -344,7 +344,8 @@ func TestOutputReproduceCommands(t *testing.T) {
 					t.Errorf("printed query returned invalid JSON: %s: %v", command, err)
 					continue
 				}
-				if queryResult.Status != "ok" || len(queryResult.Rows) == 0 {
+				hasEvidence := len(queryResult.Rows) > 0 || (queryResult.Operation == "hot-path" && queryResult.HotPathStopReason == "sample-support" && len(queryResult.HotPathBranches) > 0)
+				if queryResult.Status != "ok" || !hasEvidence {
 					t.Errorf("printed query returned no evidence: %s: status=%s rows=%d", command, queryResult.Status, len(queryResult.Rows))
 				}
 				if expected != nil && len(queryResult.Rows) > 0 {
@@ -481,8 +482,8 @@ func TestOutputMoreEvidenceCommand(t *testing.T) {
 	type evidenceReport struct {
 		MoreEvidenceCommand string `json:"moreEvidenceCommand"`
 		RootCause           struct {
-			AppAttribution      []json.RawMessage `json:"appAttribution"`
-			AppAttributionTotal int               `json:"appAttributionTotal"`
+			ContextAttribution      []json.RawMessage `json:"contextAttribution"`
+			ContextAttributionTotal int               `json:"contextAttributionTotal"`
 		} `json:"rootCause"`
 	}
 	var selected struct {
@@ -492,8 +493,8 @@ func TestOutputMoreEvidenceCommand(t *testing.T) {
 		t.Fatalf("selected report: %v", err)
 	}
 	report := selected.Reports[0]
-	if len(report.RootCause.AppAttribution) != 1 || report.RootCause.AppAttributionTotal <= 1 {
-		t.Fatal("fixture must omit application attribution evidence at --top 1")
+	if len(report.RootCause.ContextAttribution) != 1 || report.RootCause.ContextAttributionTotal <= 1 {
+		t.Fatal("fixture must omit context attribution evidence at --top 1")
 	}
 	if report.MoreEvidenceCommand == "" {
 		t.Fatal("omitted evidence requires a runnable more-evidence command")
@@ -513,7 +514,7 @@ func TestOutputMoreEvidenceCommand(t *testing.T) {
 		t.Fatalf("complete report: %v", err)
 	}
 	root := complete.Reports[0].RootCause
-	if len(root.AppAttribution) != root.AppAttributionTotal || root.AppAttributionTotal != report.RootCause.AppAttributionTotal {
-		t.Fatalf("more-evidence command did not recover omitted rows: got %d/%d want %d", len(root.AppAttribution), root.AppAttributionTotal, report.RootCause.AppAttributionTotal)
+	if len(root.ContextAttribution) != root.ContextAttributionTotal || root.ContextAttributionTotal != report.RootCause.ContextAttributionTotal {
+		t.Fatalf("more-evidence command did not recover omitted rows: got %d/%d want %d", len(root.ContextAttribution), root.ContextAttributionTotal, report.RootCause.ContextAttributionTotal)
 	}
 }

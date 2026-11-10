@@ -33,10 +33,20 @@ func queryFlags(r *Report) string {
 	for _, path := range r.Sourcemaps {
 		flags += " --sourcemap " + shellQuote(path)
 	}
+	for _, pattern := range r.Ownership.AppURLs {
+		flags += " --app-url " + shellQuote(pattern)
+	}
+	for _, pattern := range r.Ownership.LibraryURLs {
+		flags += " --library-url " + shellQuote(pattern)
+	}
 	return flags
 }
 
 func functionMetricPrefix(f metrics.FuncStat) string { return "functions." + url.PathEscape(f.Key()) }
+
+func moduleMetricPrefix(grouping, name string) string {
+	return "modules." + grouping + "." + url.PathEscape(name)
+}
 func triggerMetricPrefix(t TriggerStat) string {
 	return "triggers." + t.Kind + "." + url.PathEscape(t.Name)
 }
@@ -106,9 +116,10 @@ func NumericValues(r *Report) map[string]NumericValue {
 		addFunctions("", r.Summary.Functions)
 		for _, grouping := range []string{"file", "parent-directory"} {
 			for _, m := range computeModules(r.Summary.Functions, grouping) {
-				prefix := "modules." + grouping + "." + url.PathEscape(m.Name)
+				prefix := moduleMetricPrefix(grouping, m.Name)
 				add(prefix+".self_ms", m.SelfMs, metrics.UnitMs, "Grouped sampled self time")
 				add(prefix+".pct", m.Pct, metrics.UnitPct, "Share of total sampled self time")
+				add(prefix+".self_samples", float64(m.SelfSamples), metrics.UnitCount, "Grouped self sample count")
 			}
 		}
 	} else {

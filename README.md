@@ -55,6 +55,8 @@ If you set `GOBIN`, add that directory instead. On Windows, add `%USERPROFILE%\g
 
 For a reproducible install, replace `@latest` with a tag, such as `@v0.4.0`.
 
+> This checkout also documents unreleased fixes and updated JSON contracts. They are not included in v0.4.0; build the checkout under test to try them before the next tagged release.
+
 <details>
 <summary>Build from source</summary>
 
@@ -262,6 +264,8 @@ Long tasks now share non-overlapping task boundaries across metrics, findings, a
 Source maps resolve locations without borrowing parameter names for function labels. Copied sidecars keep honest relative source paths when originals are unavailable, and directory scans skip unrelated unsupported maps with warnings. MCP reports the installed tool version, rejects non-file inputs, and recovers after oversized requests.
 
 Flame JSON uses compact `wkperf-flame/v2` frame and node tables. Folded stacks use standard integer microseconds and load without custom escaping rules. Function focus merges all calling contexts; normalized differential views retain raw before/after measurements and warn about mismatched captures.
+
+Ownership reports distinguish unknown bundle code from known app, library, native, and injected work. Supply source maps or `--app-url` / `--library-url` rules when ownership is known. Findings separate observed APIs from proven flush behavior, distinguish React traversal from recursion, and expose alternatives when a hot path is not decisive.
 
 For tool-based agents, `wkperf mcp` exposes the query engine through MCP over stdio. It writes protocol messages—not logging—to stdout. See the [reference](docs/REFERENCE.md) for formats, query operations, source maps, and JSON schemas.
 

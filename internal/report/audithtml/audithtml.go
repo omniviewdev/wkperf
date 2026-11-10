@@ -78,6 +78,7 @@ type priorityView struct {
 	Suggestion string
 	Details    audit.Priority
 	StackHTML  template.HTML
+	Facets     []string
 }
 
 type funcView struct {
@@ -173,6 +174,7 @@ func buildView(r *audit.Report, ai string) pageView {
 			Scenes: p.Scenes, SceneCount: len(p.Scenes),
 			Total: f1(p.TotalImpactMs), AvgPct: f1(p.AvgImpactPct), Evidence: p.Evidence, Suggestion: p.Suggestion,
 			Details: p,
+			Facets:  insights.FacetLabels(p.NativeReads, p.Depth, p.RelatedFindings),
 		})
 	}
 
@@ -326,6 +328,7 @@ var pageTmpl = template.Must(template.New("page").Parse(`<!DOCTYPE html>
 <div class="mut">{{.Category}} &middot; <code>{{.ID}}</code> &middot; {{.SceneCount}} scene(s) &middot; {{.Total}} ms total &middot; {{.AvgPct}}% avg impact over all scenes</div>
 <div class="mut">Scenes: {{range $i, $s := .Scenes}}{{if $i}}, {{end}}{{$s}}{{end}}</div>
 {{if .Evidence}}<ul>{{range .Evidence}}<li>{{.}}</li>{{end}}</ul>{{end}}
+{{range .Facets}}<p>{{.}}</p>{{end}}
 {{with .Details}}
 {{if .EvidenceScene}}<div class="mut">Evidence scene: {{.EvidenceScene}}</div>{{end}}
 {{if .MetricKeys}}<div><b>Metric keys:</b> {{range .MetricKeys}}<code>{{.}}</code> {{end}}</div>{{end}}

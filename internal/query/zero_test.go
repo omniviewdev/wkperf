@@ -11,8 +11,8 @@ func TestExplicitZeroDepthAndHotPathShare(t *testing.T) {
 	rec := fixture()
 	rec.Samples[0].Durations = []float64{.001, .0005, .9, .0003}
 	engine = engineFor(rec)
-	all := run(t, engine, Request{Operation: "hot-path", MinShareSet: true})
-	bounded := run(t, engine, Request{Operation: "hot-path"})
+	all := run(t, engine, Request{Operation: "hot-path", MinShareSet: true, MinSamplesSet: true, TieRatioSet: true})
+	bounded := run(t, engine, Request{Operation: "hot-path", MinSamplesSet: true, TieRatioSet: true})
 	if len(all.Rows) <= len(bounded.Rows) {
 		t.Fatalf("explicit zero threshold ignored: %+v / %+v", all.Rows, bounded.Rows)
 	}

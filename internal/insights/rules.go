@@ -8,9 +8,11 @@ import (
 	"strings"
 
 	"github.com/omniviewdev/wkperf/internal/analyze"
+	"github.com/omniviewdev/wkperf/internal/flame"
 	"github.com/omniviewdev/wkperf/internal/metrics"
 	"github.com/omniviewdev/wkperf/internal/model"
 	"github.com/omniviewdev/wkperf/internal/profile"
+	"github.com/omniviewdev/wkperf/internal/rootcause"
 )
 
 type ruleCtx struct {
@@ -46,6 +48,8 @@ type recStats struct {
 }
 
 const largeQuadPx = 2_000_000
+
+const minCoverageSamples = 20
 
 func quadArea(raw json.RawMessage) float64 {
 	if len(raw) == 0 {
@@ -623,17 +627,20 @@ func ruleHotFunction(c *ruleCtx, st *recStats) *Finding {
 	}
 	h := c.rep.Hotspots[0]
 	share := h.SelfMs / st.selfTotalMs * 100
-	if share <= 10 || h.SelfMs < 20 || c.pct(h.SelfMs) < 0.1 {
+	if h.SelfSamples < MinFunctionSamples || share <= 10 || h.SelfMs < 20 || c.pct(h.SelfMs) < 0.1 {
 		return nil
 	}
 	ev := []string{
-		fmt.Sprintf("%s is %s%% of sampled self time (%sms; %s%% of wall time)", functionLabel(h), f1(share), f1(h.SelfMs), f1(c.pct(h.SelfMs))),
-		fmt.Sprintf("inclusive time %sms", f1(h.TotalMs)),
+		fmt.Sprintf("%s is %s%% of sampled self time (%sms; %s%% of wall time; samples=%d)", functionLabel(h), f1(share), f1(h.SelfMs), f1(c.pct(h.SelfMs)), h.SelfSamples),
+		fmt.Sprintf("sampled inclusive time %sms; statistical weights are not measured function durations", f1(h.TotalMs)),
 	}
 	sev := sampledSeverity(c, h.SelfMs, share)
-	return &Finding{ID: "hot-function", Title: "Sampled function concentration: " + h.Name, Severity: sev, Category: "script",
+	return &Finding{ID: "hot-function", Title: fmt.Sprintf("Sampled function concentration: %s (samples=%d)", functionLabel(h), h.SelfSamples), Severity: sev, Category: "script",
 		ImpactMs: h.SelfMs, ImpactPct: c.pct(h.SelfMs), Evidence: ev,
-		Functions:  []string{functionLabel(h)},
+		Functions: []string{functionLabel(h)},
+		SampleIDs: rootcause.SampleIDs(c.rep.FlameTree, func(s flame.Sample) bool {
+			return len(s.Frames) > 0 && flame.FunctionID(s.Frames[len(s.Frames)-1]) == h.ID
+		}),
 		Suggestion: "Confirm the sampled function's wall-time impact in a repeated capture. Then reduce repeated calls, hoist invariant work, or choose a cheaper algorithm; sample share alone does not establish a bottleneck."}
 }
 
@@ -642,12 +649,15 @@ func ruleHotModule(c *ruleCtx) *Finding {
 		if m.Name == "(native)" {
 			continue
 		}
-		if m.Pct <= 25 || m.SelfMs < 20 || c.pct(m.SelfMs) < 0.1 {
+		if m.SelfSamples < MinFunctionSamples || m.Pct <= 25 || m.SelfMs < 20 || c.pct(m.SelfMs) < 0.1 {
 			return nil
 		}
-		ev := []string{fmt.Sprintf("file/module %s is %s%% of sampled self time (%sms; %s%% of wall time)", m.Name, f1(m.Pct), f1(m.SelfMs), f1(c.pct(m.SelfMs)))}
-		return &Finding{ID: "hot-module", Title: "Sampled module concentration: " + m.Name, Severity: sampledSeverity(c, m.SelfMs, m.Pct), Category: "script",
+		ev := []string{fmt.Sprintf("file/module %s is %s%% of sampled self time (%sms; %s%% of wall time; samples=%d)", m.Name, f1(m.Pct), f1(m.SelfMs), f1(c.pct(m.SelfMs)), m.SelfSamples)}
+		return &Finding{ID: "hot-module", Title: fmt.Sprintf("Sampled module concentration: %s (samples=%d)", m.Name, m.SelfSamples), Severity: sampledSeverity(c, m.SelfMs, m.Pct), Category: "script",
 			ImpactMs: m.SelfMs, ImpactPct: c.pct(m.SelfMs), Evidence: ev,
+			SampleIDs: rootcause.SampleIDs(c.rep.FlameTree, func(s flame.Sample) bool {
+				return len(s.Frames) > 0 && moduleGroup(s.Frames[len(s.Frames)-1].URL, c.opt.ModuleGrouping) == m.Name
+			}),
 			Suggestion: "Confirm this file's absolute wall-time cost before changing it. Use the measured functions and trigger intervals to avoid redundant work rather than treating a large sample share as proof of high impact."}
 	}
 	return nil
@@ -679,16 +689,31 @@ func ruleNetwork(c *ruleCtx) *Finding {
 
 func ruleCoverage(c *ruleCtx, st *recStats) *Finding {
 	coverage := c.rep.SampleCoverage
-	if coverage.ScriptMs < 100 || coverage.Ratio >= 0.5 {
+	if coverage.SampleCount == 0 && !coverage.Available && !coverage.UntimedExcluded {
 		return nil
 	}
-	ev := []string{fmt.Sprintf("%sms sampled vs %sms measured script; coverage ratio %.3f, %d samples", f1(coverage.SampledMs), f1(coverage.ScriptMs), coverage.Ratio, coverage.SampleCount)}
-	suggestion := "Sampled function and module rankings may be unrepresentative. Repeat the same interaction with JavaScript sampling enabled and a longer capture; compare sample weights with measured script time."
+	if coverage.SampleCount >= minCoverageSamples && (!coverage.Available || coverage.Ratio >= 0.5) {
+		return nil
+	}
+	title := "Sampling profiler covers little of the script time"
+	ev := []string{fmt.Sprintf("samples=%d; at least %d samples are needed before trusting sampled function and module rankings", coverage.SampleCount, minCoverageSamples)}
+	if coverage.SampleCount < minCoverageSamples {
+		title = fmt.Sprintf("Too few profiler samples for stable function rankings (samples=%d)", coverage.SampleCount)
+	}
+	if coverage.Available {
+		ev = append(ev, fmt.Sprintf("%sms sampled vs %sms measured script; coverage ratio %.3f", f1(coverage.SampledMs), f1(coverage.ScriptMs), coverage.Ratio))
+	} else {
+		ev = append(ev, "sample-to-script coverage ratio unavailable: no measured script denominator")
+	}
+	if caveat := singleSampleCaveat(c); caveat != "" {
+		ev = append(ev, caveat)
+	}
+	suggestion := "Sampled function and module rankings may be unrepresentative. Repeat the same interaction with JavaScript sampling enabled and a longer capture; compare sample counts and weights with measured script time."
 	if coverage.UntimedExcluded && coverage.UntimedMs > 0 {
 		ev = append(ev, fmt.Sprintf("%d untimed samples (%.6g ms) excluded from this window", coverage.UntimedSampleCount, coverage.UntimedMs))
 		suggestion = "Analyze the whole recording to include untimed samples; per-window coverage counts timed samples only."
 	}
-	return &Finding{ID: "low-sample-coverage", Title: "Sampling profiler covers little of the script time", Severity: SevInfo, Category: "script",
+	return &Finding{ID: "low-sample-coverage", Title: title, Severity: SevInfo, Category: "script",
 		Evidence:   ev,
 		Suggestion: suggestion}
 }

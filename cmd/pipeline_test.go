@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -467,7 +468,7 @@ func TestPipelineWindowCommandsKeepOriginalClock(t *testing.T) {
 				t.Fatalf("reproduce %s: %v", evidence.MetricKey, err)
 			}
 			var q query.Result
-			if err := json.Unmarshal([]byte(result), &q); err != nil || len(q.Rows) != 1 || q.Rows[0].Value != evidence.Value {
+			if err := json.Unmarshal([]byte(result), &q); err != nil || len(q.Rows) != 1 || math.Abs(q.Rows[0].Value-evidence.Value) > 1e-9 {
 				t.Fatalf("windowed evidence %s did not reproduce: %v want %.12g result %s", evidence.MetricKey, err, evidence.Value, result)
 			}
 			if !strings.Contains(evidence.Command, "--from 2") || !strings.Contains(evidence.Command, "--to 5") {

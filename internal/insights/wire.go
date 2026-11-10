@@ -3,6 +3,7 @@ package insights
 import (
 	"encoding/json"
 
+	"github.com/omniviewdev/wkperf/internal/flame"
 	"github.com/omniviewdev/wkperf/internal/metrics"
 	"github.com/omniviewdev/wkperf/internal/rootcause"
 )
@@ -19,6 +20,7 @@ type WireReport struct {
 	CommonStacks      []WireCommonStack `json:"commonStacks"`
 	Triggers          []WireTrigger     `json:"triggers"`
 	Wakeups           WireWakeups       `json:"wakeups"`
+	Findings          []WireFinding     `json:"findings"`
 }
 
 type WireFunction struct {
@@ -62,36 +64,39 @@ type RootReportFields rootcause.Report
 
 type WireRootReport struct {
 	RootReportFields
-	HotPath        WirePath          `json:"hotPath"`
-	AppAttribution []WireAttribution `json:"appAttribution"`
-	Findings       []WireRootFinding `json:"findings"`
-	PeriodicRoots  []WirePeriodic    `json:"periodicRoots"`
-	Windows        []WireWindow      `json:"windows"`
-	LongTasks      []WireWindow      `json:"longTasks"`
-	SlowFrames     []WireWindow      `json:"slowFrames"`
-	InputStalls    []WireWindow      `json:"inputStalls"`
-	EventBursts    []WireWindow      `json:"eventBursts"`
+	HotPath            WirePath          `json:"hotPath"`
+	ContextAttribution []WireAttribution `json:"contextAttribution"`
+	Findings           []WireRootFinding `json:"findings"`
+	PeriodicRoots      []WirePeriodic    `json:"periodicRoots"`
+	Windows            []WireWindow      `json:"windows"`
+	LongTasks          []WireWindow      `json:"longTasks"`
+	SlowFrames         []WireWindow      `json:"slowFrames"`
+	InputStalls        []WireWindow      `json:"inputStalls"`
+	EventBursts        []WireWindow      `json:"eventBursts"`
 }
 
 type PathFields rootcause.Path
 
 type WirePath struct {
 	PathFields
-	Frames []int `json:"frames"`
+	Frames   []int          `json:"frames"`
+	Nodes    []WirePathNode `json:"nodes"`
+	Branches []WirePathNode `json:"branches"`
 }
 
 type AttributionFields rootcause.Attribution
 
 type WireAttribution struct {
 	AttributionFields
-	App int `json:"app"`
+	Frame int `json:"frame"`
 }
 
 type RootFindingFields rootcause.Finding
 
 type WireRootFinding struct {
 	RootFindingFields
-	StackIDs []string `json:"stackIds"`
+	StackIDs []string         `json:"stackIds"`
+	Depth    *WireDepthFacets `json:"depth,omitempty"`
 }
 
 type PeriodicFields rootcause.PeriodicRoot
@@ -118,24 +123,28 @@ func ToWire(report *Report) *WireReport {
 	w := &WireReport{ReportFields: ReportFields(*r), EvidenceCatalog: c.EvidenceCatalog,
 		Hotspots: c.wireFunctions(r.Hotspots), InclusiveHotspots: c.wireFunctions(r.InclusiveHotspots),
 		CommonStacks: make([]WireCommonStack, len(r.CommonStacks)), Triggers: c.wireTriggers(r.Triggers),
-		Wakeups: WireWakeups{Count: r.Wakeups.Count, PerSecond: r.Wakeups.PerSecond, Causes: c.wireTriggers(r.Wakeups.Causes)}}
+		Wakeups:  WireWakeups{Count: r.Wakeups.Count, PerSecond: r.Wakeups.PerSecond, Causes: c.wireTriggers(r.Wakeups.Causes)},
+		Findings: make([]WireFinding, len(r.Findings))}
 	for i, stack := range r.CommonStacks {
 		w.CommonStacks[i] = WireCommonStack{StackID: stack.ID, WeightMs: stack.WeightMs, Samples: stack.Samples}
 	}
+	for i, finding := range r.Findings {
+		w.Findings[i] = WireFinding{FindingFields: FindingFields(finding), Depth: c.wireDepth(finding.Depth)}
+	}
 	if root := r.RootCause; root != nil {
 		w.RootCause = &WireRootReport{RootReportFields: RootReportFields(*root), HotPath: c.wirePath(root.HotPath),
-			AppAttribution: make([]WireAttribution, len(root.AppAttribution)), Findings: make([]WireRootFinding, len(root.Findings)),
+			ContextAttribution: make([]WireAttribution, len(root.ContextAttribution)), Findings: make([]WireRootFinding, len(root.Findings)),
 			PeriodicRoots: make([]WirePeriodic, len(root.PeriodicRoots)), Windows: c.wireWindows(root.Windows),
 			LongTasks: c.wireWindows(root.LongTasks), SlowFrames: c.wireWindows(root.SlowFrames),
 			InputStalls: c.wireWindows(root.InputStalls), EventBursts: c.wireWindows(root.EventBursts)}
-		for i, attribution := range root.AppAttribution {
-			w.RootCause.AppAttribution[i] = WireAttribution{AttributionFields: AttributionFields(attribution), App: c.indices[attribution.App.ID]}
+		for i, attribution := range root.ContextAttribution {
+			w.RootCause.ContextAttribution[i] = WireAttribution{AttributionFields: AttributionFields(attribution), Frame: c.indices[flame.FunctionID(attribution.Frame)]}
 		}
 		for i, finding := range root.Findings {
-			w.RootCause.Findings[i] = WireRootFinding{RootFindingFields: RootFindingFields(finding), StackIDs: stackIDs(finding.Evidence)}
+			w.RootCause.Findings[i] = WireRootFinding{RootFindingFields: RootFindingFields(finding), StackIDs: stackIDs(finding.Evidence), Depth: c.wireDepth(finding.Depth)}
 		}
 		for i, periodic := range root.PeriodicRoots {
-			w.RootCause.PeriodicRoots[i] = WirePeriodic{PeriodicFields: PeriodicFields(periodic), Root: c.indices[periodic.Root.ID]}
+			w.RootCause.PeriodicRoots[i] = WirePeriodic{PeriodicFields: PeriodicFields(periodic), Root: c.indices[flame.FunctionID(periodic.Root)]}
 		}
 	}
 	return w
@@ -146,7 +155,7 @@ func (r *Report) MarshalJSON() ([]byte, error) {
 }
 
 func (c *catalogBuilder) wirePath(path rootcause.Path) WirePath {
-	return WirePath{PathFields: PathFields(path), Frames: c.frameIndices(path.Frames)}
+	return WirePath{PathFields: PathFields(path), Frames: c.frameIndices(path.Frames), Nodes: c.wirePathNodes(path.Nodes), Branches: c.wirePathNodes(path.Branches)}
 }
 
 func (c *catalogBuilder) wireFunctions(functions []metrics.FuncStat) []WireFunction {
@@ -182,6 +191,62 @@ func (c *catalogBuilder) wireWindows(windows []rootcause.Window) []WireWindow {
 			path := c.wirePath(*window.HotPath)
 			out[i].HotPath = &path
 		}
+	}
+	return out
+}
+
+type FindingFields Finding
+
+type WireFinding struct {
+	FindingFields
+	Depth *WireDepthFacets `json:"depth,omitempty"`
+}
+
+type WirePathNode struct {
+	Frame     int     `json:"frame"`
+	TotalMs   float64 `json:"totalMs"`
+	SelfMs    float64 `json:"selfMs"`
+	Share     float64 `json:"share"`
+	Samples   int     `json:"samples"`
+	MetricKey string  `json:"metricKey,omitempty"`
+}
+
+type DepthFacetFields rootcause.DepthFacets
+
+type WireDepthFacets struct {
+	DepthFacetFields
+	RepeatedFrame *WireRepeatedFrame `json:"repeatedFrame,omitempty"`
+	Recursion     *WireRepeatedFrame `json:"recursion,omitempty"`
+}
+
+type RepeatedFrameFields rootcause.RepeatedFrame
+
+type WireRepeatedFrame struct {
+	RepeatedFrameFields
+	Frame int `json:"frame"`
+}
+
+func (c *catalogBuilder) wirePathNodes(nodes []rootcause.PathNode) []WirePathNode {
+	out := make([]WirePathNode, len(nodes))
+	for i, node := range nodes {
+		out[i] = WirePathNode{Frame: c.indices[flame.FunctionID(node.Frame)], TotalMs: node.TotalMs, SelfMs: node.SelfMs, Share: node.Share, Samples: node.Samples}
+		if len(node.Stats) > 0 {
+			out[i].MetricKey = node.Stats[0].Key
+		}
+	}
+	return out
+}
+
+func (c *catalogBuilder) wireDepth(depth *rootcause.DepthFacets) *WireDepthFacets {
+	if depth == nil {
+		return nil
+	}
+	out := &WireDepthFacets{DepthFacetFields: DepthFacetFields(*depth)}
+	if depth.RepeatedFrame != nil {
+		out.RepeatedFrame = &WireRepeatedFrame{RepeatedFrameFields: RepeatedFrameFields(*depth.RepeatedFrame), Frame: c.indices[flame.FunctionID(depth.RepeatedFrame.Frame)]}
+	}
+	if depth.Recursion != nil {
+		out.Recursion = &WireRepeatedFrame{RepeatedFrameFields: RepeatedFrameFields(*depth.Recursion), Frame: c.indices[flame.FunctionID(depth.Recursion.Frame)]}
 	}
 	return out
 }

@@ -266,8 +266,8 @@ func TestHotFunctionAndModule(t *testing.T) {
 	if r.Modules[0].Name != "http://x/node_modules/@scope/lib/i.js" {
 		t.Errorf("modules %+v", r.Modules)
 	}
-	if find(r, "hot-function") == nil || find(r, "hot-module") == nil {
-		t.Errorf("findings %+v", r.Findings)
+	if f := find(r, "hot-function"); f == nil || !containsString(f.RelatedFindings, "hot-module") || find(r, "hot-module") != nil {
+		t.Errorf("same function and module samples need one lead with a module facet: %+v", r.Findings)
 	}
 	// even spread: no hot function/module
 	var even []model.StackTrace

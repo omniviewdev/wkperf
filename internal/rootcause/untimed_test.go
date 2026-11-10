@@ -27,8 +27,8 @@ func TestUntimedSamplesKeepRootCauseAggregates(t *testing.T) {
 	for _, owner := range report.Owners {
 		owned += owner.SelfMs
 	}
-	for _, a := range report.AppAttribution {
-		if a.App.Name == "untimedLeaf" && len(a.Stacks) == 1 {
+	for _, a := range report.ContextAttribution {
+		if a.Frame.Name == "untimedLeaf" && len(a.Stacks) == 1 {
 			unknown, _ = json.Marshal(a.Stacks[0])
 		}
 	}

@@ -195,6 +195,7 @@ func runAudit(cmd *cobra.Command, args []string) error {
 		JankMs:         viper.GetFloat64("jank-ms"),
 		LongTaskMs:     viper.GetFloat64("long-task-ms"),
 		Sourcemaps:     viper.GetStringSlice("sourcemap"),
+		Ownership:      ownershipRules(),
 		ModuleGrouping: grouping,
 	}
 	scenes := make([]audit.Scene, 0, len(sf))

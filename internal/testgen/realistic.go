@@ -110,25 +110,28 @@ func GetAnimations() *model.Recording {
 	return rec
 }
 
-// React includes render and commit samples inside a microtask, and an identical
-// outside sample that must not be attributed to that microtask.
+// React includes render and commit samples inside a click's scheduling
+// microtask, and an outside sync sample with no identifiable trigger.
 func React() *model.Recording {
 	rec := Empty()
 	rec.DisplayName = "React microtask attribution"
 	app := model.StackFrame{Name: "updateRows", URL: "https://app.test/src/rows.tsx", Line: 30, Column: 5}
 	render := model.StackFrame{Name: "renderWithHooks", URL: "https://app.test/node_modules/react-dom/client.js", Line: 200, Column: 1}
+	renderRoot := model.StackFrame{Name: "renderRootSync", URL: render.URL, Line: 150, Column: 1}
 	commit := model.StackFrame{Name: "commitRoot", URL: render.URL, Line: 400, Column: 1}
 	syncRoot := model.StackFrame{Name: "performSyncWorkOnRoot", URL: render.URL, Line: 100, Column: 1}
-	rec.Records = append(rec.Records, frameRecord(1, 1.09), scriptRecord("microtask-dispatched", 1, 1.08))
+	click := scriptRecord("event-dispatched", 1, 1.085)
+	click.Details = json.RawMessage(`"click"`)
+	rec.Records = append(rec.Records, frameRecord(1, 1.09), click, scriptRecord("microtask-dispatched", 1.005, 1.08))
 	rec.Samples = []model.TargetSamples{{Target: target(), StackTraces: []model.StackTrace{
-		{Timestamp: 1.01, StackFrames: []model.StackFrame{render, syncRoot, app}},
+		{Timestamp: 1.01, StackFrames: []model.StackFrame{render, renderRoot, syncRoot, app}},
 		{Timestamp: 1.04, StackFrames: []model.StackFrame{commit, syncRoot, app}},
 		{Timestamp: 2, StackFrames: []model.StackFrame{commit, syncRoot, app}},
 	}, Durations: []float64{.020, .015, .050}}}
 	return rec
 }
 
-// Periodic has five timer firings with three samples per firing. Sampling count
+// Periodic has six timer firings with three samples per firing. Sampling count
 // must not inflate the measured timer-fire count used for cadence evidence.
 func Periodic() *model.Recording {
 	rec := Empty()
@@ -136,7 +139,7 @@ func Periodic() *model.Recording {
 	root := model.StackFrame{Name: "pollStatus", URL: "https://app.test/src/poll.js", Line: 10, Column: 1}
 	leaf := model.StackFrame{Name: "refreshCache", URL: root.URL, Line: 20, Column: 1}
 	samples := model.TargetSamples{Target: target()}
-	for i := 1; i <= 5; i++ {
+	for i := 1; i <= 6; i++ {
 		start := float64(i)
 		r := scriptRecord("timer-fired", start, start+.006)
 		r.Details = json.RawMessage(`{"timerId":7}`)

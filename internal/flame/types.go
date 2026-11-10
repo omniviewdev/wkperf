@@ -9,10 +9,12 @@ import "github.com/omniviewdev/wkperf/internal/model"
 type Category string
 
 const (
-	CategoryApp       Category = "app"
-	CategoryFramework Category = "framework"
-	CategoryNative    Category = "native"
-	CategoryGC        Category = "gc"
+	CategoryApp            Category = "app"
+	CategoryFramework      Category = "framework"
+	CategoryNative         Category = "native"
+	CategoryGC             Category = "gc"
+	CategoryUnknownBundled Category = "unknown-bundled"
+	CategoryInjected       Category = "injected"
 )
 
 // Location is an original source location supplied by a source-map resolver.
@@ -43,6 +45,14 @@ type Frame struct {
 // mutate the input recording. Returning nil means no original location exists.
 type FrameMapper func(model.StackFrame) *Location
 
+// OwnershipRules supplies explicit URL globs for generated and mapped sources.
+// A matching library rule takes precedence over every app rule. Native, GC,
+// and injected frames retain their categories regardless of URL rules.
+type OwnershipRules struct {
+	AppURLs     []string `json:"appURLs,omitempty"`
+	LibraryURLs []string `json:"libraryURLs,omitempty"`
+}
+
 // Options supplies source-map metadata and recording-relative window bounds.
 // Nil Intervals leaves active time unrestricted; a nonnil empty slice selects
 // no time. Timestamp membership uses half-open intervals and preserves each
@@ -54,6 +64,7 @@ type Options struct {
 	From      *float64
 	To        *float64
 	Intervals []Interval
+	Ownership OwnershipRules
 }
 
 // Node is one calling context. Recursive appearances have distinct path IDs.
@@ -104,16 +115,17 @@ type UntimedSpan struct {
 // Root is a synthetic frame, never included in function/edge/path aggregates.
 // StartTime and EndTime describe the selected recording-relative wall window.
 type Tree struct {
-	Root             *Node         `json:"root"`
-	Samples          []Sample      `json:"samples"`
-	Untimed          []Sample      `json:"untimed"`
-	UntimedTotal     SampleTotal   `json:"untimedTotal"`
-	UntimedIncluded  bool          `json:"untimedIncluded"`
-	UntimedSpans     []UntimedSpan `json:"untimed_spans,omitempty"`
-	StartTime        float64       `json:"startTime"`
-	EndTime          float64       `json:"endTime"`
-	ActiveDurationMs float64       `json:"activeDurationMs"`
-	Discontinuities  []Interval    `json:"discontinuities,omitempty"`
+	Root             *Node          `json:"root"`
+	Samples          []Sample       `json:"samples"`
+	Untimed          []Sample       `json:"untimed"`
+	UntimedTotal     SampleTotal    `json:"untimedTotal"`
+	UntimedIncluded  bool           `json:"untimedIncluded"`
+	UntimedSpans     []UntimedSpan  `json:"untimed_spans,omitempty"`
+	StartTime        float64        `json:"startTime"`
+	EndTime          float64        `json:"endTime"`
+	ActiveDurationMs float64        `json:"activeDurationMs"`
+	Discontinuities  []Interval     `json:"discontinuities,omitempty"`
+	Ownership        OwnershipRules `json:"ownership"`
 	active           []Interval
 	inverted         bool
 	functions        []Function

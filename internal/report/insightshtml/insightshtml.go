@@ -74,6 +74,7 @@ type findingView struct {
 	insights.Finding
 	Impact    string
 	StackHTML template.HTML
+	Facets    []string
 }
 
 type pageView struct {
@@ -150,7 +151,7 @@ func buildView(r *insights.Report, prefix string) (reportView, error) {
 			}
 			fmt.Fprintf(&stacks, "<p><a href=\"#stack-%s\">%s</a></p>", template.HTMLEscapeString(prefix+id), template.HTMLEscapeString(label))
 		}
-		v.Findings = append(v.Findings, findingView{Finding: f, Impact: fmt.Sprintf("%.1f ms (%.1f%%)", f.ImpactMs, f.ImpactPct), StackHTML: template.HTML(stacks.String())})
+		v.Findings = append(v.Findings, findingView{Finding: f, Impact: fmt.Sprintf("%.1f ms (%.1f%%)", f.ImpactMs, f.ImpactPct), StackHTML: template.HTML(stacks.String()), Facets: insights.FacetLabels(f.NativeReads, f.Depth, f.RelatedFindings)})
 	}
 	return v, nil
 }
@@ -303,6 +304,7 @@ var pageTmpl = template.Must(template.New("page").Funcs(template.FuncMap{
 <h3><span class="badge sev-{{.Severity}}">{{.Severity}}</span>{{.Title}}</h3>
 <div class="mut">{{.Category}} &middot; impact {{.Impact}} &middot; <code>{{.ID}}</code></div>
 {{if .Evidence}}<ul>{{range .Evidence}}<li>{{.}}</li>{{end}}</ul>{{end}}
+{{range .Facets}}<p>{{.}}</p>{{end}}
 {{if .MetricKeys}}<div><b>Metric keys:</b> {{range .MetricKeys}}<code>{{.}}</code> {{end}}</div>{{end}}
 {{if .NumericEvidence}}<table><tr><th>Numeric evidence</th><th class="n">Value</th><th>Basis / description</th><th>Reproduce</th></tr>{{range .NumericEvidence}}<tr><td><code>{{.MetricKey}}</code></td><td class="n">{{printf "%.3f" .Value}} {{.Unit}}</td><td>{{.Basis}} · {{.Description}}</td><td><code>{{.Command}}</code></td></tr>{{end}}</table>{{end}}
 {{if .Confidence}}<div><b>Confidence:</b> {{.Confidence}}{{range .ConfidenceReasons}} · {{.}}{{end}}</div>{{end}}
@@ -340,8 +342,8 @@ var pageTmpl = template.Must(template.New("page").Funcs(template.FuncMap{
 <div class="card"><p class="mut">Sample overlap links code to trigger windows; overlap alone does not prove causation.</p>
 {{range .R.Triggers}}{{$trigger := .}}<h4>{{.Kind}}: {{.Name}}</h4>{{if .SampleMessage}}<p class="mut">{{.SampleMessage}}</p>{{end}}
 <table><tr><th>Ranking</th><th>Function</th><th>Generated → original location</th><th class="n">Sampled ms</th></tr>
-{{range .TopSelf}}<tr><td>Self</td><td><code>{{name .Name}}</code></td><td>{{.Location}}</td><td class="n">{{printf "%.3f" .SelfMs}}<div><code>{{triggerFunctionCommand $r $trigger . "self_ms"}}</code></div></td></tr>{{end}}
-{{range .TopInclusive}}<tr><td>Inclusive</td><td><code>{{name .Name}}</code></td><td>{{.Location}}</td><td class="n">{{printf "%.3f" .TotalMs}}<div><code>{{triggerFunctionCommand $r $trigger . "total_ms"}}</code></div></td></tr>{{end}}
+{{range .TopSelf}}<tr><td>Self</td><td><code>{{name .Name}}</code></td><td>{{.Location}} · {{.SelfSamples}} self samples</td><td class="n">{{printf "%.3f" .SelfMs}}<div><code>{{triggerFunctionCommand $r $trigger . "self_ms"}}</code></div></td></tr>{{end}}
+{{range .TopInclusive}}<tr><td>Inclusive</td><td><code>{{name .Name}}</code></td><td>{{.Location}} · {{.SelfSamples}} self samples</td><td class="n">{{printf "%.3f" .TotalMs}}<div><code>{{triggerFunctionCommand $r $trigger . "total_ms"}}</code></div></td></tr>{{end}}
 </table>{{else}}<span class="mut">No trigger attribution data.</span>{{end}}</div>
 <p class="mut">Wakeups: {{.R.Wakeups.Count}} callbacks <code>{{numeric $r "wakeups.count"}}</code>; {{printf "%.3f" .R.Wakeups.PerSecond}} per second <code>{{numeric $r "wakeups.per_second"}}</code>. {{.R.SampleCoverage.Interpretation}}</p>
 {{with .R.SampleCoverage}}{{if .UntimedSampleCount}}<p class="mut">Untimed samples: {{.UntimedSampleCount}} ({{printf "%.1f" .UntimedMs}} ms): {{if .UntimedExcluded}}excluded from this window{{else}}included in rankings, excluded from frame, task, trigger, window and periodic attribution{{end}}.</p>{{end}}{{end}}
@@ -375,6 +377,7 @@ var pageTmpl = template.Must(template.New("page").Funcs(template.FuncMap{
 {{define "edges"}}
 {{$report := .Report}}{{$function := .Function}}
 {{if .Function.ID}}<div class="mut">ID <code>{{.Function.ID}}</code></div>{{end}}
+<div class="mut">{{.Function.SelfSamples}} self samples</div>
 {{if .StackRef}}<p>Common stack: <a href="#stack-{{.StackRef}}">{{.StackLabel}}</a></p>{{end}}
 {{if .Callers}}<details><summary>Callers</summary><ul>{{range .Callers}}<li><code>{{name .Function.Name}} @ {{.Function.Location}}</code> — {{printf "%.3f" .WeightMs}} ms <code>{{edgeCommand $report $function . "callers" "weight_ms"}}</code>, {{.Samples}} samples <code>{{edgeCommand $report $function . "callers" "samples"}}</code></li>{{end}}</ul></details>{{end}}
 {{if .Callees}}<details><summary>Callees</summary><ul>{{range .Callees}}<li><code>{{name .Function.Name}} @ {{.Function.Location}}</code> — {{printf "%.3f" .WeightMs}} ms <code>{{edgeCommand $report $function . "callees" "weight_ms"}}</code>, {{.Samples}} samples <code>{{edgeCommand $report $function . "callees" "samples"}}</code></li>{{end}}</ul></details>{{end}}

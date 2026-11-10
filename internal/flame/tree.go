@@ -12,12 +12,14 @@ import (
 
 // Build reverses WebKit's leaf-first stacks without mutating the recording.
 func Build(rec *model.Recording, opts ...Options) *Tree {
-	if rec == nil {
-		return assemble(&Tree{})
-	}
 	var options Options
 	if len(opts) != 0 {
 		options = opts[len(opts)-1]
+	}
+	classifier := NewClassifier(options.Ownership)
+	ownership := OwnershipRules{AppURLs: slices.Clone(options.Ownership.AppURLs), LibraryURLs: slices.Clone(options.Ownership.LibraryURLs)}
+	if rec == nil {
+		return assemble(&Tree{Ownership: ownership})
 	}
 	origin := rec.StartTime
 	if !finite(origin) {
@@ -46,7 +48,7 @@ func Build(rec *model.Recording, opts ...Options) *Tree {
 			for j, raw := range trace.StackFrames {
 				frame, ok := normalized[raw]
 				if !ok {
-					frame = fromModel(raw, options.Mapper)
+					frame = fromModel(raw, options.Mapper, classifier)
 					normalized[raw] = frame
 				}
 				frames[len(frames)-1-j] = frame
@@ -86,7 +88,7 @@ func Build(rec *model.Recording, opts ...Options) *Tree {
 	for _, sample := range untimed {
 		untimedMs.add(sample.WeightMs)
 	}
-	tree := &Tree{UntimedTotal: SampleTotal{Count: len(untimed), Ms: untimedMs.total()}, UntimedSpans: inferUntimedSpans(rec, origin), recordingEnd: end}
+	tree := &Tree{Ownership: ownership, UntimedTotal: SampleTotal{Count: len(untimed), Ms: untimedMs.total()}, UntimedSpans: inferUntimedSpans(rec, origin), recordingEnd: end}
 	from, to := 0.0, end
 	if options.From != nil {
 		from = *options.From

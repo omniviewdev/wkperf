@@ -52,7 +52,7 @@ func TestWeightedQueryGoldens(t *testing.T) {
 		{"hot-path", "", `[{"name":"event","ms":100,"percent":100,"samples":4},{"name":"render","ms":80,"percent":80,"samples":3},{"name":"leaf","ms":40,"percent":40,"samples":1}]`},
 	} {
 		t.Run(tt.op, func(t *testing.T) {
-			result := run(t, engine, Request{Operation: tt.op, Selector: tt.selector})
+			result := run(t, engine, Request{Operation: tt.op, Selector: tt.selector, MinSamplesSet: true, TieRatioSet: true})
 			var rows []map[string]any
 			for _, row := range result.Rows {
 				if tt.op == "paths" {

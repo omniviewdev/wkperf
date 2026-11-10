@@ -1,8 +1,10 @@
 package rootcause
 
 import (
+	"fmt"
 	"math"
 	"sort"
+	"strings"
 
 	"github.com/omniviewdev/wkperf/internal/flame"
 )
@@ -71,7 +73,7 @@ func (b builder) depth() DepthStats {
 		d.Outliers = append(d.Outliers, DepthOutlier{Depth: len(stack.Frames), RepeatedFrameDepth: repeat, CommitDepth: commit, Stack: stack, Command: stack.Command, Stats: []Stat{
 			b.stat(key+".depth", "Outlier stack depth", float64(len(stack.Frames)), "frames", sampledBasis),
 			b.stat(key+".repeated_frame_depth", "Repeated identical frame appearances", float64(repeat), "frames", sampledBasis),
-			b.stat(key+".commit_depth", "Commit self-frame ancestors", float64(commit), "frames", sampledBasis),
+			b.stat(key+".commit_depth", "Commit-frame appearances on the stack", float64(commit), "frames", sampledBasis),
 		}})
 	}
 	sort.Slice(d.Outliers, func(i, j int) bool {
@@ -96,33 +98,115 @@ func (b builder) depth() DepthStats {
 	return d
 }
 
+func repeatedFrame(frames []flame.Frame) *RepeatedFrame {
+	counts := make(map[string]int, len(frames))
+	var best RepeatedFrame
+	for _, f := range frames {
+		key := flame.FunctionID(f)
+		counts[key]++
+		if best.Count == 0 || counts[key] > best.Count || counts[key] == best.Count && frameLess(f, best.Frame) {
+			best = RepeatedFrame{Frame: f, Count: counts[key]}
+		}
+	}
+	if best.Count == 0 {
+		return nil
+	}
+	return &best
+}
+
+func recursionFrame(frames []flame.Frame) *RepeatedFrame {
+	var prior, previous flame.Frame
+	run, pairRun, seen := 0, 0, 0
+	var best RepeatedFrame
+	for _, f := range frames {
+		if !contextFrame(f) {
+			continue
+		}
+		if seen > 0 && flame.FunctionID(f) == flame.FunctionID(previous) {
+			run++
+		} else {
+			run = 1
+		}
+		if seen >= 2 && flame.FunctionID(f) == flame.FunctionID(prior) {
+			pairRun++
+		} else {
+			pairRun = min(seen+1, 2)
+		}
+		count := max(run, (pairRun+1)/2)
+		if count >= 32 && (best.Count == 0 || count > best.Count || count == best.Count && frameLess(f, best.Frame)) {
+			best = RepeatedFrame{Frame: f, Count: count}
+		}
+		prior, previous = previous, f
+		seen++
+	}
+	if best.Count == 0 {
+		return nil
+	}
+	return &best
+}
+
+func reactFiberLevels(frames []flame.Frame) int {
+	counts := map[string]int{}
+	maximum := 0
+	for _, f := range frames {
+		if f.Category != flame.CategoryFramework {
+			continue
+		}
+		for _, name := range frameNames(f) {
+			if strings.HasSuffix(name, "OnFiber") || strings.HasPrefix(name, "recursivelyTraverse") {
+				key := flame.FunctionID(f)
+				counts[key]++
+				maximum = max(maximum, counts[key])
+				break
+			}
+		}
+	}
+	return maximum
+}
+
 func (b builder) depthFindings(d DepthStats) []Finding {
-	var recursion, commit, all []Stack
+	if len(d.Outliers) == 0 {
+		return nil
+	}
+	facets := &DepthFacets{}
+	stacks := make([]Stack, 0, len(d.Outliers))
+	var ms float64
 	for _, o := range d.Outliers {
-		all = append(all, o.Stack)
-		if o.RepeatedFrameDepth >= 32 {
-			recursion = append(recursion, o.Stack)
+		stacks = append(stacks, o.Stack)
+		ms += o.Stack.SelfMs
+		facets.MaxDepth = max(facets.MaxDepth, o.Depth)
+		facets.CommitFrames = max(facets.CommitFrames, o.CommitDepth)
+		facets.ReactFiberLevels = max(facets.ReactFiberLevels, reactFiberLevels(o.Stack.Frames))
+		if repeated := repeatedFrame(o.Stack.Frames); repeated != nil && (facets.RepeatedFrame == nil || repeated.Count > facets.RepeatedFrame.Count || repeated.Count == facets.RepeatedFrame.Count && frameLess(repeated.Frame, facets.RepeatedFrame.Frame)) {
+			facets.RepeatedFrame = repeated
 		}
-		if o.CommitDepth >= 32 {
-			commit = append(commit, o.Stack)
+		if recursion := recursionFrame(o.Stack.Frames); recursion != nil && (facets.Recursion == nil || recursion.Count > facets.Recursion.Count || recursion.Count == facets.Recursion.Count && frameLess(recursion.Frame, facets.Recursion.Frame)) {
+			facets.Recursion = recursion
 		}
 	}
-	var findings []Finding
-	add := func(id, title, explanation string, stacks []Stack) {
-		if len(stacks) == 0 {
-			return
-		}
-		var ms float64
-		for _, s := range stacks {
-			ms += s.SelfMs
-		}
-		findings = append(findings, Finding{ID: id, Title: title, Severity: "medium", Explanation: explanation, Stats: []Stat{
-			b.stat(id+".self_ms", "Depth outlier stack self time", ms, "ms", sampledBasis),
-			b.stat(id+".stacks", "Distinct matching outlier stacks", float64(len(stacks)), "count", sampledBasis),
-		}, Evidence: stacks, Command: b.query("depth", b.from, b.to)})
+	title := "Unusually deep sampled stacks"
+	explanation := "Stack depths exceed a robust distribution-based threshold. Repeated frame appearances and commit-frame counts are facets of this one observation; sampled self cost does not establish that depth caused the work."
+	recursionCount := 0
+	if facets.Recursion != nil {
+		recursionCount = facets.Recursion.Count
+		title = "Deep sampled stacks with possible non-framework recursion"
+		explanation += " A non-framework function repeats at least 32 times consecutively or in a cycle of at most two functions, after excluding framework frames. This supports possible recursion, not unbounded execution."
+	} else if facets.ReactFiberLevels > 0 && facets.CommitFrames >= 32 {
+		title = fmt.Sprintf("Deep React fiber tree (~%d levels; commit traversal depth %d)", facets.ReactFiberLevels, facets.CommitFrames)
+		explanation += " Known React commit traversal follows fiber-tree depth by design; the scheduling component need not appear on the captured stack."
 	}
-	add("deep-stack", "Unusually deep sampled stacks", "Stack depths exceed a robust distribution-based threshold. Deep stacks alone do not prove recursion or runaway work.", all)
-	add("deep-recursion", "Possible runaway recursion in depth outliers", "An unusually deep full stack repeats an identical generated function at least 32 times. This is a sampled recursion warning, not proof of unbounded execution.", recursion)
-	add("deep-commit", "Unusually deep React commit traversal", "An unusually deep full stack contains at least 32 distinct commit-frame appearances. Repeated traversal depth is evidence of a deep commit, not proof of an infinite render loop.", commit)
-	return findings
+	sampleIDs := SampleIDs(b.tree, func(s flame.Sample) bool { return float64(len(s.Frames)) > d.OutlierThreshold })
+	repeatedCount := 0
+	if facets.RepeatedFrame != nil {
+		repeatedCount = facets.RepeatedFrame.Count
+	}
+	return []Finding{{ID: "deep-stack", Title: title, Explanation: explanation, Depth: facets, SampleIDs: sampleIDs, Stats: []Stat{
+		b.stat("deep-stack.self_ms", "Depth outlier stack self time", ms, "ms", sampledBasis),
+		b.stat("deep-stack.stacks", "Distinct matching outlier stacks", float64(len(stacks)), "count", sampledBasis),
+		b.stat("deep-stack.max_depth", "Maximum outlier stack depth", float64(facets.MaxDepth), "frames", sampledBasis),
+		b.stat("deep-stack.repeated_frame_count", "Maximum appearances of one exact generated frame", float64(repeatedCount), "frames", sampledBasis),
+		b.stat("deep-stack.commit_frames", "Maximum commit-frame appearances", float64(facets.CommitFrames), "frames", sampledBasis),
+		b.stat("deep-stack.react_fiber_levels", "Maximum repeated React traversal-frame count", float64(facets.ReactFiberLevels), "levels", sampledBasis),
+		b.stat("deep-stack.recursion_count", "Non-framework short-cycle repetition count", float64(recursionCount), "frames", sampledBasis),
+	}, Evidence: stacks, Command: b.query("depth", b.from, b.to)}}
 }

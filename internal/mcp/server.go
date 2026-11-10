@@ -22,6 +22,7 @@ const (
 type Server struct {
 	Engine  *query.Engine
 	Version string
+	Sources query.SourceOptions
 }
 
 type request struct {
@@ -185,8 +186,10 @@ func (s *Server) Serve(ctx context.Context, input io.Reader, output io.Writer) e
 			var queryRequest query.Request
 			arguments := struct {
 				*query.Request
-				MinShare *float64 `json:"min_share"`
-				Depth    *int     `json:"depth"`
+				MinShare   *float64 `json:"min_share"`
+				Depth      *int     `json:"depth"`
+				MinSamples *int     `json:"min_samples"`
+				TieRatio   *float64 `json:"tie_ratio"`
 			}{Request: &queryRequest}
 			decoder := json.NewDecoder(bytes.NewReader(params.Arguments))
 			decoder.DisallowUnknownFields()
@@ -203,6 +206,21 @@ func (s *Server) Serve(ctx context.Context, input io.Reader, output io.Writer) e
 			}
 			if arguments.Depth != nil {
 				queryRequest.Depth, queryRequest.DepthSet = *arguments.Depth, true
+			}
+			if arguments.MinSamples != nil {
+				queryRequest.MinSamples, queryRequest.MinSamplesSet = *arguments.MinSamples, true
+			}
+			if arguments.TieRatio != nil {
+				queryRequest.TieRatio, queryRequest.TieRatioSet = *arguments.TieRatio, true
+			}
+			if queryRequest.Sourcemaps == nil {
+				queryRequest.Sourcemaps = s.Sources.Sourcemaps
+			}
+			if queryRequest.AppURLs == nil {
+				queryRequest.AppURLs = s.Sources.Ownership.AppURLs
+			}
+			if queryRequest.LibraryURLs == nil {
+				queryRequest.LibraryURLs = s.Sources.Ownership.LibraryURLs
 			}
 			queryRequest.Operation = params.Name
 			queryResult, err := engine.Run(ctx, queryRequest)

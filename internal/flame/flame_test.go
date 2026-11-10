@@ -107,8 +107,8 @@ func TestWeightedTreeGolden(t *testing.T) {
 		t.Fatalf("callees: %+v", callees)
 	}
 	near(t, callees[0].TotalMs, 2)
-	if NearestAppAncestor(render) != work {
-		t.Fatal("nearest app ancestor must exclude the frame itself")
+	if NearestNonFrameworkAncestor(render) != work {
+		t.Fatal("nearest non-framework ancestor must exclude the frame itself")
 	}
 	encoded, err := json.Marshal(tree)
 	if err != nil || strings.Contains(string(encoded), "\"parent\"") {
@@ -321,14 +321,14 @@ func TestDiffGolden(t *testing.T) {
 }
 
 func TestCategoryAndHotPathTie(t *testing.T) {
-	for _, name := range []string{"performSyncWorkOnRoot", "performWorkOnRoot", "renderRootSync", "workLoopSync", "performUnitOfWork", "renderWithHooks", "flushSync", "flushSyncFromReconciler", "flushSyncWorkAcrossRoots", "processRootScheduleInMicrotask", "commitOnFiberMutationEffects", "recursivelyTraversePassiveMountEffects", "performWorkUntilDeadline"} {
-		for _, url := range []string{"assets/vendor-bundle.js", "assets/app.js", ""} {
+	for _, name := range []string{"performSyncWorkOnRoot", "performWorkOnRoot", "renderRootSync", "workLoopSync", "performUnitOfWork", "renderWithHooks", "flushSyncWorkAcrossRoots_impl", "processRootScheduleInMicrotask", "commitOnFiberMutationEffects", "recursivelyTraversePassiveMountEffects", "performWorkUntilDeadline"} {
+		for _, url := range []string{"assets/vendor-bundle.js", "assets/app.js"} {
 			if got := Categorize(Frame{Name: name, URL: url}); got != CategoryFramework {
 				t.Errorf("%s at %q: %s", name, url, got)
 			}
 		}
 	}
-	for _, path := range []string{"/node_modules/x/index.js", "/vendor/react.js", "/plugins/aws/plugin.js", "/assets/plugin-foo.js", "plugin-foo/index.js", "plugin.js"} {
+	for _, path := range []string{"/node_modules/x/index.js", "/vendor/react.js"} {
 		if got := Categorize(Frame{Name: "run", URL: path}); got != CategoryFramework {
 			t.Errorf("%s: %s", path, got)
 		}

@@ -44,6 +44,10 @@ func newQueryCmd() *cobra.Command {
 			req.MinMS, _ = cmd.Flags().GetFloat64("min-ms")
 			req.MinShare, _ = cmd.Flags().GetFloat64("min-share")
 			req.DepthSet, req.MinShareSet = cmd.Flags().Changed("depth"), cmd.Flags().Changed("min-share")
+			req.MinSamples, _ = cmd.Flags().GetInt("min-samples")
+			req.MinSamplesSet = cmd.Flags().Changed("min-samples")
+			req.TieRatio, _ = cmd.Flags().GetFloat64("tie-ratio")
+			req.TieRatioSet = cmd.Flags().Changed("tie-ratio")
 			req.LongTaskMS, _ = cmd.Flags().GetFloat64("long-task-ms")
 			req.JankMS, _ = cmd.Flags().GetFloat64("jank-ms")
 			window := windowOpts()
@@ -56,6 +60,8 @@ func newQueryCmd() *cobra.Command {
 				}
 			}
 			req.Sourcemaps = viper.GetStringSlice("sourcemap")
+			rules := ownershipRules()
+			req.AppURLs, req.LibraryURLs = rules.AppURLs, rules.LibraryURLs
 			engine := &query.Engine{Loader: func(ctx context.Context, file string, _ query.SourceOptions) (*model.Recording, error) {
 				if err := ctx.Err(); err != nil {
 					return nil, err
@@ -81,10 +87,12 @@ func newQueryCmd() *cobra.Command {
 	c.Flags().Int("top", 10, "root-cause detail size, separate from row limit (0 uses 10)")
 	c.Flags().String("by", "self", "rank or diff by self|total milliseconds")
 	c.Flags().String("module", "", "top/diff module URL substring filter")
-	c.Flags().String("category", "", "top/diff owner filter: app|framework|native|gc")
+	c.Flags().String("category", "", "top/diff owner filter: app|framework|native|gc|unknown-bundled|injected")
 	c.Flags().Int("depth", 8, "maximum subtree depth (0 returns only selected contexts)")
 	c.Flags().Float64("min-ms", 0, "minimum subtree inclusive milliseconds")
 	c.Flags().Float64("min-share", .05, "minimum hot-path fraction of sampled time")
+	c.Flags().Int("min-samples", 5, "minimum supported hot-path node samples (0 disables support gate)")
+	c.Flags().Float64("tie-ratio", .8, "stop before competing hot-path branches at this second/best ratio (0 disables)")
 	c.Flags().Float64("long-task-ms", 50, "maximal script-task threshold for derived evidence (fixed scorecard standards remain 50 ms)")
 	c.Flags().Float64("jank-ms", 16.7, "slow active-frame/finding threshold for derived evidence (fixed frame standards remain 16.7 ms)")
 	addWindowFlags(c)

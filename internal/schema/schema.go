@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/omniviewdev/wkperf/internal/audit"
 	"github.com/omniviewdev/wkperf/internal/insights"
 	"github.com/omniviewdev/wkperf/internal/query"
 	flamereport "github.com/omniviewdev/wkperf/internal/report/flame"
@@ -84,10 +85,13 @@ func Document() map[string]any {
 			"stackId": "Canonical exact common-stack selector in this report's stacks table.",
 		},
 		"insights_WirePath": {
-			"frames": "Zero-based frame catalog indices for the complete hot-path prefix, in root-to-leaf order.",
+			"frames":     "Zero-based frame catalog indices for the complete hot-path prefix, in root-to-leaf order.",
+			"nodes":      "Per-prefix inclusive/self sampled weight, share and sample support, with interned frame references. Report and query use the same supported, tie-aware path.",
+			"branches":   "Selected competing children at the stopping point. branchesTotal counts every alternative before the shared evidence cap.",
+			"stopReason": "Reason descent stopped: no-samples, min-share, sample-support, near-tie, or leaf.",
 		},
 		"insights_WireAttribution": {
-			"app": "Zero-based frame catalog index of the nearest application ancestor.",
+			"frame": "Zero-based frame catalog index of the nearest non-framework context. Its category may be unknown-bundled or injected; this is not an application-ownership claim.",
 		},
 		"insights_WirePeriodic": {
 			"root":         "Zero-based frame catalog index of the periodic sampled root.",
@@ -96,9 +100,26 @@ func Document() map[string]any {
 		"insights_WireRootFinding": {
 			"stackIds": "Selected exact evidence selectors in this report's stacks table; evidenceTotal retains the complete count.",
 		},
+		"insights_WirePathNode": {
+			"metricKey": "Inclusive value key for query rootcause using this report's source/window/maps/ownership context. Complete per-prefix stats remain queryable; commands are not repeated for every node.",
+			"frame":     "Zero-based frame catalog index for this exact calling-context prefix.",
+		},
+		"insights_WireRepeatedFrame": {
+			"frame": "Zero-based frame catalog index of the repeated generated function; identity remains unchanged by ownership rules.",
+		},
+		"rootcause_NativeRead": {
+			"flush":    "Per-API style or layout flush hypothesis, not proof of a forced flush.",
+			"samples":  "Timed API sample count available for timeline corroboration.",
+			"styleMs":  "Union duration of recalculate-styles records covering these samples, not sampler self weight.",
+			"layoutMs": "Union duration of layout records covering these samples, not sampler self weight.",
+		},
 		"audit_Priority": {
 			"evidenceSceneIndex": "Zero-based index into audit scenes. Stack selectors resolve in that scene's analysis.stacks table.",
 			"stackIds":           "Selected exact evidence selectors scoped by evidenceSceneIndex; stacksTotal retains the complete count.",
+			"depth":              "Consolidated depth facets from evidenceSceneIndex. Repeated functions refer by stable ID to that scene's analysis.frames catalog.",
+		},
+		"audit_WireRepeatedFrame": {
+			"id": "Stable generated function ID scoped by the priority's evidenceSceneIndex; no frame object is repeated.",
 		},
 		"audit_HotFunction": {
 			"evidenceSceneIndex": "Zero-based index into audit scenes. Function identity and exact stack resolve in that scene's analysis catalogs.",
@@ -124,8 +145,11 @@ func Document() map[string]any {
 			"sampleStatus": "Limits on sampled attribution. Unknown-clock samples never imply time-based causality.",
 		},
 		"insights_WireRootReport": {
-			"inputStalls":      "Selected input-stall windows, kept separately from work-bound slow frames and ranked worst-work windows.",
-			"inputStallsTotal": "Complete input-stall window count before the shared evidence limit.",
+			"inputStalls":        "Selected input-stall windows, kept separately from work-bound slow frames and ranked worst-work windows.",
+			"inputStallsTotal":   "Complete input-stall window count before the shared evidence limit.",
+			"contextAttribution": "Selected nearest non-framework contexts. Categories distinguish configured or source-resolved app ownership from unknown bundled or injected code.",
+			"contextUnavailable": "Framework/native sampled cost with no captured non-framework context; no scheduling component is inferred.",
+			"ownership":          "Effective appURLs/libraryURLs whole-URL globs. Library rules win overlap; commands preserve these settings.",
 		},
 		"scorecard_Scorecard": {
 			"coverage": "Available standard weight divided by total weight. Aggregates retain the mean coverage of their child runs or scenes.",
@@ -329,6 +353,9 @@ func serializationFields(t reflect.Type) map[string]reflect.StructField {
 	collect = func(t reflect.Type, depth int) {
 		if t == reflect.TypeOf(insights.Report{}) {
 			t = reflect.TypeOf(insights.WireReport{})
+		}
+		if t == reflect.TypeOf(audit.Priority{}) {
+			t = reflect.TypeOf(audit.WirePriority{})
 		}
 		for i := range t.NumField() {
 			field := t.Field(i)

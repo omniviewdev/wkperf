@@ -69,10 +69,20 @@ func Render(w io.Writer, result *Result, format string) error {
 				return err
 			}
 		}
+		if result.HotPathStopReason != "" {
+			if _, err := fmt.Fprintf(w, "\nHot path stop: %s. Competing branches: %d of %d shown.\n", result.HotPathStopReason, len(result.HotPathBranches), result.HotPathBranchesTotal); err != nil {
+				return err
+			}
+			for _, branch := range result.HotPathBranches {
+				if _, err := fmt.Fprintf(w, "- %s @ %s: %s ms inclusive (%s%%), %d samples.\n", functionName(branch.Function), location(branch.Function), number(branch.TotalMS), number(branch.Percent), branch.Samples); err != nil {
+					return err
+				}
+			}
+		}
 		if len(result.DeepestStack) > 0 {
 			names := make([]string, len(result.DeepestStack))
 			for i, f := range result.DeepestStack {
-				names[i] = f.Name
+				names[i] = functionName(f)
 			}
 			if _, err := fmt.Fprintf(w, "\nDeepest stack: %s\n", strings.Join(names, " → ")); err != nil {
 				return err
@@ -107,10 +117,20 @@ func Render(w io.Writer, result *Result, format string) error {
 			return err
 		}
 	}
+	if result.HotPathStopReason != "" {
+		if err := writer.Write([]string{"# hot_path_stop", result.HotPathStopReason, "branches_shown", strconv.Itoa(len(result.HotPathBranches)), "branches_total", strconv.Itoa(result.HotPathBranchesTotal)}); err != nil {
+			return err
+		}
+		for _, branch := range result.HotPathBranches {
+			if err := writer.Write([]string{"# branch", branch.ID, functionName(branch.Function), location(branch.Function), number(branch.TotalMS), number(branch.Percent), strconv.Itoa(branch.Samples)}); err != nil {
+				return err
+			}
+		}
+	}
 	if len(result.DeepestStack) > 0 {
 		record := []string{"# deepest_stack"}
 		for _, f := range result.DeepestStack {
-			record = append(record, f.ID+" "+f.Name)
+			record = append(record, f.ID+" "+functionName(f))
 		}
 		if err := writer.Write(record); err != nil {
 			return err
@@ -124,7 +144,7 @@ func table(result *Result) ([]string, [][]string) {
 	rows := [][]string{}
 	if result.Status == "ambiguous" {
 		for _, f := range result.Candidates {
-			rows = append(rows, []string{f.ID, f.Name, location(f), f.Category})
+			rows = append(rows, []string{f.ID, functionName(f), location(f), f.Category})
 		}
 		return []string{"id", "name", "source", "category"}, rows
 	}
@@ -142,16 +162,16 @@ func table(result *Result) ([]string, [][]string) {
 	}
 	if result.Operation == "diff" {
 		for _, row := range result.Rows {
-			rows = append(rows, []string{row.ID, row.Name, location(row.Function), number(row.BaselineSelfMS), number(row.CandidateSelfMS), number(row.DeltaSelfMS), number(row.BaselineTotalMS), number(row.CandidateTotalMS), number(row.DeltaTotalMS), strconv.Itoa(row.Samples)})
+			rows = append(rows, []string{row.ID, functionName(row.Function), location(row.Function), number(row.BaselineSelfMS), number(row.CandidateSelfMS), number(row.DeltaSelfMS), number(row.BaselineTotalMS), number(row.CandidateTotalMS), number(row.DeltaTotalMS), strconv.Itoa(row.Samples)})
 		}
 		return []string{"id", "name", "source", "baseline_self_ms", "candidate_self_ms", "delta_self_ms", "baseline_total_ms", "candidate_total_ms", "delta_total_ms", "delta_samples"}, rows
 	}
 	for _, row := range result.Rows {
 		names := make([]string, len(row.Stack))
 		for i, f := range row.Stack {
-			names[i] = f.Name + "@" + location(f)
+			names[i] = functionName(f) + "@" + location(f)
 		}
-		rows = append(rows, []string{row.ID, row.NodeID, row.Name, location(row.Function), number(row.SelfMS), number(row.TotalMS), number(row.Percent), strconv.Itoa(row.Samples), strconv.Itoa(row.Depth), strings.Join(names, " → ")})
+		rows = append(rows, []string{row.ID, row.NodeID, functionName(row.Function), location(row.Function), number(row.SelfMS), number(row.TotalMS), number(row.Percent), strconv.Itoa(row.Samples), strconv.Itoa(row.Depth), strings.Join(names, " → ")})
 	}
 	return []string{"id", "node_id", "name", "source", "self_ms", "total_ms", "percent", "samples", "depth", "stack"}, rows
 }
@@ -168,7 +188,7 @@ func number(value float64) string { return strconv.FormatFloat(value, 'g', -1, 6
 func costLabels(costs []FunctionCost) string {
 	labels := make([]string, len(costs))
 	for i, cost := range costs {
-		labels[i] = cost.Name + "@" + location(cost.Function) + " (self=" + number(cost.SelfMS) + "ms, total=" + number(cost.TotalMS) + "ms)"
+		labels[i] = functionName(cost.Function) + "@" + location(cost.Function) + " (self=" + number(cost.SelfMS) + "ms, total=" + number(cost.TotalMS) + "ms, samples=" + strconv.Itoa(cost.SelfSamples) + ", category=" + cost.Category + ")"
 	}
 	return strings.Join(labels, "; ")
 }
@@ -184,4 +204,11 @@ func CommandString(args []string) string {
 		}
 	}
 	return strings.Join(quoted, " ")
+}
+
+func functionName(f Function) string {
+	if f.Name == "" {
+		return "(anonymous)"
+	}
+	return f.Name
 }

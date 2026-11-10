@@ -3,9 +3,11 @@ package insights
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/omniviewdev/wkperf/internal/flame"
 	"github.com/omniviewdev/wkperf/internal/metrics"
+	"github.com/omniviewdev/wkperf/internal/rootcause"
 )
 
 // StackPreview is a bounded display of one exact catalog stack. ID and Command
@@ -76,4 +78,26 @@ func StackPreviews(r *Report, brief bool) []StackPreview {
 
 func (p StackPreview) Reference() string {
 	return fmt.Sprintf("stack %s (%d frames; leaf %s)", p.Label, p.Depth, p.LeafLabel)
+}
+
+// FacetLabels shares concise measured facets across text, HTML and AI output.
+func FacetLabels(reads []rootcause.NativeRead, depth *rootcause.DepthFacets, related []string) []string {
+	var labels []string
+	for _, read := range reads {
+		labels = append(labels, fmt.Sprintf("%s: %s flush hypothesis; %d/%d timed samples inside recalculate-styles (%.6gms covering records), %d/%d inside layout (%.6gms covering records)", read.API, read.Flush, read.StyleSamples, read.Samples, read.StyleMs, read.LayoutSamples, read.Samples, read.LayoutMs))
+	}
+	if depth != nil {
+		label := fmt.Sprintf("Depth facets: max depth %d; commit frames %d; React fiber levels ~%d", depth.MaxDepth, depth.CommitFrames, depth.ReactFiberLevels)
+		if depth.RepeatedFrame != nil {
+			label += fmt.Sprintf("; repeated %s ×%d", frameLabel(depth.RepeatedFrame.Frame), depth.RepeatedFrame.Count)
+		}
+		if depth.Recursion != nil {
+			label += fmt.Sprintf("; possible non-framework recursion: %s ×%d", frameLabel(depth.Recursion.Frame), depth.Recursion.Count)
+		}
+		labels = append(labels, label)
+	}
+	if len(related) > 0 {
+		labels = append(labels, "Related findings/facets (shared evidence, not independent impact): "+strings.Join(related, ", "))
+	}
+	return labels
 }

@@ -64,8 +64,13 @@ func normalize(req Request) (Request, error) {
 	if req.By != "self" && req.By != "total" {
 		return req, fmt.Errorf("by must be self or total")
 	}
-	if req.Category != "" && req.Category != "app" && req.Category != "framework" && req.Category != "native" && req.Category != "gc" {
-		return req, fmt.Errorf("category must be app, framework, native, or gc")
+	switch req.Category {
+	case "", "app", "framework", "native", "gc", "unknown-bundled", "injected":
+	default:
+		return req, fmt.Errorf("category must be app, framework, native, gc, unknown-bundled, or injected")
+	}
+	if err := req.ownership().Validate(); err != nil {
+		return req, fmt.Errorf("ownership URL patterns: %w", err)
 	}
 	for _, bound := range []struct {
 		name  string
@@ -80,6 +85,18 @@ func normalize(req Request) (Request, error) {
 	}
 	if req.MinShare == 0 && !req.MinShareSet {
 		req.MinShare = .05
+	}
+	if req.MinSamples < 0 {
+		return req, fmt.Errorf("min_samples must not be negative")
+	}
+	if req.MinSamples == 0 && !req.MinSamplesSet {
+		req.MinSamples = 5
+	}
+	if math.IsNaN(req.TieRatio) || math.IsInf(req.TieRatio, 0) || req.TieRatio < 0 || req.TieRatio > 1 {
+		return req, fmt.Errorf("tie_ratio must be between zero and one")
+	}
+	if req.TieRatio == 0 && !req.TieRatioSet {
+		req.TieRatio = .8
 	}
 	if req.LongTaskMS == 0 {
 		req.LongTaskMS = 50
@@ -122,7 +139,7 @@ func (e *Engine) load(ctx context.Context, file string, req Request) (*model.Rec
 	if loader == nil {
 		loader = defaultLoad
 	}
-	rec, err := loader(ctx, file, SourceOptions{Sourcemaps: req.Sourcemaps})
+	rec, err := loader(ctx, file, SourceOptions{Sourcemaps: req.Sourcemaps, Ownership: req.ownership()})
 	if err != nil {
 		return nil, nil, Source{}, fmt.Errorf("%s: %w", file, err)
 	}
@@ -136,7 +153,7 @@ func (e *Engine) load(ctx context.Context, file string, req Request) (*model.Rec
 	if math.IsNaN(to) || math.IsInf(to, 0) || to < from || (to == from && (from > 0 || req.To > 0 || req.TrimEnd > 0)) {
 		return nil, nil, Source{}, fmt.Errorf("%s: selected window is empty", file)
 	}
-	tree := flame.Build(rec)
+	tree := flame.Build(rec, flame.Options{Ownership: req.ownership()})
 	if !profile.CoversRecording(rec, from, to) {
 		tree = tree.Window(from, to)
 	}
@@ -198,10 +215,16 @@ func (e *Engine) Run(ctx context.Context, request Request) (*Result, error) {
 				}
 			}
 		case "hot-path":
-			for depth, n := range tree.HotPath(req.MinShare) {
+			path := tree.SupportedHotPath(req.MinShare, req.MinSamples, req.TieRatio)
+			for depth, n := range path.Nodes {
 				row := nodeRow(n, tree.Root.TotalMs)
 				row.Depth = depth
 				result.Rows = append(result.Rows, row)
+			}
+			result.HotPathStopReason = path.StopReason
+			result.HotPathBranchesTotal = len(path.Branches)
+			for _, branch := range path.Branches[:min(len(path.Branches), req.Limit)] {
+				result.HotPathBranches = append(result.HotPathBranches, nodeRow(branch, tree.Root.TotalMs))
 			}
 		case "by-root":
 			for _, n := range tree.Root.Children {
@@ -222,7 +245,7 @@ func (e *Engine) Run(ctx context.Context, request Request) (*Result, error) {
 				seen[row.Key] = true
 			}
 			clipped := profile.Clip(rec, rec.StartTime+source.From, rec.StartTime+source.To)
-			report := insights.Analyze(clipped, req.File, insights.Options{Top: MaxLimit, JankMs: req.JankMS, LongTaskMs: req.LongTaskMS, WindowStartSec: source.From, Sourcemaps: req.Sourcemaps})
+			report := insights.Analyze(clipped, req.File, insights.Options{Top: MaxLimit, JankMs: req.JankMS, LongTaskMs: req.LongTaskMS, WindowStartSec: source.From, Sourcemaps: req.Sourcemaps, Ownership: req.ownership()})
 			for key, value := range insights.NumericValues(report) {
 				if !seen[key] && (req.Selector == "" || req.Selector == key) {
 					result.Rows = append(result.Rows, Row{Key: key, Value: clean(value.Value), Unit: string(value.Unit)})
@@ -236,7 +259,7 @@ func (e *Engine) Run(ctx context.Context, request Request) (*Result, error) {
 			clipped := profile.Clip(rec, rec.StartTime+source.From, rec.StartTime+source.To)
 			result.Rows = triggerRows(clipped, len(tree.Functions()), req)
 		case "rootcause":
-			report := rootcause.Build(rec, tree, rootcause.Options{Source: req.File, FromSec: source.From, ToSec: source.To, Top: req.RootCauseTop, LongTaskMs: req.LongTaskMS, JankMs: req.JankMS, Sourcemaps: req.Sourcemaps})
+			report := rootcause.Build(rec, tree, rootcause.Options{Source: req.File, FromSec: source.From, ToSec: source.To, Top: req.RootCauseTop, LongTaskMs: req.LongTaskMS, JankMs: req.JankMS, Sourcemaps: req.Sourcemaps, Ownership: req.ownership()})
 			for _, value := range rootcause.Stats(report) {
 				if req.Selector == "" || req.Selector == value.Key {
 					result.Rows = append(result.Rows, Row{Key: value.Key, Value: clean(value.Value), Unit: value.Unit, Basis: value.Basis})
@@ -323,6 +346,7 @@ func command(req Request) []string {
 	}
 	if req.Operation == "hot-path" {
 		out = append(out, "--min-share", strconv.FormatFloat(req.MinShare, 'g', -1, 64))
+		out = append(out, "--min-samples", strconv.Itoa(req.MinSamples), "--tie-ratio", strconv.FormatFloat(req.TieRatio, 'g', -1, 64))
 	}
 	if req.Operation == "rootcause" && req.RootCauseTop != 10 {
 		out = append(out, "--top", strconv.Itoa(req.RootCauseTop))
@@ -336,5 +360,15 @@ func command(req Request) []string {
 	for _, sourceMap := range req.Sourcemaps {
 		out = append(out, "--sourcemap", sourceMap)
 	}
+	for _, pattern := range req.AppURLs {
+		out = append(out, "--app-url", pattern)
+	}
+	for _, pattern := range req.LibraryURLs {
+		out = append(out, "--library-url", pattern)
+	}
 	return out
+}
+
+func (req Request) ownership() flame.OwnershipRules {
+	return flame.OwnershipRules{AppURLs: req.AppURLs, LibraryURLs: req.LibraryURLs}
 }

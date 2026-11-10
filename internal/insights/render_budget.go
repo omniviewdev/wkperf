@@ -93,6 +93,9 @@ func documentBlocks(documents []MarkdownDocument, brief, terminal, color bool) [
 			}
 		}
 		add(v.context())
+		for _, text := range v.findingFacets() {
+			add(text)
+		}
 		add(v.hotPath())
 		add(v.functions())
 		add(v.verification())

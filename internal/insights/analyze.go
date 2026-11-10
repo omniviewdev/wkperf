@@ -39,7 +39,8 @@ func Analyze(rec *model.Recording, source string, o Options) *Report {
 	if rec.SampleEvidence != nil {
 		o.WindowStartSec = rec.StartTime - rec.SampleEvidence.StartTime
 	}
-	tree := flame.Build(rec)
+	tree := flame.Build(rec, flame.Options{Ownership: o.Ownership})
+	o.Ownership = tree.Ownership
 	sum := analyze.SummarizeWithTree(rec, source, tree)
 	work, costs := profile.MeasureRecords(rec, rec.StartTime, rec.EndTime)
 	r := &Report{
@@ -54,6 +55,7 @@ func Analyze(rec *model.Recording, source string, o Options) *Report {
 		JankMs:              o.JankMs,
 		LongTaskMs:          o.LongTaskMs,
 		Sourcemaps:          append([]string{}, o.Sourcemaps...),
+		Ownership:           tree.Ownership,
 		Name:                rec.DisplayName,
 		DurationSec:         sum.DurationSec,
 		Summary:             sum,
@@ -135,12 +137,13 @@ func Analyze(rec *model.Recording, source string, o Options) *Report {
 
 	r.RootCause = rootcause.Build(rec, tree, rootcause.Options{
 		Source: source, OffsetSec: o.WindowStartSec, Sourcemaps: o.Sourcemaps,
-		Top: o.Top, JankMs: o.JankMs, LongTaskMs: o.LongTaskMs,
+		Top: o.Top, JankMs: o.JankMs, LongTaskMs: o.LongTaskMs, Ownership: o.Ownership,
 	})
 	ctx := &ruleCtx{rec: rec, sum: sum, rep: r, opt: o, mods: mods, slow: allSlow, long: allLong, costs: costs, wallMs: sum.DurationSec * 1000}
 	r.Findings = runRules(ctx)
-	r.Findings = append(r.Findings, rootFindings(ctx)...)
+	r.Findings = mergeSampleFindings(append(r.Findings, rootFindings(ctx)...))
 	sortFindings(r.Findings)
+	syncRootFindingSeverities(r)
 	return r
 }
 
@@ -185,18 +188,24 @@ func moduleGroup(url, grouping string) string {
 }
 
 func computeModules(fns []metrics.FuncStat, grouping string) []ModuleStat {
-	agg := map[string]float64{}
+	agg := map[string]ModuleStat{}
 	total := 0.0
 	for _, f := range fns {
 		if f.SelfMs <= 0 {
 			continue
 		}
-		agg[moduleGroup(f.URL, grouping)] += f.SelfMs
+		name := moduleGroup(f.URL, grouping)
+		module := agg[name]
+		module.Name = name
+		module.SelfMs += f.SelfMs
+		module.SelfSamples += f.SelfSamples
+		agg[name] = module
 		total += f.SelfMs
 	}
 	var out []ModuleStat
-	for n, ms := range agg {
-		out = append(out, ModuleStat{Name: n, SelfMs: ms, Pct: ms / total * 100})
+	for _, module := range agg {
+		module.Pct = module.SelfMs / total * 100
+		out = append(out, module)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].SelfMs != out[j].SelfMs {
