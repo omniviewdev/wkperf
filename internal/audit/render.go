@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/omniviewdev/wkperf/internal/flame"
 	"github.com/omniviewdev/wkperf/internal/insights"
 	"github.com/omniviewdev/wkperf/internal/metrics"
 	"github.com/omniviewdev/wkperf/internal/scorecard"
@@ -113,18 +114,19 @@ func (h HotFunction) Location() string {
 }
 
 func (h HotFunction) StackLabel() string {
-	var b strings.Builder
-	for i, frame := range h.CommonStack {
-		if i > 0 {
-			b.WriteString(" → ")
-		}
-		name := frame.Name
-		if name == "" {
-			name = "(anonymous)"
-		}
-		b.WriteString(name + " @ " + frame.Location())
+	if len(h.CommonStack) == 0 {
+		return ""
 	}
-	return b.String()
+	id := h.CommonStackID
+	if id == "" {
+		id = insights.MetricStackID(h.CommonStack)
+	}
+	leaf := h.CommonStack[len(h.CommonStack)-1]
+	name := leaf.Name
+	if name == "" {
+		name = "(anonymous)"
+	}
+	return fmt.Sprintf("stack %s (%d frames; leaf %s @ %s)", id, len(h.CommonStack), name, leaf.Location())
 }
 
 func funcLabel(h HotFunction) string {
@@ -148,26 +150,22 @@ func priorityDetails(pr Priority) []string {
 		if stack.FirstSec != nil && stack.LastSec != nil {
 			timing = fmt.Sprintf("%.3f–%.3f s", *stack.FirstSec, *stack.LastSec)
 		}
-		lines = append(lines, fmt.Sprintf("Exact stack: %.3f sampled self ms; %d samples (%d untimed); %s; reproduce: %s", stack.SelfMs, stack.Samples, stack.UntimedSamples, timing, stack.Command))
-		var path strings.Builder
-		for i, frame := range stack.Frames {
-			if i > 0 {
-				path.WriteString(" → ")
-			}
-			function := metrics.FunctionFrame{Name: frame.Name, URL: frame.URL, Line: frame.Line, Column: frame.Column, SourceID: frame.SourceID}
-			if frame.Original != nil {
-				function.Original = &metrics.SourceLocation{Name: frame.Original.Name, URL: frame.Original.URL, Line: frame.Original.Line, Column: frame.Original.Column}
-			}
-			name := frame.Name
-			if name == "" {
-				name = "(anonymous)"
-			}
-			path.WriteString(name + " @ " + function.Location())
+		id := stack.StackID
+		if id == "" {
+			id = flame.StackID(stack.Frames)
 		}
-		lines = append(lines, path.String())
+		leaf := ""
+		if len(stack.Frames) > 0 {
+			frame := stack.Frames[len(stack.Frames)-1]
+			leaf = flame.FrameLabel(frame)
+		}
+		lines = append(lines, fmt.Sprintf("Exact stack reference: %s (%d frames; leaf %s); %.3f sampled self ms; %d samples (%d untimed); %s; reproduce: %s", id, len(stack.Frames), leaf, stack.SelfMs, stack.Samples, stack.UntimedSamples, timing, stack.Command))
 		for _, stat := range stack.Stats {
 			lines = append(lines, fmt.Sprintf("%s = %.3f %s [%s]; reproduce: %s", stat.Key, stat.Value, stat.Unit, stat.Basis, stat.Command))
 		}
+	}
+	if pr.StacksTotal > 0 {
+		lines = append(lines, fmt.Sprintf("Stack evidence: %d of %d shown.", len(pr.Stacks), pr.StacksTotal))
 	}
 	if pr.EvidenceScene != "" {
 		lines = append(lines, "Evidence scene: "+pr.EvidenceScene)
@@ -302,6 +300,7 @@ func plural(n int, one, many string) string {
 
 // RenderTerm writes a terminal report. color enables ANSI escapes.
 func RenderTerm(w io.Writer, r *Report, color bool) error {
+	r = SelectEvidence(r)
 	p := painter{color}
 	var b strings.Builder
 	ln := func(f string, a ...any) { fmt.Fprintf(&b, f+"\n", a...) }
@@ -448,6 +447,7 @@ func sevBadge(p painter, sev string) string {
 
 // RenderMarkdown writes the report as markdown suitable for an AI agent.
 func RenderMarkdown(w io.Writer, r *Report) error {
+	r = SelectEvidence(r)
 	var b strings.Builder
 	ln := func(f string, a ...any) { fmt.Fprintf(&b, f+"\n", a...) }
 

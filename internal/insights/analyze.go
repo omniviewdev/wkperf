@@ -43,6 +43,7 @@ func Analyze(rec *model.Recording, source string, o Options) *Report {
 	sum := analyze.SummarizeWithTree(rec, source, tree)
 	r := &Report{
 		SchemaVersion:     "wkperf-insights/v3",
+		Top:               o.Top,
 		FlameTree:         tree,
 		Source:            source,
 		WindowStartSec:    o.WindowStartSec,

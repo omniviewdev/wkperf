@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/omniviewdev/wkperf/internal/insights"
 	"github.com/omniviewdev/wkperf/internal/query"
 	flamereport "github.com/omniviewdev/wkperf/internal/report/flame"
 )
@@ -50,7 +51,7 @@ func Document() map[string]any {
 	if definition, ok := b.definitions["insights_Report"].(map[string]any); ok {
 		definition["properties"].(map[string]any)["schemaVersion"] = map[string]any{"type": "string", "const": InsightsVersion}
 	}
-	if definition, ok := b.definitions["rootcause_Report"].(map[string]any); ok {
+	if definition, ok := b.definitions["insights_WireRootReport"].(map[string]any); ok {
 		definition["properties"].(map[string]any)["schemaVersion"] = map[string]any{"type": "string", "const": "2"}
 	}
 	errorDefinition := b.definitions[definitionName(reflect.TypeOf(ErrorDocument{}))].(map[string]any)
@@ -58,6 +59,40 @@ func Document() map[string]any {
 	flameDefinition := b.definitions[definitionName(reflect.TypeOf(flamereport.Document{}))].(map[string]any)
 	flameDefinition["properties"].(map[string]any)["mode"] = map[string]any{"type": "string", "enum": []string{"profile", "diff"}}
 	for name, fields := range map[string]map[string]string{
+		"insights_Report": {
+			"frames":              "Canonical generated function catalog, ordered by name, URL, line and column. Frame indices are zero-based within this report.",
+			"stacks":              "Exact root-to-leaf stacks stored once, keyed by canonical n_ path selectors. Detailed lists are top-N; their Total fields count all measured rows.",
+			"moreEvidenceCommand": "Explicit analyze rerun with a larger top limit that reveals omitted structured evidence; source maps, selected window and analysis options are preserved.",
+		},
+		"insights_CatalogStack": {
+			"frames": "Zero-based indices into this report's frames catalog, in exact root-to-leaf order. No stack depth truncation is applied.",
+			"depth":  "Full number of frames in this exact sampled stack.",
+		},
+		"insights_WireFunction": {
+			"frame":   "Zero-based index of this generated function in this report's frames catalog.",
+			"stackId": "Canonical exact common-stack selector in this report's stacks table.",
+		},
+		"insights_WirePath": {
+			"frames": "Zero-based frame catalog indices for the complete hot-path prefix, in root-to-leaf order.",
+		},
+		"insights_WireAttribution": {
+			"app": "Zero-based frame catalog index of the nearest application ancestor.",
+		},
+		"insights_WirePeriodic": {
+			"root":         "Zero-based frame catalog index of the periodic sampled root.",
+			"sampleStatus": "Limit on periodic attribution when substantial sampled weight has no timestamp.",
+		},
+		"insights_WireRootFinding": {
+			"stackIds": "Selected exact evidence selectors in this report's stacks table; evidenceTotal retains the complete count.",
+		},
+		"audit_Priority": {
+			"evidenceSceneIndex": "Zero-based index into audit scenes. Stack selectors resolve in that scene's analysis.stacks table.",
+			"stackIds":           "Selected exact evidence selectors scoped by evidenceSceneIndex; stacksTotal retains the complete count.",
+		},
+		"audit_HotFunction": {
+			"evidenceSceneIndex": "Zero-based index into audit scenes. Function identity and exact stack resolve in that scene's analysis catalogs.",
+			"stackId":            "Exact common stack selector in scenes[evidenceSceneIndex].analysis.stacks.",
+		},
 		"insights_SampleCoverage": {
 			"timedSampleCount":   "Included samples with usable timestamps.",
 			"untimedSampleCount": "Untimed sample count from the whole recording, including samples excluded by this window.",
@@ -70,9 +105,6 @@ func Document() map[string]any {
 		},
 		"insights_LongTask": {
 			"sampleStatus": "Limit on timed attribution when substantial sampled weight has no timestamp.",
-		},
-		"rootcause_PeriodicRoot": {
-			"sampleStatus": "Limit on periodic attribution when substantial sampled weight has no timestamp.",
 		},
 		"flame_Tree": {
 			"untimed":         "Included samples without usable timestamps; timestamp values in this separate array must not be interpreted as times.",
@@ -87,6 +119,7 @@ func Document() map[string]any {
 			"untimed_spans":    "Recording-relative export-order spans, inferred only for labels.",
 		},
 		"rootcause_Stack": {
+			"stackId":        "Canonical exact path selector in the enclosing analysis report's stacks table.",
 			"firstSec":       "First timed sample in recording-relative seconds, or null for an untimed-only stack.",
 			"lastSec":        "Last timed sample in recording-relative seconds, or null for an untimed-only stack.",
 			"untimedSamples": "Included untimed samples contributing to this exact stack.",
@@ -172,51 +205,76 @@ func (b *definitionBuilder) describe(t reflect.Type) map[string]any {
 
 func (b *definitionBuilder) properties(t reflect.Type) (map[string]any, []string) {
 	properties := map[string]any{}
-	requiredSet := map[string]bool{}
-	for i := range t.NumField() {
-		field := t.Field(i)
-		if field.PkgPath != "" {
-			continue
-		}
-		tag := strings.Split(field.Tag.Get("json"), ",")
-		if tag[0] == "-" {
-			continue
-		}
-		if field.Anonymous && tag[0] == "" {
-			embedded := field.Type
-			if embedded.Kind() == reflect.Pointer {
-				embedded = embedded.Elem()
-			}
-			if embedded.Kind() == reflect.Struct {
-				nested, required := b.properties(embedded)
-				for name, spec := range nested {
-					properties[name] = spec
-				}
-				for _, name := range required {
-					requiredSet[name] = true
-				}
-				continue
-			}
-		}
-		name := tag[0]
-		if name == "" {
-			name = field.Name
-		}
+	required := []string{}
+	for name, field := range serializationFields(t) {
 		properties[name] = b.describe(field.Type)
 		optional := false
-		for _, option := range tag[1:] {
+		for _, option := range strings.Split(field.Tag.Get("json"), ",")[1:] {
 			if option == "omitempty" || option == "omitzero" {
 				optional = true
 			}
 		}
 		if !optional {
-			requiredSet[name] = true
+			required = append(required, name)
 		}
-	}
-	required := make([]string, 0, len(requiredSet))
-	for name := range requiredSet {
-		required = append(required, name)
 	}
 	sort.Strings(required)
 	return properties, required
+}
+
+// Resolve promoted fields before describing their types. Otherwise an overridden
+// in-memory field can leak obsolete evidence shapes into the published schema.
+func serializationFields(t reflect.Type) map[string]reflect.StructField {
+	type candidate struct {
+		field     reflect.StructField
+		depth     int
+		tagged    bool
+		ambiguous bool
+	}
+	candidates := map[string]candidate{}
+	var collect func(reflect.Type, int)
+	collect = func(t reflect.Type, depth int) {
+		if t == reflect.TypeOf(insights.Report{}) {
+			t = reflect.TypeOf(insights.WireReport{})
+		}
+		for i := range t.NumField() {
+			field := t.Field(i)
+			if field.PkgPath != "" {
+				continue
+			}
+			name := strings.Split(field.Tag.Get("json"), ",")[0]
+			if name == "-" {
+				continue
+			}
+			if field.Anonymous && name == "" {
+				embedded := field.Type
+				if embedded.Kind() == reflect.Pointer {
+					embedded = embedded.Elem()
+				}
+				if embedded.Kind() == reflect.Struct {
+					collect(embedded, depth+1)
+					continue
+				}
+			}
+			tagged := name != ""
+			if name == "" {
+				name = field.Name
+			}
+			current, exists := candidates[name]
+			if !exists || depth < current.depth || depth == current.depth && tagged && !current.tagged {
+				candidates[name] = candidate{field: field, depth: depth, tagged: tagged}
+			} else if depth == current.depth && tagged == current.tagged {
+				current.ambiguous = true
+				candidates[name] = current
+			}
+		}
+	}
+	collect(t, 0)
+	fields := make(map[string]reflect.StructField, len(candidates))
+	for name, candidate := range candidates {
+		if !candidate.ambiguous {
+			fields[name] = candidate.field
+		}
+	}
+	return fields
 }

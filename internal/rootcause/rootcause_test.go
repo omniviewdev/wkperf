@@ -233,7 +233,7 @@ func TestNoSamplesWindowTriageAndGCTemporalEvidence(t *testing.T) {
 		t.Fatalf("missing triage: %+v", report)
 	}
 	for _, w := range report.Windows {
-		if w.TopStack != nil || !strings.Contains(w.SampleStatus, "No overlapping") || !strings.Contains(w.Command, "--from") || !strings.Contains(w.Command, "--to") {
+		if w.TopStack != nil || !strings.Contains(w.SampleStatus, "No overlapping") || !strings.Contains(w.Command, " rootcause 'triage.") || !strings.Contains(w.Command, ".duration_ms'") {
 			t.Fatalf("absent sample evidence: %+v", w)
 		}
 	}

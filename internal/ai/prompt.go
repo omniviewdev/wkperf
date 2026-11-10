@@ -120,6 +120,7 @@ func BuildComparePrompt(res *compare.Result, base, cand *insights.Report, c Cont
 
 	if res != nil {
 		secs = append(secs, compareSections(res, c)...)
+		secs = append(secs, compareStackSections(res, base, cand, c)...)
 	}
 	// Candidate before baseline: baseline detail is dropped first.
 	if cand != nil {
@@ -267,6 +268,7 @@ const (
 )
 
 func reportSections(label string, r *insights.Report, c Context, idx, offset int) []section {
+	r = insights.SelectEvidence(r)
 	val := func(v int) int { return (v-offset)*10 - idx }
 	head := fmt.Sprintf("## %s: %s", label, clip(oneLine(firstNonEmpty(r.Name, r.Source)), 120))
 	if r.Source != "" && r.Name != "" {
@@ -281,6 +283,7 @@ func reportSections(label string, r *insights.Report, c Context, idx, offset int
 	// sections are never orphaned.
 	out = append(out, section{title: tag + " header", value: val(vFindings) + 1, body: head})
 	out = append(out, rootCauseSections(tag, r.RootCause, c, val(vFindings)+2)...)
+	out = append(out, stackAppendixSection(tag, r, val(vFindings)+1))
 
 	if len(r.Breakdown) > 0 {
 		bd := "### Wall-time breakdown\n"
@@ -320,7 +323,7 @@ func reportSections(label string, r *insights.Report, c Context, idx, offset int
 			fmt.Fprintf(&b, "%d. %s — self %sms, total %sms, %s\n",
 				i+1, funcName(h.Name), num(h.SelfMs), num(h.TotalMs), functionLocation(h.Frame()))
 			fmt.Fprintf(&b, "   self reproduce: %s\n   inclusive reproduce: %s\n", insights.FunctionCommand(r, h, "self_ms"), insights.FunctionCommand(r, h, "total_ms"))
-			writeProfileFunction(&b, r, h, c.TopN)
+			writeProfileFunction(&b, r, h)
 		}
 		out = append(out, section{title: tag + " hotspots", value: val(vHotspots), body: b.String()})
 	}
@@ -330,7 +333,7 @@ func reportSections(label string, r *insights.Report, c Context, idx, offset int
 		for i, h := range limitSlice(r.InclusiveHotspots, c.TopN) {
 			fmt.Fprintf(&b, "%d. %s — inclusive %sms, self %sms, %s\n", i+1, funcName(h.Name), num(h.TotalMs), num(h.SelfMs), functionLocation(h.Frame()))
 			fmt.Fprintf(&b, "   inclusive reproduce: %s\n   self reproduce: %s\n", insights.FunctionCommand(r, h, "total_ms"), insights.FunctionCommand(r, h, "self_ms"))
-			writeProfileFunction(&b, r, h, c.TopN)
+			writeProfileFunction(&b, r, h)
 			for _, edge := range limitSlice(h.Callers, 3) {
 				fmt.Fprintf(&b, "   caller: %s @ %s (%sms, %d samples); weight reproduce: %s; samples reproduce: %s\n", funcName(edge.Function.Name), functionLocation(edge.Function), num(edge.WeightMs), edge.Samples, insights.EdgeCommand(r, h, edge, "callers", "weight_ms"), insights.EdgeCommand(r, h, edge, "callers", "samples"))
 			}
@@ -520,7 +523,7 @@ func funcList(title string, l []compare.FuncDiff, n int) string {
 		if f.ID != "" {
 			fmt.Fprintf(&b, "   id=%s\n", f.ID)
 		}
-		writeMetricStack(&b, f.CommonStack, n)
+		writeMetricStack(&b, f.CommonStack)
 		if command := f.StackCommand(); command != "" {
 			fmt.Fprintf(&b, "   full stack reproduce: %s\n", command)
 		}

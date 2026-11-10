@@ -324,7 +324,7 @@ func TestReproductionPreservesUntrustedLiteralArgumentBoundaries(t *testing.T) {
 		}
 	}
 	args := check(report.Commands.Paths)
-	if args[3] != "paths" || args[4] != name {
+	if args[3] != "paths" || args[4] != report.AppAttribution[0].App.ID {
 		t.Fatalf("selector argument split: %#v", args)
 	}
 }

@@ -145,37 +145,41 @@ type Finding struct {
 	Triggers          []string          `json:"triggers"`
 	Nodes             []NodeClue        `json:"nodes"`
 	Suggestion        string            `json:"suggestion"`
-	Stacks            []rootcause.Stack `json:"stacks"`
+	Stacks            []rootcause.Stack `json:"-"`
+	StackIDs          []string          `json:"stackIds"`
+	StacksTotal       int               `json:"stacksTotal"`
 	Command           string            `json:"command"`
 }
 
 // Report is the analysis of one recording.
 type Report struct {
-	RootCause         *rootcause.Report   `json:"rootCause"`
-	FlameTree         *flame.Tree         `json:"-"`
-	SchemaVersion     string              `json:"schemaVersion"`
-	Source            string              `json:"source"`
-	WindowStartSec    float64             `json:"windowStartSec"`
-	WindowEndSec      float64             `json:"windowEndSec"`
-	WholeRecording    bool                `json:"-"`
-	ModuleGrouping    string              `json:"moduleGrouping"`
-	JankMs            float64             `json:"jankMs"`
-	LongTaskMs        float64             `json:"longTaskMs"`
-	Sourcemaps        []string            `json:"sourcemaps"`
-	Name              string              `json:"name"`
-	DurationSec       float64             `json:"durationSec"`
-	Breakdown         []Slice             `json:"breakdown"`
-	Hotspots          []metrics.FuncStat  `json:"hotspots"` // top N by self time
-	InclusiveHotspots []metrics.FuncStat  `json:"inclusiveHotspots"`
-	CommonStacks      []metrics.StackStat `json:"commonStacks"`
-	Triggers          []TriggerStat       `json:"triggers"`
-	Wakeups           WakeupStats         `json:"wakeups"`
-	SampleCoverage    SampleCoverage      `json:"sampleCoverage"`
-	Modules           []ModuleStat        `json:"modules"`    // top N
-	SlowFrames        []SlowFrame         `json:"slowFrames"` // worst N by Ms
-	LongTasks         []LongTask          `json:"longTasks"`  // worst N by Ms
-	Findings          []Finding           `json:"findings"`   // sorted by severity then ImpactMs desc
-	Summary           *metrics.Summary    `json:"-"`
+	Top                 int                 `json:"-"`
+	RootCause           *rootcause.Report   `json:"rootCause"`
+	FlameTree           *flame.Tree         `json:"-"`
+	SchemaVersion       string              `json:"schemaVersion"`
+	Source              string              `json:"source"`
+	MoreEvidenceCommand string              `json:"moreEvidenceCommand,omitempty"`
+	WindowStartSec      float64             `json:"windowStartSec"`
+	WindowEndSec        float64             `json:"windowEndSec"`
+	WholeRecording      bool                `json:"-"`
+	ModuleGrouping      string              `json:"moduleGrouping"`
+	JankMs              float64             `json:"jankMs"`
+	LongTaskMs          float64             `json:"longTaskMs"`
+	Sourcemaps          []string            `json:"sourcemaps"`
+	Name                string              `json:"name"`
+	DurationSec         float64             `json:"durationSec"`
+	Breakdown           []Slice             `json:"breakdown"`
+	Hotspots            []metrics.FuncStat  `json:"hotspots"` // top N by self time
+	InclusiveHotspots   []metrics.FuncStat  `json:"inclusiveHotspots"`
+	CommonStacks        []metrics.StackStat `json:"commonStacks"`
+	Triggers            []TriggerStat       `json:"triggers"`
+	Wakeups             WakeupStats         `json:"wakeups"`
+	SampleCoverage      SampleCoverage      `json:"sampleCoverage"`
+	Modules             []ModuleStat        `json:"modules"`    // top N
+	SlowFrames          []SlowFrame         `json:"slowFrames"` // worst N by Ms
+	LongTasks           []LongTask          `json:"longTasks"`  // worst N by Ms
+	Findings            []Finding           `json:"findings"`   // sorted by severity then ImpactMs desc
+	Summary             *metrics.Summary    `json:"-"`
 }
 
 // Options tune the analyzer.

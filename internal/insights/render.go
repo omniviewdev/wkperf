@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/omniviewdev/wkperf/internal/flame"
 	"github.com/omniviewdev/wkperf/internal/metrics"
@@ -21,22 +20,37 @@ type MarkdownOptions struct {
 	MaxBytes int
 }
 
-var markdownEscaper = strings.NewReplacer("|", "\\|", "\n", " ")
-var terminalEscaper = strings.NewReplacer("`", "", "**", "", "\\|", "|")
-
-func mdEscape(s string) string { return markdownEscaper.Replace(s) }
-func code(s string) string     { return "`" + mdEscape(strings.ReplaceAll(s, "`", "\\`")) + "`" }
-
-func bar(pct float64, width int) string {
-	if pct < 0 {
-		pct = 0
-	}
-	if pct > 100 {
-		pct = 100
-	}
-	n := int(pct/100*float64(width) + 0.5)
-	return strings.Repeat("█", n) + strings.Repeat(" ", width-n)
+// MarkdownDocument keeps optional scorecard text inside the report's byte cap.
+type MarkdownDocument struct {
+	Report *Report
+	Suffix string
 }
+
+func mdEscape(s string) string {
+	return strings.NewReplacer("|", "\\|", "\n", " ", "\r", " ").Replace(s)
+}
+
+// CommonMark code spans use a delimiter longer than any content backtick run.
+// Backslashes and pipes are literal outside table cells and must not be escaped.
+func code(s string) string {
+	s = strings.NewReplacer("\n", " ", "\r", " ").Replace(s)
+	longest, run := 0, 0
+	for _, c := range s {
+		if c == '`' {
+			run++
+			longest = max(longest, run)
+		} else {
+			run = 0
+		}
+	}
+	fence := strings.Repeat("`", longest+1)
+	if strings.HasPrefix(s, "`") || strings.HasSuffix(s, "`") || (strings.HasPrefix(s, " ") && strings.HasSuffix(s, " ") && strings.Trim(s, " ") != "") {
+		return fence + " " + s + " " + fence
+	}
+	return fence + s + fence
+}
+
+func codeCell(s string) string { return code(strings.ReplaceAll(s, "|", "\\|")) }
 
 func frameLabel(f flame.Frame) string {
 	name := f.Name
@@ -62,419 +76,428 @@ func functionFrameLabel(f metrics.FunctionFrame) string {
 	return functionLabel(metrics.FuncStat{Name: f.Name, URL: f.URL, Line: f.Line, Column: f.Column, SourceID: f.SourceID, Original: f.Original})
 }
 
+type markdownRenderer struct {
+	r          *Report
+	brief      bool
+	stacks     []StackPreview
+	rootPrefix string
+	stackMap   map[string]StackPreview
+}
+
+func newMarkdownRenderer(r *Report, brief bool) *markdownRenderer {
+	r = SelectEvidence(r)
+	v := &markdownRenderer{r: r, brief: brief, stacks: StackPreviews(r, brief), stackMap: make(map[string]StackPreview)}
+	v.rootPrefix = "wkperf query " + shellQuote(r.Source) + " rootcause "
+	for _, stack := range v.stacks {
+		v.stackMap[stack.ID] = stack
+	}
+	return v
+}
+
+func numericRef(op, key string) string { return "[" + op + ": " + code(key) + "]" }
+
+func (v *markdownRenderer) valueRef(command, key string) string {
+	if strings.HasPrefix(command, v.rootPrefix) {
+		return numericRef("rootcause", key)
+	}
+	return numericRef("metrics", key)
+}
+
 func renderRootStats(b *strings.Builder, stats []rootcause.Stat) {
 	for _, stat := range stats {
-		fmt.Fprintf(b, "- %s: %.6g %s (%s). Reproduce: %s\n", mdEscape(stat.Label), stat.Value, stat.Unit, stat.Basis, code(stat.Command))
+		fmt.Fprintf(b, "- %s: %.6g %s (%s). %s\n", mdEscape(stat.Label), stat.Value, stat.Unit, mdEscape(stat.Basis), numericRef("rootcause", stat.Key))
 	}
 }
 
-func renderStack(b *strings.Builder, stack rootcause.Stack, brief bool) {
-	frames := stack.Frames
-	if brief && len(frames) > 12 {
-		frames = frames[:12]
+func (v *markdownRenderer) stackReference(id string) string {
+	if stack, ok := v.stackMap[id]; ok {
+		if v.brief {
+			return stack.Reference() + "; " + stack.ID
+		}
+		return stack.Reference()
 	}
-	for _, frame := range frames {
-		fmt.Fprintf(b, "  - %s\n", code(frameLabel(frame)))
-	}
-	if len(frames) < len(stack.Frames) {
-		b.WriteString("  - _Path abbreviated; use the reproduction query for the complete stack._\n")
-	}
-	renderRootStats(b, stack.Stats)
-	fmt.Fprintf(b, "  Reproduce exact stack: %s\n", code(stack.Command))
+	return "stack " + id
 }
 
-func renderFindings(b *strings.Builder, r *Report, brief bool) {
-	if brief {
-		b.WriteString("\n## Findings\n\n")
-	} else {
-		b.WriteString("\n## Finding details\n\n")
+func (v *markdownRenderer) renderStack(b *strings.Builder, stack rootcause.Stack) {
+	id := stack.StackID
+	if id == "" {
+		id = flame.StackID(stack.Frames)
 	}
-	if len(r.Findings) == 0 {
-		b.WriteString("_No issues detected by the available instruments._\n")
-	}
-	findings := r.Findings
-	if brief && len(findings) > 3 {
-		findings = findings[:3]
-	}
-	for _, f := range findings {
-		fmt.Fprintf(b, "### [%s] %s\n\n", strings.ToUpper(string(f.Severity)), mdEscape(f.Title))
-		fmt.Fprintf(b, "%s · confidence: %s · attributed impact %.6gms (%.6g%%). Reproduce: %s; %s\n\n", code(f.ID), f.Confidence, f.ImpactMs, f.ImpactPct, code(NumericCommand(r, "findings."+f.ID+".impact_ms")), code(NumericCommand(r, "findings."+f.ID+".impact_pct")))
-		if !brief {
-			for _, e := range f.NumericEvidence {
-				fmt.Fprintf(b, "- %s: %.6g %s (%s). Reproduce: %s\n", mdEscape(e.Description), e.Value, e.Unit, e.Basis, code(e.Command))
-			}
-			for _, reason := range f.ConfidenceReasons {
-				fmt.Fprintf(b, "- Confidence: %s\n", mdEscape(reason))
-			}
-			for _, stack := range f.Stacks {
-				renderStack(b, stack, false)
-			}
-			if f.Command != "" {
-				fmt.Fprintf(b, "Evidence query: %s\n", code(f.Command))
-			}
-		}
-		if len(f.Functions) > 0 {
-			fmt.Fprintf(b, "- Measured sampled functions: %s\n", code(strings.Join(f.Functions, "; ")))
-		}
-		if len(f.Triggers) > 0 {
-			fmt.Fprintf(b, "- Measured triggers: %s\n", code(strings.Join(f.Triggers, "; ")))
-		}
-		for _, node := range f.Nodes {
-			fmt.Fprintf(b, "- Recorded %s node: %s %s\n", node.EventType, code(node.CSSPath), code(node.DisplayName))
-		}
-		fmt.Fprintf(b, "\n**Suggestion:** %s\n\n", f.Suggestion)
-	}
+	fmt.Fprintf(b, "- %s: %.6gms sampled self weight, %d samples.\n", code(v.stackReference(id)), stack.SelfMs, stack.Samples)
 }
 
-func renderHotPath(b *strings.Builder, r *Report, brief bool) {
-	b.WriteString("\n## Hot path\n\n")
-	if r.RootCause == nil || len(r.RootCause.HotPath.Frames) == 0 {
-		b.WriteString("_No sampled hot path available._\n")
-		return
+func (v *markdownRenderer) header() string {
+	r := v.r
+	var b strings.Builder
+	fmt.Fprintf(&b, "# wkperf profile: %s\n\n- Source: %s\n- Active duration: %.6gs. %s\n", mdEscape(r.Name), code(r.Source), r.DurationSec, numericRef("metrics", "recording.duration_sec"))
+	if coverage := r.SampleCoverage; coverage.UntimedSampleCount > 0 {
+		accounting := "included in rankings, excluded from frame, task, trigger, window and periodic attribution"
+		if coverage.UntimedExcluded {
+			accounting = "excluded from this window and all time-based attribution"
+		}
+		fmt.Fprintf(&b, "- Untimed samples: %d (%.1f ms): %s.\n", coverage.UntimedSampleCount, coverage.UntimedMs, accounting)
 	}
-	root := r.RootCause
-	b.WriteString("Heaviest root-to-leaf prefix path; sampled weight is an estimate, not measured script wall time.\n\n")
-	frames := root.HotPath.Frames
-	if brief && len(frames) > 12 {
-		frames = frames[:12]
+	return b.String()
+}
+
+func (v *markdownRenderer) findings() []string {
+	rows := []string{"\n## Findings\n\n"}
+	if len(v.r.Findings) == 0 {
+		return append(rows, "_No issues detected by the available instruments._\n")
 	}
-	for _, frame := range frames {
+	for _, f := range v.r.Findings {
+		rows = append(rows, fmt.Sprintf("- [%s] %s: %s; impact %.6gms (%.6g%%). %s\n", strings.ToUpper(string(f.Severity)), code(f.ID), mdEscape(f.Title), f.ImpactMs, f.ImpactPct, numericRef("metrics", "findings."+f.ID+".impact_ms")))
+	}
+	return rows
+}
+
+func (v *markdownRenderer) context() string {
+	metric := NumericCommand(v.r, "")
+	metric = strings.Replace(metric, " metrics ''", " metrics", 1)
+	root := "wkperf query " + shellQuote(v.r.Source) + " rootcause --format json" + queryFlags(v.r)
+	return "\nReproduce values using the metric key after its operation; source, window and source maps apply throughout this report.\n\n- Metrics: " + code(metric) + "\n- Root cause: " + code(root) + "\n"
+}
+
+func renderPathFrames(b *strings.Builder, frames []flame.Frame, brief bool) {
+	root, leaf, elided := PreviewFrames(frames, brief)
+	for _, frame := range root {
 		fmt.Fprintf(b, "- %s\n", code(frameLabel(frame)))
 	}
-	if len(frames) < len(root.HotPath.Frames) {
-		b.WriteString("- _Path abbreviated; query the complete path._\n")
+	if elided > 0 {
+		fmt.Fprintf(b, "- _… %d frames elided; exact evidence remains available through the query._\n", elided)
 	}
-	renderRootStats(b, root.HotPath.Stats)
-	fmt.Fprintf(b, "Reproduce hot path: %s\n", code(root.HotPath.Command))
-	b.WriteString("\n### Owners and nearest application ancestors\n\n")
-	for _, owner := range root.Owners {
-		fmt.Fprintf(b, "- Owner: %s\n", owner.Category)
-		renderRootStats(b, owner.Stats)
-	}
-	attributions := root.AppAttribution
-	if brief && len(attributions) > 3 {
-		attributions = attributions[:3]
-	}
-	for _, attribution := range attributions {
-		fmt.Fprintf(b, "- Nearest application ancestor: %s\n", code(frameLabel(attribution.App)))
-		renderRootStats(b, attribution.Stats)
-		if !brief {
-			for _, stack := range attribution.Stacks {
-				renderStack(b, stack, false)
-			}
-		}
-		fmt.Fprintf(b, "  Reproduce attribution: %s\n", code(attribution.Command))
+	for _, frame := range leaf {
+		fmt.Fprintf(b, "- %s\n", code(frameLabel(frame)))
 	}
 }
 
-func renderFunctions(b *strings.Builder, r *Report, brief bool) {
+func (v *markdownRenderer) hotPath() string {
+	var b strings.Builder
+	b.WriteString("\n## Hot path\n\n")
+	root := v.r.RootCause
+	if root == nil || len(root.HotPath.Frames) == 0 {
+		b.WriteString("_No sampled hot path available._\n")
+		return b.String()
+	}
+	b.WriteString("Heaviest root-to-leaf prefix; sampled weight estimates cost, not measured script wall time.\n\n")
+	renderPathFrames(&b, root.HotPath.Frames, v.brief)
+	renderRootStats(&b, root.HotPath.Stats)
+	if !v.brief && root.HotPath.Command != "" {
+		fmt.Fprintf(&b, "Reproduce hot path: %s\n", code(root.HotPath.Command))
+	}
+	b.WriteString("\n### Owners and nearest application ancestors\n\n")
+	for _, owner := range root.Owners {
+		fmt.Fprintf(&b, "- Owner %s: %.6gms, %.6g%%, %d samples.\n", owner.Category, owner.SelfMs, owner.Pct, owner.Samples)
+		if !v.brief {
+			renderRootStats(&b, owner.Stats)
+		}
+	}
+	attributions := root.AppAttribution
+	if v.brief {
+		attributions = attributions[:min(3, len(attributions))]
+	}
+	for _, app := range attributions {
+		fmt.Fprintf(&b, "- Nearest application ancestor %s: %.6gms total (%.6gms framework, %.6gms native).\n", code(frameLabel(app.App)), app.TotalMs, app.FrameworkMs, app.NativeMs)
+		if !v.brief {
+			renderRootStats(&b, app.Stats)
+			for _, stack := range app.Stacks {
+				v.renderStack(&b, stack)
+			}
+			fmt.Fprintf(&b, "  Reproduce attribution: %s\n", code(app.Command))
+		}
+	}
+	if root.AppAttributionTotal > len(attributions) {
+		fmt.Fprintf(&b, "- Application attributions: %d of %d shown; inspect rootcause for remaining evidence.\n", len(attributions), root.AppAttributionTotal)
+	}
+	return b.String()
+}
+
+func (v *markdownRenderer) functions() string {
+	var b strings.Builder
 	b.WriteString("\n## Hot functions\n\n")
 	for _, ranking := range []struct {
 		title     string
 		functions []metrics.FuncStat
-	}{{"Top hotspots (self time)", r.Hotspots}, {"Inclusive ranking", r.InclusiveHotspots}} {
-		fmt.Fprintf(b, "### %s\n\n", ranking.title)
+	}{{"Top hotspots (self time)", v.r.Hotspots}, {"Inclusive ranking (overlapping; do not sum)", v.r.InclusiveHotspots}} {
+		fmt.Fprintf(&b, "### %s\n\n", ranking.title)
 		if len(ranking.functions) == 0 {
 			b.WriteString("_No samples._\n")
 			continue
 		}
-		b.WriteString("| Function | Self ms | Inclusive ms | Reproduce self / inclusive |\n|---|---:|---:|---|\n")
+		b.WriteString("| Function | Self ms | Inclusive ms | Metric keys |\n|---|---:|---:|---|\n")
 		functions := ranking.functions
-		if brief && len(functions) > 5 {
-			functions = functions[:5]
+		if v.brief {
+			functions = functions[:min(3, len(functions))]
 		}
 		for _, f := range functions {
 			prefix := functionMetricPrefix(f)
-			fmt.Fprintf(b, "| %s | %.6g | %.6g | %s; %s |\n", code(functionLabel(f)), f.SelfMs, f.TotalMs, code(NumericCommand(r, prefix+".self_ms")), code(NumericCommand(r, prefix+".total_ms")))
-			if !brief {
-				for _, relation := range []struct {
-					name  string
-					edges []metrics.CallEdge
-				}{{"caller", f.Callers}, {"callee", f.Callees}} {
-					for _, edge := range relation.edges {
-						key := prefix + "." + relation.name + "s." + url.PathEscape(edge.Function.Key()) + ".weight_ms"
-						fmt.Fprintf(b, "| ↳ %s: %s | | %.6g | %s |\n", relation.name, code(functionFrameLabel(edge.Function)), edge.WeightMs, code(NumericCommand(r, key)))
-					}
+			fmt.Fprintf(&b, "| %s | %.6g | %.6g | %s / %s |\n", codeCell(functionLabel(f)), f.SelfMs, f.TotalMs, codeCell(prefix+".self_ms"), codeCell(prefix+".total_ms"))
+			if v.brief {
+				continue
+			}
+			for _, relation := range []struct {
+				name  string
+				edges []metrics.CallEdge
+			}{{"caller", f.Callers}, {"callee", f.Callees}} {
+				for _, edge := range relation.edges {
+					key := prefix + "." + relation.name + "s." + url.PathEscape(edge.Function.Key()) + ".weight_ms"
+					fmt.Fprintf(&b, "| ↳ %s: %s | | %.6g | %s |\n", relation.name, codeCell(functionFrameLabel(edge.Function)), edge.WeightMs, codeCell(key))
 				}
 			}
 		}
-		if !brief {
+		if !v.brief {
 			for _, f := range functions {
-				if len(f.CommonStack) == 0 {
-					continue
+				if len(f.CommonStack) > 0 {
+					id := f.CommonStackID
+					if id == "" {
+						id = MetricStackID(f.CommonStack)
+					}
+					fmt.Fprintf(&b, "- Common sampled stack for %s: %s.\n", code(f.Name), code(v.stackReference(id)))
 				}
-				fmt.Fprintf(b, "\n#### Common full stack for %s\n\n", mdEscape(f.Name))
-				for _, frame := range f.CommonStack {
-					fmt.Fprintf(b, "- %s\n", code(functionFrameLabel(frame)))
-				}
-				fmt.Fprintf(b, "Reproduce exact function stack: %s\n", code(FunctionStackCommand(r, f)))
 			}
+		}
+		if len(functions) < len(ranking.functions) {
+			fmt.Fprintf(&b, "\n%d of %d ranked functions shown.\n", len(functions), len(ranking.functions))
 		}
 	}
+	return b.String()
 }
 
-func renderVerification(b *strings.Builder, r *Report) {
+func (v *markdownRenderer) verification() string {
+	var b strings.Builder
 	b.WriteString("\n## Verification\n\n")
-	for _, finding := range r.Findings {
-		for _, verification := range finding.Verify {
-			fmt.Fprintf(b, "- %s: %s %s toward roughly %.6g %s. %s Reproduce baseline: %s\n", code(finding.ID), verification.Direction, code(verification.MetricKey), verification.Target, verification.Unit, verification.Description, code(verification.Command))
+	windows, shown := 0, 0
+	for _, finding := range v.r.Findings {
+		checks := finding.Verify
+		if v.brief {
+			checks = checks[:min(1, len(checks))]
+		}
+		for _, check := range checks {
+			fmt.Fprintf(&b, "- %s: %s %s toward roughly %.6g %s. %s\n", code(finding.ID), mdEscape(check.Direction), v.valueRef(check.Command, check.MetricKey), check.Target, mdEscape(string(check.Unit)), mdEscape(check.Description))
 		}
 		for _, window := range finding.SuggestedWindows {
-			fmt.Fprintf(b, "  - %s Re-run: %s\n", window.Reason, code("wkperf analyze "+shellQuote(r.Source)+" "+formatFlags(window.Flags)+" --format json"))
+			windows++
+			if v.brief && shown >= 5 {
+				continue
+			}
+			fmt.Fprintf(&b, "- Verify window %.6g–%.6gs: %s. Window flags: %s\n", window.FromSec, window.ToSec, mdEscape(window.Reason), code(formatFlags(window.Flags)))
+			shown++
 		}
 	}
-	if r.RootCause != nil {
-		for _, window := range r.RootCause.Windows {
-			fmt.Fprintf(b, "- Inspect %s: %s\n", mdEscape(window.Label), code(window.Command))
+	if v.r.RootCause != nil {
+		for _, window := range v.r.RootCause.Windows {
+			windows++
+			if v.brief && shown >= 5 {
+				continue
+			}
+			if window.TopStack == nil {
+				key := ""
+				for _, stat := range window.Stats {
+					if strings.HasSuffix(stat.Key, ".duration_ms") {
+						key = stat.Key
+						break
+					}
+				}
+				fmt.Fprintf(&b, "- Inspect %s (no samples; timeline-only): %s\n", mdEscape(window.Label), numericRef("rootcause", key))
+			} else if v.brief {
+				fmt.Fprintf(&b, "- Inspect %s, %.6g–%.6gs: %s.\n", mdEscape(window.Label), window.FromSec, window.ToSec, code(v.stackReference(window.TopStack.StackID)))
+			} else {
+				fmt.Fprintf(&b, "- Inspect %s: %s\n", mdEscape(window.Label), code(window.Command))
+			}
+			shown++
 		}
 	}
-	b.WriteString("\nTargets are rough hypotheses. Repeat equivalent captures; a single recording does not establish a performance regression.\n")
+	if windows > shown {
+		fmt.Fprintf(&b, "- Verification windows: %d of %d shown; %d omitted.\n", shown, windows, windows-shown)
+	}
+	b.WriteString("\nTargets are hypotheses. Repeat equivalent captures; one recording does not establish a regression.\n")
+	return b.String()
 }
 
-func renderRootDetails(b *strings.Builder, r *Report) {
-	if r.RootCause == nil {
-		return
+func (v *markdownRenderer) findingDetails() []string {
+	var blocks []string
+	findings := v.r.Findings
+	if v.brief {
+		findings = findings[:min(3, len(findings))]
 	}
-	root := r.RootCause
+	for i, f := range findings {
+		var b strings.Builder
+		if i == 0 {
+			b.WriteString("\n## Finding details\n\n")
+		}
+		fmt.Fprintf(&b, "### [%s] %s — %s\n\nConfidence: %s. **Suggestion:** %s\n", strings.ToUpper(string(f.Severity)), mdEscape(f.Title), code(f.ID), mdEscape(f.Confidence), mdEscape(f.Suggestion))
+		if !v.brief {
+			for _, e := range f.NumericEvidence {
+				fmt.Fprintf(&b, "- %s: %.6g %s (%s). %s\n", mdEscape(e.Description), e.Value, e.Unit, mdEscape(e.Basis), numericRef("metrics", e.MetricKey))
+			}
+			for _, reason := range f.ConfidenceReasons {
+				fmt.Fprintf(&b, "- Confidence: %s\n", mdEscape(reason))
+			}
+			for _, stack := range f.Stacks {
+				v.renderStack(&b, stack)
+			}
+			fmt.Fprintf(&b, "Stack evidence: %d of %d shown.\n", len(f.Stacks), f.StacksTotal)
+			if len(f.Functions) > 0 {
+				fmt.Fprintf(&b, "- Measured sampled functions: %s\n", code(strings.Join(f.Functions, "; ")))
+			}
+			if len(f.Triggers) > 0 {
+				fmt.Fprintf(&b, "- Measured triggers: %s\n", code(strings.Join(f.Triggers, "; ")))
+			}
+			if f.Command != "" {
+				fmt.Fprintf(&b, "Evidence query: %s\n", code(f.Command))
+			}
+			for _, node := range f.Nodes {
+				fmt.Fprintf(&b, "- Recorded %s node: %s %s\n", mdEscape(node.EventType), code(node.CSSPath), code(node.DisplayName))
+			}
+		}
+		blocks = append(blocks, b.String())
+	}
+	if v.brief && len(v.r.Findings) > len(findings) {
+		blocks = append(blocks, fmt.Sprintf("\nFinding details: %d of %d shown; all finding identities appear above.\n", len(findings), len(v.r.Findings)))
+	}
+	return blocks
+}
+
+func (v *markdownRenderer) rootDetails() string {
+	root := v.r.RootCause
+	if root == nil {
+		return ""
+	}
+	var b strings.Builder
 	b.WriteString("\n## Periodic roots\n\n")
 	for _, periodic := range root.PeriodicRoots {
-		fmt.Fprintf(b, "### %s\n\n", mdEscape(frameLabel(periodic.Root)))
-		if periodic.SampleStatus != "" {
-			fmt.Fprintf(b, "%s\n\n", periodic.SampleStatus)
-		}
-		renderRootStats(b, periodic.Stats)
+		fmt.Fprintf(&b, "### %s\n\n%s\n", mdEscape(frameLabel(periodic.Root)), mdEscape(periodic.SampleStatus))
+		renderRootStats(&b, periodic.Stats)
 		for _, stack := range periodic.Evidence {
-			renderStack(b, stack, false)
+			v.renderStack(&b, stack)
 		}
 		for _, fire := range periodic.Fires {
-			fmt.Fprintf(b, "- Fire %s: %s\n", mdEscape(fire.Event), code(fire.Command))
+			fmt.Fprintf(&b, "- Fire %s: %s\n", mdEscape(fire.Event), code(fire.Command))
 		}
+		fmt.Fprintf(&b, "Fires: %d of %d shown; stack evidence: %d of %d shown.\n", len(periodic.Fires), periodic.FiresTotal, len(periodic.Evidence), periodic.EvidenceTotal)
 	}
 	b.WriteString("\n## GC overlap\n\n")
 	for _, gc := range root.GCOverlaps {
-		fmt.Fprintf(b, "- %s\n", gc.Attribution)
-		renderRootStats(b, gc.Stats)
+		fmt.Fprintf(&b, "- %s\n", mdEscape(gc.Attribution))
+		renderRootStats(&b, gc.Stats)
 		for _, event := range gc.Events {
-			fmt.Fprintf(b, "  - %s temporal overlap %.6gms. Reproduce: %s\n", mdEscape(event.Event), event.OverlapMs, code(event.Command))
+			fmt.Fprintf(&b, "- %s temporal overlap %.6gms. Reproduce: %s\n", mdEscape(event.Event), event.OverlapMs, code(event.Command))
 		}
+		fmt.Fprintf(&b, "Overlapping events: %d of %d shown.\n", len(gc.Events), gc.EventsTotal)
 	}
 	b.WriteString("\n## Stack depth\n\n")
-	renderRootStats(b, root.Depth.Stats)
+	renderRootStats(&b, root.Depth.Stats)
 	for _, outlier := range root.Depth.Outliers {
-		renderRootStats(b, outlier.Stats)
-		renderStack(b, outlier.Stack, false)
-		fmt.Fprintf(b, "Reproduce depth outlier: %s\n", code(outlier.Command))
+		renderRootStats(&b, outlier.Stats)
+		v.renderStack(&b, outlier.Stack)
 	}
-	b.WriteString("\n## Timeline windows and exact sampled stacks\n\n")
+	fmt.Fprintf(&b, "Outliers: %d of %d shown.\n", len(root.Depth.Outliers), root.Depth.OutliersTotal)
+	b.WriteString("\n## Timeline windows and sampled stack references\n\n")
 	for _, window := range allRootWindows(root) {
-		fmt.Fprintf(b, "### %s\n\n", mdEscape(window.Label))
-		renderRootStats(b, window.Stats)
+		fmt.Fprintf(&b, "### %s\n\n", mdEscape(window.Label))
+		renderRootStats(&b, window.Stats)
 		if window.TopStack != nil {
-			renderStack(b, *window.TopStack, false)
+			v.renderStack(&b, *window.TopStack)
 		}
-		fmt.Fprintf(b, "%s\n", window.SampleStatus)
-		fmt.Fprintf(b, "Reproduce window: %s\n", code(window.Command))
+		fmt.Fprintf(&b, "%s\nReproduce window: %s\n", mdEscape(window.SampleStatus), code(window.Command))
 	}
+	fmt.Fprintf(&b, "Timeline lists shown/total: long tasks %d/%d; slow frames %d/%d; event bursts %d/%d.\n", len(root.LongTasks), root.LongTasksTotal, len(root.SlowFrames), root.SlowFramesTotal, len(root.EventBursts), root.EventBurstsTotal)
+	return b.String()
 }
 
-func renderTriggers(b *strings.Builder, r *Report, title, prefix string, triggers []TriggerStat) {
-	fmt.Fprintf(b, "\n## %s\n\n", title)
-	if len(triggers) == 0 {
-		b.WriteString("_No matching trigger records._\n")
-		return
-	}
-	for _, t := range triggers {
-		base := prefix + triggerMetricPrefix(t)
-		fmt.Fprintf(b, "### %s %s\n\n", t.Kind, mdEscape(t.Name))
-		b.WriteString("| Metric | Value | Reproduce |\n|---|---:|---|\n")
-		for _, item := range []struct {
-			key, label string
-			value      float64
-		}{{"count", "Count", float64(t.Count)}, {"total_ms", "Total ms", t.TotalMs}, {"mean_ms", "Mean ms", t.MeanMs}, {"p95_ms", "p95 ms", t.P95Ms}, {"max_ms", "Max ms", t.MaxMs}} {
-			fmt.Fprintf(b, "| %s | %.6g | %s |\n", item.label, item.value, code(NumericCommand(r, base+"."+item.key)))
-		}
-		if t.SampleMessage != "" {
-			fmt.Fprintf(b, "%s\n", t.SampleMessage)
-		}
-		for _, ranking := range []struct {
-			title, key string
-			functions  []metrics.FuncStat
-		}{{"Top self", "self_ms", t.TopSelf}, {"Top inclusive", "total_ms", t.TopInclusive}} {
-			for _, f := range ranking.functions {
-				value := f.SelfMs
-				if ranking.key == "total_ms" {
-					value = f.TotalMs
-				}
-				fmt.Fprintf(b, "- %s: %s, %.6gms. Reproduce: %s\n", ranking.title, code(functionLabel(f)), value, code(NumericCommand(r, base+"."+functionMetricPrefix(f)+"."+ranking.key)))
-			}
-		}
-	}
-}
-
-func renderDetails(b *strings.Builder, r *Report) {
-	renderFindings(b, r, false)
-	renderRootDetails(b, r)
+func (v *markdownRenderer) otherDetails() string {
+	r := v.r
+	var b strings.Builder
 	b.WriteString("\n## Common sampled stacks\n\n")
-	for i, stack := range r.CommonStacks {
-		fmt.Fprintf(b, "- Exact stack: %.6gms sampled weight, %d samples. Reproduce: %s; %s\n", stack.WeightMs, stack.Samples, code(StackCommand(r, i, "weight_ms")), code(StackCommand(r, i, "samples")))
-		for _, frame := range stack.Frames {
-			fmt.Fprintf(b, "  - %s\n", code(functionFrameLabel(frame)))
+	for _, stack := range r.CommonStacks {
+		id := stack.ID
+		if id == "" {
+			id = MetricStackID(stack.Frames)
 		}
+		fmt.Fprintf(&b, "- %s: %.6gms sampled weight, %d samples.\n", code(v.stackReference(id)), stack.WeightMs, stack.Samples)
 	}
-	b.WriteString("\n## Wall-time breakdown\n\n| Category | ms | % | Activity | Reproduce ms / percent |\n|---|---:|---:|---|---|\n")
+	b.WriteString("\n## Wall-time breakdown\n\n| Category | ms | % | Metric keys |\n|---|---:|---:|---|\n")
 	for _, s := range r.Breakdown {
 		prefix := "breakdown." + url.PathEscape(s.Name)
-		fmt.Fprintf(b, "| %s | %.6g | %.6g | %s | %s; %s |\n", s.Name, s.Ms, s.Pct, bar(s.Pct, 20), code(NumericCommand(r, prefix+".ms")), code(NumericCommand(r, prefix+".pct")))
+		fmt.Fprintf(&b, "| %s | %.6g | %.6g | %s / %s |\n", mdEscape(s.Name), s.Ms, s.Pct, codeCell(prefix+".ms"), codeCell(prefix+".pct"))
 	}
-	b.WriteString("\n## Top modules\n\n| File / module | Self ms | Sample share % | Reproduce self / share |\n|---|---:|---:|---|\n")
+	b.WriteString("\n## Top modules\n\n| File / module | Self ms | Sample share % | Metric keys |\n|---|---:|---:|---|\n")
 	grouping := r.ModuleGrouping
 	if grouping == "" {
 		grouping = "file"
 	}
 	for _, m := range r.Modules {
 		prefix := "modules." + grouping + "." + url.PathEscape(m.Name)
-		fmt.Fprintf(b, "| %s | %.6g | %.6g | %s; %s |\n", code(m.Name), m.SelfMs, m.Pct, code(NumericCommand(r, prefix+".self_ms")), code(NumericCommand(r, prefix+".pct")))
+		fmt.Fprintf(&b, "| %s | %.6g | %.6g | %s / %s |\n", codeCell(m.Name), m.SelfMs, m.Pct, codeCell(prefix+".self_ms"), codeCell(prefix+".pct"))
 	}
-	fmt.Fprintf(b, "\n## Idle wakeups\n\nMeasured idle-gap frame wakeups: %d; rate %.6g/s. Reproduce: %s; %s\n", r.Wakeups.Count, r.Wakeups.PerSecond, code(NumericCommand(r, "wakeups.count")), code(NumericCommand(r, "wakeups.per_second")))
-	b.WriteString("\nCause labels identify overlapping measured trigger work, not proof that a callback woke the process.\n")
-	renderTriggers(b, r, "Wakeup causes", "wakeups.", r.Wakeups.Causes)
-	renderTriggers(b, r, "Event and callback triggers", "", r.Triggers)
-	b.WriteString("\n## Slow frames\n\n")
-	if len(r.SlowFrames) == 0 {
-		b.WriteString("_None over threshold; idle-gap frames are excluded._\n")
-	}
-	for i, f := range r.SlowFrames {
-		prefix := "slowFrames." + strconv.Itoa(i)
-		fmt.Fprintf(b, "- %s — %s\n", mdEscape(f.TopEvent), code(f.TopFunc))
-		if f.SampleStatus != "" {
-			fmt.Fprintf(b, "  - %s\n", f.SampleStatus)
+	fmt.Fprintf(&b, "\n## Idle wakeups\n\nMeasured idle-gap frame wakeups: %d; rate %.6g/s. %s; %s\n", r.Wakeups.Count, r.Wakeups.PerSecond, numericRef("metrics", "wakeups.count"), numericRef("metrics", "wakeups.per_second"))
+	for _, group := range []struct {
+		title, prefix string
+		rows          []TriggerStat
+	}{{"Wakeup causes", "wakeups.", r.Wakeups.Causes}, {"Event and callback triggers", "", r.Triggers}} {
+		fmt.Fprintf(&b, "\n## %s\n\n", group.title)
+		for _, trigger := range group.rows {
+			base := group.prefix + triggerMetricPrefix(trigger)
+			fmt.Fprintf(&b, "### %s %s\n\n%s\n", mdEscape(trigger.Kind), code(trigger.Name), mdEscape(trigger.SampleMessage))
+			for _, value := range []struct {
+				key, label string
+				value      float64
+			}{{"count", "Count", float64(trigger.Count)}, {"total_ms", "Total ms", trigger.TotalMs}, {"mean_ms", "Mean ms", trigger.MeanMs}, {"p95_ms", "p95 ms", trigger.P95Ms}, {"max_ms", "Max ms", trigger.MaxMs}} {
+				fmt.Fprintf(&b, "- %s: %.6g. %s\n", value.label, value.value, numericRef("metrics", base+"."+value.key))
+			}
+			for _, ranking := range []struct {
+				title, field string
+				functions    []metrics.FuncStat
+			}{{"Self", "self_ms", trigger.TopSelf}, {"Inclusive", "total_ms", trigger.TopInclusive}} {
+				for _, function := range ranking.functions {
+					value := function.SelfMs
+					if ranking.field == "total_ms" {
+						value = function.TotalMs
+					}
+					fmt.Fprintf(&b, "- %s %s: %.6gms. %s\n", ranking.title, code(functionLabel(function)), value, numericRef("metrics", base+"."+functionMetricPrefix(function)+"."+ranking.field))
+				}
+			}
 		}
-		for _, item := range []struct {
+	}
+	b.WriteString("\n## Slow frames\n\n")
+	for i, frame := range r.SlowFrames {
+		prefix := "slowFrames." + strconv.Itoa(i)
+		fmt.Fprintf(&b, "- %s — %s. %s\n", mdEscape(frame.TopEvent), code(frame.TopFunc), mdEscape(frame.SampleStatus))
+		for _, value := range []struct {
 			key, label string
 			value      float64
-		}{{"t", "Time from window start (s)", f.T}, {"ms", "Frame ms", f.Ms}, {"script_ms", "Script ms", f.ScriptMs}, {"layout_ms", "Layout/style ms", f.LayoutMs}, {"paint_ms", "Paint/composite ms", f.PaintMs}, {"gc_ms", "GC ms", f.GCMs}} {
-			fmt.Fprintf(b, "  - %s: %.6g. Reproduce: %s\n", item.label, item.value, code(NumericCommand(r, prefix+"."+item.key)))
+		}{{"t", "Time from window start (s)", frame.T}, {"ms", "Frame ms", frame.Ms}, {"script_ms", "Script ms", frame.ScriptMs}, {"layout_ms", "Layout/style ms", frame.LayoutMs}, {"paint_ms", "Paint/composite ms", frame.PaintMs}, {"gc_ms", "GC ms", frame.GCMs}} {
+			fmt.Fprintf(&b, "  - %s: %.6g. %s\n", value.label, value.value, numericRef("metrics", prefix+"."+value.key))
 		}
 	}
 	b.WriteString("\n## Long tasks\n\n")
-	if len(r.LongTasks) == 0 {
-		b.WriteString("_None over threshold._\n")
-	}
-	for i, t := range r.LongTasks {
-		prefix := "longTasks." + strconv.Itoa(i)
-		fmt.Fprintf(b, "- %s %s — %s; time %.6gs, duration %.6gms. Reproduce: %s; %s\n", mdEscape(t.EventType), mdEscape(t.Detail), code(t.TopFunc), t.T, t.Ms, code(NumericCommand(r, prefix+".t")), code(NumericCommand(r, prefix+".ms")))
-		if t.SampleStatus != "" {
-			fmt.Fprintf(b, "  - %s\n", t.SampleStatus)
-		}
-	}
-}
-
-func markdown(r *Report, o MarkdownOptions) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "# wkperf profile: %s\n\n- Source: %s\n- Active duration: %.6gs. Reproduce: %s\n", mdEscape(r.Name), code(r.Source), r.DurationSec, code(NumericCommand(r, "recording.duration_sec")))
-	if coverage := r.SampleCoverage; coverage.UntimedSampleCount > 0 {
-		totalMs := coverage.SampledMs
-		accounting := "included in rankings, excluded from frame, task, trigger, window and periodic attribution."
-		if coverage.UntimedExcluded {
-			totalMs += coverage.UntimedMs
-			accounting = "excluded from this window and all time-based attribution; analyze the whole recording to include them in rankings."
-		}
-		share := 0.0
-		if totalMs > 0 {
-			share = coverage.UntimedMs / totalMs * 100
-		}
-		fmt.Fprintf(&b, "- Untimed samples: %d (%.1f ms, %.1f%% of sampled weight): %s\n", coverage.UntimedSampleCount, coverage.UntimedMs, share, accounting)
-	}
-	renderFindings(&b, r, true)
-	renderHotPath(&b, r, o.Brief)
-	renderFunctions(&b, r, o.Brief)
-	renderVerification(&b, r)
-	if !o.Brief && (o.MaxBytes <= 0 || b.Len() < o.MaxBytes) {
-		renderDetails(&b, r)
+	for i, task := range r.LongTasks {
+		fmt.Fprintf(&b, "- At %.6gs: %.6gms; %s %s — %s. %s %s\n", task.T, task.Ms, mdEscape(task.EventType), mdEscape(task.Detail), code(task.TopFunc), mdEscape(task.SampleStatus), numericRef("metrics", "longTasks."+strconv.Itoa(i)+".ms"))
 	}
 	return b.String()
 }
 
-func boundedMarkdown(s string, maxBytes int) string {
-	if maxBytes <= 0 || len(s) <= maxBytes {
-		return s
+func (v *markdownRenderer) appendix() string {
+	if len(v.stacks) == 0 {
+		return ""
 	}
-	marker := MarkdownTruncationMarker + "\n"
-	if maxBytes < len(marker) {
-		return marker[:maxBytes]
-	}
-	sections := strings.Split(s, "\n## ")
-	if len(sections) >= 5 {
-		title := strings.SplitN(sections[0], "\n", 2)[0] + "\n"
-		headings := make([]string, 4)
-		bodies := make([]string, 4)
-		reserved := len(title) + len(marker)
-		for i := range 4 {
-			parts := strings.SplitN(sections[i+1], "\n", 2)
-			headings[i] = "\n## " + parts[0] + "\n"
-			if len(parts) == 2 {
-				bodies[i] = parts[1]
-			}
-			reserved += len(headings[i])
-		}
-		if reserved <= maxBytes {
-			var b strings.Builder
-			b.WriteString(title)
-			remaining := maxBytes - reserved
-			for i := range 4 {
-				b.WriteString(headings[i])
-				allowance := remaining / (4 - i)
-				body := markdownPrefix(bodies[i], allowance)
-				b.WriteString(body)
-				remaining -= len(body)
-			}
-			b.WriteString(marker)
-			return b.String()
-		}
-	}
-	return markdownPrefix(s, maxBytes-len(marker)) + marker
-}
-
-func markdownPrefix(s string, maxBytes int) string {
-	if len(s) <= maxBytes {
-		return s
-	}
-	end := maxBytes
-	for end > 0 && !utf8.RuneStart(s[end]) {
-		end--
-	}
-	if newline := strings.LastIndexByte(s[:end], '\n'); newline >= 0 {
-		end = newline + 1
-	}
-	return s[:end]
-}
-
-func RenderMarkdownWithOptions(w io.Writer, r *Report, o MarkdownOptions) error {
-	_, err := io.WriteString(w, boundedMarkdown(markdown(r, o), o.MaxBytes))
-	return err
-}
-
-func RenderMarkdown(w io.Writer, r *Report) error {
-	return RenderMarkdownWithOptions(w, r, MarkdownOptions{})
-}
-
-// RenderTerm shares report order and full source locations with Markdown.
-func RenderTerm(w io.Writer, r *Report, color bool) error {
-	text := markdown(r, MarkdownOptions{})
 	var b strings.Builder
-	for _, line := range strings.Split(text, "\n") {
-		if strings.HasPrefix(line, "#") {
-			line = strings.TrimLeft(line, "# ")
-			if color {
-				line = "\x1b[1m" + line + "\x1b[0m"
-			}
+	b.WriteString("\n## Stacks\n\nEach distinct selected stack appears once. Frames run root to leaf; query returns every exact frame.\n")
+	for _, stack := range v.stacks {
+		fmt.Fprintf(&b, "\n### %s — %s (%d frames)\n\n", stack.Label, code(stack.ID), stack.Depth)
+		for _, frame := range stack.Root {
+			fmt.Fprintf(&b, "- %s\n", code(frameLabel(frame)))
 		}
-		line = terminalEscaper.Replace(line)
-		b.WriteString(line)
-		b.WriteByte('\n')
+		if stack.Elided > 0 {
+			fmt.Fprintf(&b, "- _… %d frames elided._\n", stack.Elided)
+		}
+		for _, frame := range stack.Leaf {
+			fmt.Fprintf(&b, "- %s\n", code(frameLabel(frame)))
+		}
+		fmt.Fprintf(&b, "Full stack: %s\n", code(stack.Command))
 	}
-	_, err := io.WriteString(w, b.String())
-	return err
+	return b.String()
 }
 
 func allRootWindows(r *rootcause.Report) []rootcause.Window {
@@ -516,4 +539,21 @@ func formatFlags(flags []string) string {
 		b.WriteString(flag)
 	}
 	return b.String()
+}
+
+func RenderMarkdown(w io.Writer, r *Report) error {
+	return RenderMarkdownWithOptions(w, r, MarkdownOptions{})
+}
+
+func RenderMarkdownWithOptions(w io.Writer, r *Report, o MarkdownOptions) error {
+	return RenderMarkdownDocuments(w, []MarkdownDocument{{Report: r}}, "", o)
+}
+
+// RenderTerm shares evidence, priority order and byte limits with Markdown.
+func RenderTerm(w io.Writer, r *Report, color bool) error {
+	return RenderTermWithOptions(w, r, color, MarkdownOptions{})
+}
+
+func RenderTermWithOptions(w io.Writer, r *Report, color bool, o MarkdownOptions) error {
+	return RenderTermDocuments(w, []MarkdownDocument{{Report: r}}, "", color, o)
 }

@@ -300,7 +300,7 @@ func buildPriorities(scenes []SceneResult, top int) []Priority {
 	}
 	byID := map[string]*acc{}
 	var order []string
-	for _, s := range scenes {
+	for sceneIndex, s := range scenes {
 		if s.Rep == nil {
 			continue
 		}
@@ -326,11 +326,13 @@ func buildPriorities(scenes []SceneResult, top int) []Priority {
 				a.hasBest, a.bestImp = true, f.ImpactMs
 				a.p.Title, a.p.Category, a.p.Suggestion = f.Title, f.Category, f.Suggestion
 				a.p.EvidenceScene = s.Name
+				a.p.EvidenceSceneIndex = sceneIndex
 				a.p.NumericEvidence, a.p.MetricKeys, a.p.Verify = f.NumericEvidence, f.MetricKeys, f.Verify
 				a.p.Confidence, a.p.ConfidenceReasons = f.Confidence, f.ConfidenceReasons
 				a.p.SuggestedWindows, a.p.Functions, a.p.Triggers = f.SuggestedWindows, f.Functions, f.Triggers
 				a.p.Nodes = f.Nodes
 				a.p.Stacks, a.p.Command = f.Stacks, f.Command
+				a.p.StackIDs, a.p.StacksTotal = f.StackIDs, f.StacksTotal
 				a.p.Evidence = nil
 				for _, e := range f.Evidence {
 					a.p.Evidence = append(a.p.Evidence, s.Name+": "+e)
@@ -367,7 +369,7 @@ func mergeHotspots(scenes []SceneResult, top int) ([]HotFunction, []insights.Mod
 	mod := map[string]*insights.ModuleStat{}
 	totalSelf := 0.0
 	totalMod := 0.0
-	for _, s := range scenes {
+	for sceneIndex, s := range scenes {
 		if s.Rep == nil {
 			continue
 		}
@@ -376,12 +378,16 @@ func mergeHotspots(scenes []SceneResult, top int) ([]HotFunction, []insights.Mod
 			k := h.Key()
 			hf := fn[k]
 			if hf == nil {
-				hf = &HotFunction{ID: h.ID, Name: h.Name, URL: h.URL, Line: h.Line, Column: h.Column, SourceID: h.SourceID, Original: h.Original}
+				hf = &HotFunction{ID: h.ID, Name: h.Name, URL: h.URL, Line: h.Line, Column: h.Column, SourceID: h.SourceID, Original: h.Original, EvidenceSceneIndex: sceneIndex}
 				fn[k] = hf
 			}
 			if len(hf.CommonStack) == 0 && len(h.CommonStack) > 0 {
 				hf.CommonStack, hf.CommonStackScene = h.CommonStack, s.Name
+				hf.EvidenceSceneIndex = sceneIndex
 				hf.CommonStackID = h.CommonStackID
+				if hf.CommonStackID == "" {
+					hf.CommonStackID = insights.MetricStackID(h.CommonStack)
+				}
 			}
 			hf.SelfMs += h.SelfMs
 			totalSelf += h.SelfMs

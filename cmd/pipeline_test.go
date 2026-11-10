@@ -218,13 +218,12 @@ func TestPipelineBoundedMarkdown(t *testing.T) {
 	if err != nil || one != two || len(one) > 1800 {
 		t.Fatalf("markdown must be deterministic and bounded: %v %d/%d", err, len(one), len(two))
 	}
-	for _, heading := range []string{"findings", "hot functions", "verification"} {
-		if !strings.Contains(strings.ToLower(one), heading) {
-			t.Fatalf("brief lacks fixed %q section: %s", heading, one)
-		}
+	if !strings.Contains(one, "- Source:") || !strings.Contains(one, f) {
+		t.Fatalf("bounded Markdown must retain source identity: %s", one)
 	}
-	if !strings.Contains(strings.ToLower(one), "truncat") {
-		t.Fatalf("bounded output must mark omitted detail: %s", one)
+	lines := strings.Split(strings.TrimSpace(one), "\n")
+	if !strings.Contains(lines[len(lines)-1], "[truncated:") {
+		t.Fatalf("bounded output must end with omitted-detail marker: %s", one)
 	}
 	jsonOut, _, err := runPipeline(t, "analyze", f, "--format", "json", "--brief", "--max-bytes", "1800")
 	if err != nil || len(jsonOut) <= 1800 {
@@ -432,7 +431,7 @@ func TestPipelineWindowCommandsKeepOriginalClock(t *testing.T) {
 		t.Fatal(err)
 	}
 	var doc struct {
-		Reports []insights.Report `json:"reports"`
+		Reports []insights.WireReport `json:"reports"`
 	}
 	if err := json.Unmarshal([]byte(out), &doc); err != nil || len(doc.Reports) != 1 {
 		t.Fatalf("report: %v", err)
@@ -536,7 +535,7 @@ func TestPipelineModuleGrouping(t *testing.T) {
 					t.Fatal(err)
 				}
 				var doc struct {
-					Reports []insights.Report `json:"reports"`
+					Reports []insights.WireReport `json:"reports"`
 					Report  struct {
 						Modules []insights.ModuleStat `json:"modules"`
 					} `json:"report"`

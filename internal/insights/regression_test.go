@@ -238,16 +238,19 @@ func TestNativeAnimationSamplingDoesNotProveForcedLayout(t *testing.T) {
 	}
 }
 
-func TestBoundedBriefKeepsAllPrimaryHeadings(t *testing.T) {
+func TestBoundedBriefReservesFindingsBeforeDetailHeadings(t *testing.T) {
 	r := Analyze(&model.Recording{EndTime: 2, Records: []model.Record{script("timer-fired", 0.1, 0.4, "42")}}, "capture.json", Options{})
 	var b bytes.Buffer
 	if err := RenderMarkdownWithOptions(&b, r, MarkdownOptions{Brief: true, MaxBytes: 1800}); err != nil {
 		t.Fatal(err)
 	}
-	for _, heading := range []string{"## Findings", "## Hot path", "## Hot functions", "## Verification"} {
-		if !strings.Contains(b.String(), heading) {
-			t.Errorf("missing reserved heading %q: %s", heading, b.String())
+	for _, finding := range r.Findings {
+		if !strings.Contains(b.String(), finding.ID) {
+			t.Errorf("missing reserved finding %q: %s", finding.ID, b.String())
 		}
+	}
+	if !strings.Contains(b.String(), "- Source:") {
+		t.Error("bounded report dropped source identity")
 	}
 	if b.Len() > 1800 || !strings.Contains(b.String(), MarkdownTruncationMarker) {
 		t.Fatalf("invalid hard budget bytes=%d", b.Len())

@@ -50,20 +50,25 @@ type barRow struct {
 	SelfCommand, TotalCommand string
 	Report                    *insights.Report
 	Function                  metrics.FuncStat
+	StackRef, StackLabel      string
 }
 
 type reportView struct {
-	R                *insights.Report
-	Duration         string
-	Slices           []sliceView
-	Hotspots         []barRow
-	Inclusive        []barRow
-	CommonStacks     []metrics.StackStat
-	Modules          []barRow
-	SlowFrames       []insights.SlowFrame
-	LongTasks        []insights.LongTask
-	Findings         []findingView
-	RootCause, Flame template.HTML
+	R                    *insights.Report
+	Duration             string
+	Slices               []sliceView
+	Hotspots             []barRow
+	Inclusive            []barRow
+	CommonStacks         []metrics.StackStat
+	Modules              []barRow
+	SlowFrames           []insights.SlowFrame
+	LongTasks            []insights.LongTask
+	Findings             []findingView
+	StackPreviews        []insights.StackPreview
+	StackReferences      map[string]string
+	MetricBase, RootBase string
+	RootCause, Flame     template.HTML
+	AnchorPrefix         string
 }
 
 type findingView struct {
@@ -89,10 +94,23 @@ func clampPct(v float64) float64 {
 	return v
 }
 
-func buildView(r *insights.Report) (reportView, error) {
-	v := reportView{R: r, Duration: fmt.Sprintf("%.2fs", r.DurationSec)}
+func buildView(r *insights.Report, prefix string) (reportView, error) {
+	if len(r.CommonStacks) == 0 && r.Summary != nil {
+		copy := *r
+		copy.CommonStacks = r.Summary.CommonStacks
+		r = &copy
+	}
+	r = insights.SelectEvidence(r)
+	v := reportView{R: r, Duration: fmt.Sprintf("%.2fs", r.DurationSec), StackPreviews: insights.StackPreviews(r, false), StackReferences: make(map[string]string), AnchorPrefix: prefix}
+	stackMap := make(map[string]insights.StackPreview, len(v.StackPreviews))
+	for _, preview := range v.StackPreviews {
+		stackMap[preview.ID] = preview
+		v.StackReferences[preview.ID] = preview.Reference()
+	}
+	v.MetricBase = strings.Replace(insights.NumericCommand(r, ""), " metrics ''", " metrics", 1)
+	v.RootBase = strings.Replace(v.MetricBase, " metrics --format", " rootcause --format", 1)
 	var err error
-	v.RootCause, err = rootCauseHTML(r.RootCause)
+	v.RootCause, err = rootCauseHTML(r.RootCause, stackMap, prefix)
 	if err != nil {
 		return reportView{}, err
 	}
@@ -115,12 +133,9 @@ func buildView(r *insights.Report) (reportView, error) {
 		})
 		x += w
 	}
-	v.Hotspots = functionRows(r, r.Hotspots, false)
-	v.Inclusive = functionRows(r, r.InclusiveHotspots, true)
+	v.Hotspots = functionRows(r, r.Hotspots, false, v.StackReferences, prefix)
+	v.Inclusive = functionRows(r, r.InclusiveHotspots, true, v.StackReferences, prefix)
 	v.CommonStacks = r.CommonStacks
-	if len(v.CommonStacks) == 0 && r.Summary != nil {
-		v.CommonStacks = r.Summary.CommonStacks
-	}
 	for _, m := range r.Modules {
 		v.Modules = append(v.Modules, barRow{Name: m.Name, Value: f1(m.SelfMs) + " ms", Pct: f1(m.Pct) + "%", W: f1(clampPct(m.Pct))})
 	}
@@ -128,14 +143,19 @@ func buildView(r *insights.Report) (reportView, error) {
 	v.LongTasks = r.LongTasks
 	for _, f := range r.Findings {
 		var stacks strings.Builder
-		if err := RenderStacks(&stacks, f.Stacks); err != nil {
-			return reportView{}, err
+		for _, stack := range f.Stacks {
+			id := rootStackID(stack)
+			label := rootStackReference(stack)
+			if preview, ok := stackMap[id]; ok {
+				label = preview.Reference()
+			}
+			fmt.Fprintf(&stacks, "<p><a href=\"#stack-%s\">%s</a></p>", template.HTMLEscapeString(prefix+id), template.HTMLEscapeString(label))
 		}
 		v.Findings = append(v.Findings, findingView{Finding: f, Impact: fmt.Sprintf("%.1f ms (%.1f%%)", f.ImpactMs, f.ImpactPct), StackHTML: template.HTML(stacks.String())})
 	}
 	return v, nil
 }
-func functionRows(r *insights.Report, functions []metrics.FuncStat, inclusive bool) []barRow {
+func functionRows(r *insights.Report, functions []metrics.FuncStat, inclusive bool, references map[string]string, prefix string) []barRow {
 	maxTime := 0.0
 	for _, h := range functions {
 		value := h.SelfMs
@@ -158,17 +178,25 @@ func functionRows(r *insights.Report, functions []metrics.FuncStat, inclusive bo
 		if maxTime > 0 {
 			width = value / maxTime * 100
 		}
-		rows = append(rows, barRow{Name: name, Detail: h.Location(), Value: f1(h.SelfMs) + " ms", Pct: f1(h.TotalMs) + " ms", W: f1(width), Callers: h.Callers, Callees: h.Callees, SelfCommand: insights.FunctionCommand(r, h, "self_ms"), TotalCommand: insights.FunctionCommand(r, h, "total_ms"), Report: r, Function: h})
+		stackID := h.CommonStackID
+		if stackID == "" && len(h.CommonStack) > 0 {
+			stackID = insights.MetricStackID(h.CommonStack)
+		}
+		stackRef := stackID
+		if stackRef != "" {
+			stackRef = prefix + stackRef
+		}
+		rows = append(rows, barRow{Name: name, Detail: h.Location(), Value: f1(h.SelfMs) + " ms", Pct: f1(h.TotalMs) + " ms", W: f1(width), Callers: h.Callers, Callees: h.Callees, SelfCommand: insights.FunctionCommand(r, h, "self_ms"), TotalCommand: insights.FunctionCommand(r, h, "total_ms"), Report: r, Function: h, StackRef: stackRef, StackLabel: references[stackID]})
 	}
 	return rows
 }
 
 // RenderFragment writes recording sections without a document wrapper.
 // Callers must include the report stylesheet when embedding the fragment.
-func RenderFragment(w io.Writer, reps []*insights.Report) error {
-	for _, r := range reps {
+func RenderFragment(w io.Writer, reps []*insights.Report, namespace string) error {
+	for i, r := range reps {
 		if r != nil {
-			v, err := buildView(r)
+			v, err := buildView(r, fmt.Sprintf("%sreport-%d-", namespace, i))
 			if err != nil {
 				return err
 			}
@@ -189,9 +217,9 @@ func Render(w io.Writer, reps []*insights.Report) error {
 // escaped, preformatted-free section. Empty ai omits the section.
 func RenderWithAI(w io.Writer, reps []*insights.Report, ai string) error {
 	pv := pageView{}
-	for _, r := range reps {
+	for i, r := range reps {
 		if r != nil {
-			v, err := buildView(r)
+			v, err := buildView(r, fmt.Sprintf("report-%d-", i))
 			if err != nil {
 				return err
 			}
@@ -242,6 +270,8 @@ var pageTmpl = template.Must(template.New("page").Funcs(template.FuncMap{
 	"triggerFunctionCommand": insights.TriggerFunctionCommand,
 	"edgeCommand":            insights.EdgeCommand,
 	"stackCommand":           insights.StackCommand,
+	"metricStackID":          insights.MetricStackID,
+	"rootFrame":              rootFrameLabel,
 }).Parse(`<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>wkperf analysis</title><style>` + CSS + `</style></head><body><main>
@@ -252,8 +282,11 @@ var pageTmpl = template.Must(template.New("page").Funcs(template.FuncMap{
 {{define "report"}}
 <section>
 {{$r := .R}}
+	{{$refs := .StackReferences}}
+{{$prefix := .AnchorPrefix}}
 <h2>{{if .R.Name}}{{.R.Name}}{{else}}{{.R.Source}}{{end}}</h2>
 <div class="mut">{{.R.Source}} &middot; {{.Duration}}</div>
+<p class="mut">Reproduce scalar values using the displayed key after its operation. Source, window and source maps apply throughout.</p><p>Metrics: <code>{{.MetricBase}}</code><br>Root cause: <code>{{.RootBase}}</code></p>
 {{if .RootCause}}{{.RootCause}}{{end}}
 {{if .Flame}}<h3>Sampled flame graph</h3>{{.Flame}}{{end}}
 
@@ -295,7 +328,7 @@ var pageTmpl = template.Must(template.New("page").Funcs(template.FuncMap{
 
 <h3>Common stacks</h3>
 <div class="card">{{if .CommonStacks}}<table><tr><th>Root → leaf stack</th><th class="n">Sample weight ms</th><th class="n">Samples</th></tr>
-{{range $index, $stack := .CommonStacks}}<tr><td>{{range $i, $f := .Frames}}{{if $i}} → {{end}}<code>{{name $f.Name}} @ {{$f.Location}}</code>{{end}}</td><td class="n">{{printf "%.3f" .WeightMs}}<div><code>{{stackCommand $r $index "weight_ms"}}</code></div></td><td class="n">{{.Samples}}<div><code>{{stackCommand $r $index "samples"}}</code></div></td></tr>{{end}}</table>
+{{range $index, $stack := .CommonStacks}}{{$id := $stack.ID}}{{if not $id}}{{$id = metricStackID $stack.Frames}}{{end}}<tr><td><a href="#stack-{{$prefix}}{{$id}}">{{index $refs $id}}</a></td><td class="n">{{printf "%.3f" .WeightMs}}<div><code>{{stackCommand $r $index "weight_ms"}}</code></div></td><td class="n">{{.Samples}}<div><code>{{stackCommand $r $index "samples"}}</code></div></td></tr>{{end}}</table>
 {{else}}<span class="mut">No stack samples.</span>{{end}}</div>
 
 <h3>Trigger timing</h3>
@@ -327,12 +360,15 @@ var pageTmpl = template.Must(template.New("page").Funcs(template.FuncMap{
 <div class="card">{{if .LongTasks}}<table><tr><th class="n">At (s)</th><th class="n">ms</th><th>Event</th><th>Detail</th><th>Top function</th></tr>
 {{range .LongTasks}}<tr><td class="n">{{printf "%.2f" .T}}</td><td class="n">{{printf "%.1f" .Ms}}</td><td>{{.EventType}}</td><td>{{.Detail}}</td><td>{{if .TopFunc}}<code>{{.TopFunc}}</code>{{end}}{{if .SampleStatus}}<div class="mut">{{.SampleStatus}}</div>{{end}}</td></tr>{{end}}</table>
 {{else}}<span class="mut">No long tasks.</span>{{end}}</div>
+
+{{if .StackPreviews}}<h3>Stack appendix</h3><p class="mut">Each distinct selected stack appears once. Query returns every exact frame.</p>
+{{range .StackPreviews}}<details id="stack-{{$prefix}}{{.ID}}"><summary>{{.Label}} · <code>{{.ID}}</code> · {{.Depth}} frames</summary><ol>{{range .Root}}<li><code>{{rootFrame .}}</code></li>{{end}}{{if .Elided}}<li>… {{.Elided}} frames elided.</li>{{end}}{{range .Leaf}}<li><code>{{rootFrame .}}</code></li>{{end}}</ol><p>Full stack: <code>{{.Command}}</code></p></details>{{end}}{{end}}
 </section>
 {{end}}
 {{define "edges"}}
 {{$report := .Report}}{{$function := .Function}}
 {{if .Function.ID}}<div class="mut">ID <code>{{.Function.ID}}</code></div>{{end}}
-{{if .Function.CommonStack}}<details><summary>Common stack</summary><ol>{{range .Function.CommonStack}}<li><code>{{name .Name}} @ {{.Location}}</code></li>{{end}}</ol></details>{{end}}
+{{if .StackRef}}<p>Common stack: <a href="#stack-{{.StackRef}}">{{.StackLabel}}</a></p>{{end}}
 {{if .Callers}}<details><summary>Callers</summary><ul>{{range .Callers}}<li><code>{{name .Function.Name}} @ {{.Function.Location}}</code> — {{printf "%.3f" .WeightMs}} ms <code>{{edgeCommand $report $function . "callers" "weight_ms"}}</code>, {{.Samples}} samples <code>{{edgeCommand $report $function . "callers" "samples"}}</code></li>{{end}}</ul></details>{{end}}
 {{if .Callees}}<details><summary>Callees</summary><ul>{{range .Callees}}<li><code>{{name .Function.Name}} @ {{.Function.Location}}</code> — {{printf "%.3f" .WeightMs}} ms <code>{{edgeCommand $report $function . "callees" "weight_ms"}}</code>, {{.Samples}} samples <code>{{edgeCommand $report $function . "callees" "samples"}}</code></li>{{end}}</ul></details>{{end}}
 {{end}}`))

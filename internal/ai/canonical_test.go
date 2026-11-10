@@ -45,15 +45,24 @@ func TestCanonicalFindingStacksAndCommandsSurviveReports(t *testing.T) {
 		t.Fatal(err)
 	}
 	var doc struct {
-		Priorities []struct {
-			Stacks  []rootcause.Stack
-			Command string
+		Priorities []audit.Priority
+		Scenes     []struct {
+			Analysis insights.WireReport `json:"analysis"`
 		}
 	}
 	if err := json.Unmarshal(payload, &doc); err != nil {
 		t.Fatal(err)
 	}
-	if len(doc.Priorities) != 1 || len(doc.Priorities[0].Stacks) != 1 || doc.Priorities[0].Command != command {
-		t.Fatal("audit priority lost canonical stack metadata")
+	if len(doc.Priorities) != 1 || len(doc.Priorities[0].StackIDs) != 1 || doc.Priorities[0].Command != command {
+		t.Fatal("audit priority lost canonical stack references")
+	}
+	priority := doc.Priorities[0]
+	exact, ok := doc.Scenes[priority.EvidenceSceneIndex].Analysis.Stacks[priority.StackIDs[0]]
+	if !ok || len(exact.Frames) != 1 {
+		t.Fatal("audit priority references missing exact evidence")
+	}
+	frame := doc.Scenes[priority.EvidenceSceneIndex].Analysis.Frames[exact.Frames[0]]
+	if frame.Name != "bridge<unsafe>" || frame.Column != 90 || frame.Original == nil || frame.Original.URL != "src/App.tsx" {
+		t.Fatal("audit catalog lost generated or original frame identity")
 	}
 }

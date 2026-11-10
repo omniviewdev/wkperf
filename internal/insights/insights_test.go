@@ -306,7 +306,7 @@ func TestRenderSmoke(t *testing.T) {
 	if strings.Contains(plain.String(), "\x1b[") {
 		t.Error("ANSI in color=false output")
 	}
-	for _, want := range []string{"Wall-time breakdown", "Top hotspots", "Slow frames", "Long tasks", "Findings", "long-tasks", "█"} {
+	for _, want := range []string{"Wall-time breakdown", "Top hotspots", "Slow frames", "Long tasks", "Findings", "long-tasks"} {
 		if !strings.Contains(plain.String(), want) {
 			t.Errorf("term missing %q", want)
 		}

@@ -27,6 +27,7 @@ type Location struct {
 // only; a source ID never changes an identity that already has a URL. Original
 // enriches the generated identity without making IDs depend on source maps.
 type Frame struct {
+	ID        string    `json:"id"`
 	Name      string    `json:"name"`
 	URL       string    `json:"url"`
 	Line      int       `json:"line"`

@@ -2,6 +2,8 @@
 package schema
 
 import (
+	"encoding/json"
+
 	"github.com/omniviewdev/wkperf/internal/audit"
 	"github.com/omniviewdev/wkperf/internal/compare"
 	"github.com/omniviewdev/wkperf/internal/insights"
@@ -36,6 +38,15 @@ type Analysis struct {
 	*insights.Report
 	Scorecard *scorecard.Scorecard   `json:"scorecard,omitempty"`
 	SourceMap *sourcemap.Diagnostics `json:"sourceMap,omitempty"`
+}
+
+// MarshalJSON keeps envelope metadata beside the report's interned wire fields.
+func (a Analysis) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		*insights.WireReport
+		Scorecard *scorecard.Scorecard   `json:"scorecard,omitempty"`
+		SourceMap *sourcemap.Diagnostics `json:"sourceMap,omitempty"`
+	}{WireReport: insights.ToWire(a.Report), Scorecard: a.Scorecard, SourceMap: a.SourceMap})
 }
 
 type InsightsDocument struct {

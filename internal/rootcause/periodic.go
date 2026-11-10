@@ -154,7 +154,7 @@ func (b builder) periodicRoots() []PeriodicRoot {
 			continue
 		}
 		id := "periodic." + key
-		p := PeriodicRoot{Root: g.root, TargetID: g.targetID, FireCount: len(fires), PeriodMs: number(period), JitterMs: number(jitter), Regularity: number(regularity), Command: b.query("paths "+quote(g.root.Name), b.from, b.to)}
+		p := PeriodicRoot{Root: g.root, TargetID: g.targetID, FireCount: len(fires), PeriodMs: number(period), JitterMs: number(jitter), Regularity: number(regularity), Command: b.query("paths "+quote(flame.FunctionID(g.root)), b.from, b.to)}
 		for i, f := range fires {
 			var ms float64
 			for _, s := range f.samples {

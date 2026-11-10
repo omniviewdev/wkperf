@@ -62,6 +62,7 @@ func buildAuditUser(a *audit.Report, c Context, budget int) string {
 		secs = append(secs, section{title: "no-data", value: math.MaxInt, body: "No audit data was provided.\n"})
 		return assemble(secs, budget)
 	}
+	a = audit.SelectEvidence(a)
 	secs = append(secs, auditSections(a, c)...)
 	return assemble(secs, budget)
 }
@@ -169,13 +170,13 @@ func auditSections(a *audit.Report, c Context) []section {
 			if h.ID != "" {
 				fmt.Fprintf(&b, "   id=%s\n", h.ID)
 			}
-			writeMetricStack(&b, h.CommonStack, c.TopN)
+			writeMetricStack(&b, h.CommonStack)
 			if len(h.CommonStack) > 0 {
 				fmt.Fprintf(&b, "   Common stack scene: %s\n", clip(oneLine(h.CommonStackScene), 100))
-				for _, scene := range a.Scenes {
-					if scene.Name == h.CommonStackScene && scene.Rep != nil {
+				if h.EvidenceSceneIndex >= 0 && h.EvidenceSceneIndex < len(a.Scenes) {
+					scene := a.Scenes[h.EvidenceSceneIndex]
+					if scene.Rep != nil {
 						fmt.Fprintf(&b, "   full stack reproduce: %s\n", insights.FunctionStackCommand(scene.Rep, metrics.FuncStat{ID: h.ID, Name: h.Name, URL: h.URL, Line: h.Line, Column: h.Column, SourceID: h.SourceID, CommonStackID: h.CommonStackID}))
-						break
 					}
 				}
 			}
@@ -208,8 +209,9 @@ func auditSections(a *audit.Report, c Context) []section {
 		secs = append(secs, section{title: "modules", value: vAuditModules, body: b.String()})
 	}
 	for i, scene := range limitSlice(a.Scenes, c.TopN) {
-		if scene.Rep != nil && scene.Rep.RootCause != nil {
+		if scene.Rep != nil {
 			secs = append(secs, rootCauseSections("scene "+clip(oneLine(scene.Name), 80), scene.Rep.RootCause, c, vAuditPriorities-i)...)
+			secs = append(secs, stackAppendixSection("scene "+clip(oneLine(scene.Name), 80), scene.Rep, vAuditPriorities-i+1))
 		}
 	}
 	return secs

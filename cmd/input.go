@@ -104,7 +104,7 @@ func combineFailures(failures []schema.Error, err error) error {
 }
 
 func validateMarkdownOptions(format string, maxBytes int, ai bool) error {
-	if format != "md" && format != "all" {
+	if format != "term" && format != "md" && format != "all" {
 		return nil
 	}
 	if maxBytes < 0 {
@@ -114,7 +114,7 @@ func validateMarkdownOptions(format string, maxBytes int, ai bool) error {
 		return fmt.Errorf("--max-bytes must be at least 64 to retain the truncation marker")
 	}
 	if maxBytes > 0 && ai {
-		return fmt.Errorf("--max-bytes cannot be combined with --ai; omit --ai for a deterministic bounded Markdown report")
+		return fmt.Errorf("--max-bytes cannot be combined with --ai; omit --ai for a deterministic bounded text report")
 	}
 	return nil
 }

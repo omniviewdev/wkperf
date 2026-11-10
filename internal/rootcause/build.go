@@ -24,6 +24,7 @@ func Build(rec *model.Recording, tree *flame.Tree, o Options) *Report {
 		return r
 	}
 	o = defaults(o)
+	r.Top = o.Top
 	if rec.SampleEvidence != nil {
 		o.OffsetSec = rec.StartTime - rec.SampleEvidence.StartTime
 	}
@@ -66,15 +67,17 @@ func Build(rec *model.Recording, tree *flame.Tree, o Options) *Report {
 		Depth: b.query("depth", from, to), Stacks: b.query("stacks", from, to),
 		Owners: b.query("rootcause", from, to), GC: b.query("rootcause", from, to),
 	}
-	selector := "(anonymous)"
-	selected := false
-	tree.EachSample(func(s flame.Sample) {
-		if !selected && len(s.Frames) > 0 {
-			selector, selected = s.Frames[0].Name, true
-		}
-	})
-	r.Commands.Paths = b.query("paths "+quote(selector), from, to)
+	functions := tree.Functions()
+	if len(functions) > 0 {
+		r.Commands.Paths = b.query("paths "+quote(flame.FunctionID(functions[0].Frame)), from, to)
+	} else {
+		r.Commands.Paths = b.reproduce("samples.count")
+		r.Commands.Depth = b.reproduce("samples.count")
+		r.Commands.Stacks = b.reproduce("samples.count")
+	}
 	r.HotPath = b.hotPath(tree, "hot_path", from, to)
+	r.Commands.HotPath = r.HotPath.Command
+	r.Commands.Window = r.HotPath.Command
 	r.Owners, r.AppAttribution = b.ownership()
 	r.Findings = b.stackFindings()
 	r.PeriodicRoots = b.periodicRoots()
@@ -292,6 +295,7 @@ func (b builder) stacks(samples []flame.Sample, prefix string) []Stack {
 
 func (b builder) finishStack(v Stack, prefix, key string) Stack {
 	v.SelfMs = number(v.SelfMs)
+	v.StackID = b.pathIDs[key]
 	id := prefix + ".stack." + key
 	v.Command = b.query("stacks "+quote(b.pathIDs[key]), b.from, b.to)
 	v.Stats = []Stat{
@@ -318,6 +322,9 @@ func (b builder) hotPath(tree *flame.Tree, key string, from, to float64) Path {
 		b.stat(key+".self_ms", "Hot path terminal sampled time", p.SampledMs, "ms", sampledBasis),
 		b.stat(key+".samples", "Hot path terminal samples", float64(p.Samples), "count", sampledBasis),
 		b.stat(key+".depth", "Hot path depth", float64(len(p.Frames)), "frames", sampledBasis),
+	}
+	if len(p.Frames) == 0 {
+		p.Command = b.reproduce(key + ".self_ms")
 	}
 	return p
 }

@@ -49,6 +49,19 @@ func contextID(parentID, functionID string) string {
 	return "n_" + hex.EncodeToString(h.Sum(nil))
 }
 
+// StackID is the canonical calling-context ID of a root-to-leaf stack.
+// It matches the path selectors returned by Tree.Paths.
+func StackID(frames []Frame) string {
+	id := "root"
+	for _, frame := range frames {
+		id = contextID(id, FunctionID(frame))
+	}
+	if len(frames) == 0 {
+		return ""
+	}
+	return id
+}
+
 func compareFrame(a, b Frame) int {
 	if c := cmp.Compare(a.Name, b.Name); c != 0 {
 		return c
@@ -110,6 +123,7 @@ func fromModel(raw model.StackFrame, mapper FrameMapper) Frame {
 		}
 	}
 	frame.Category = Categorize(frame)
+	frame.ID = FunctionID(frame)
 	return frame
 }
 

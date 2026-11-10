@@ -47,7 +47,7 @@ func (b builder) ownership() ([]Owner, []Attribution) {
 		key := stackKey([]flame.Frame{*app})
 		a := attrs[key]
 		if a == nil {
-			a = &Attribution{App: *app, Command: b.query("paths "+quote(app.Name), b.from, b.to)}
+			a = &Attribution{App: *app, Command: b.query("paths "+quote(flame.FunctionID(*app)), b.from, b.to)}
 			attrs[key] = a
 		}
 		switch leaf.Category {

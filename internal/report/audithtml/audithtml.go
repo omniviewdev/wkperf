@@ -235,20 +235,24 @@ func Render(w io.Writer, r *audit.Report, aiMarkdown string) error {
 	if r == nil {
 		r = &audit.Report{}
 	}
+	r = audit.SelectEvidence(r)
 	pv := buildView(r, aiMarkdown)
 	for i, priority := range r.Priorities {
 		var content strings.Builder
-		if err := insightshtml.RenderStacks(&content, priority.Stacks); err != nil {
+		if err := insightshtml.RenderStacks(&content, priority.Stacks, fmt.Sprintf("scene-%d-report-0-", priority.EvidenceSceneIndex)); err != nil {
 			return err
+		}
+		if priority.StacksTotal > 0 {
+			fmt.Fprintf(&content, "<p>Stack evidence: %d of %d shown.</p>", len(priority.Stacks), priority.StacksTotal)
 		}
 		pv.Priority[i].StackHTML = template.HTML(content.String())
 	}
-	for _, scene := range r.Scenes {
+	for i, scene := range r.Scenes {
 		if scene.Rep == nil {
 			continue
 		}
 		var content strings.Builder
-		if err := insightshtml.RenderFragment(&content, []*insights.Report{scene.Rep}); err != nil {
+		if err := insightshtml.RenderFragment(&content, []*insights.Report{scene.Rep}, fmt.Sprintf("scene-%d-", i)); err != nil {
 			return err
 		}
 		pv.Details = append(pv.Details, sceneDetail{Name: scene.Name, Content: template.HTML(content.String())})

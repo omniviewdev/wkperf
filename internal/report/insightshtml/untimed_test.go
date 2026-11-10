@@ -13,7 +13,7 @@ import (
 
 func TestUntimedHTMLStackHasNoInventedTime(t *testing.T) {
 	var out bytes.Buffer
-	if err := RenderStacks(&out, []rootcause.Stack{{SelfMs: 25, Samples: 25, UntimedSamples: 25}}); err != nil {
+	if err := RenderStacks(&out, []rootcause.Stack{{SelfMs: 25, Samples: 25, UntimedSamples: 25}}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "time unknown") || !strings.Contains(out.String(), "25 untimed samples") || strings.Contains(out.String(), "%!") {
@@ -21,7 +21,7 @@ func TestUntimedHTMLStackHasNoInventedTime(t *testing.T) {
 	}
 	first, last := 0.0, 1.0
 	out.Reset()
-	if err := RenderStacks(&out, []rootcause.Stack{{FirstSec: &first, LastSec: &last, Samples: 1}}); err != nil {
+	if err := RenderStacks(&out, []rootcause.Stack{{FirstSec: &first, LastSec: &last, Samples: 1}}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "0.000–1.000 s") || strings.Contains(out.String(), "%!") {

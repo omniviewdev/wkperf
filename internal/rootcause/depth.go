@@ -34,6 +34,9 @@ func stackDepth(frames []flame.Frame) (repeated, commit int) {
 
 func (b builder) depth() DepthStats {
 	d := DepthStats{Command: b.query("depth", b.from, b.to)}
+	if len(b.paths) == 0 {
+		d.Command = b.reproduce("depth.max")
+	}
 	values := make([]float64, 0, b.tree.SampleCount())
 	for _, path := range b.paths {
 		for range path.Samples {

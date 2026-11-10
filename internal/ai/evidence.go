@@ -38,7 +38,7 @@ func auditLocation(f audit.HotFunction) string {
 }
 
 func priorityFinding(p audit.Priority) insights.Finding {
-	return insights.Finding{NumericEvidence: p.NumericEvidence, MetricKeys: p.MetricKeys, Verify: p.Verify, Confidence: p.Confidence, ConfidenceReasons: p.ConfidenceReasons, SuggestedWindows: p.SuggestedWindows, Functions: p.Functions, Triggers: p.Triggers, Nodes: p.Nodes, Stacks: p.Stacks, Command: p.Command}
+	return insights.Finding{NumericEvidence: p.NumericEvidence, MetricKeys: p.MetricKeys, Verify: p.Verify, Confidence: p.Confidence, ConfidenceReasons: p.ConfidenceReasons, SuggestedWindows: p.SuggestedWindows, Functions: p.Functions, Triggers: p.Triggers, Nodes: p.Nodes, Stacks: p.Stacks, StackIDs: p.StackIDs, StacksTotal: p.StacksTotal, Command: p.Command}
 }
 
 func writeFindingDetails(b *strings.Builder, f insights.Finding) {
@@ -46,7 +46,7 @@ func writeFindingDetails(b *strings.Builder, f insights.Finding) {
 		fmt.Fprintf(b, "   - reproduce: %s\n", f.Command)
 	}
 	for _, stack := range limitSlice(f.Stacks, 2) {
-		rootStack(b, stack, defaultTopN)
+		rootStack(b, stack)
 	}
 	if len(f.MetricKeys) > 0 {
 		fmt.Fprintf(b, "   - metric keys: %s\n", clip(oneLine(strings.Join(f.MetricKeys, ", ")), 400))
@@ -77,29 +77,52 @@ func writeFindingDetails(b *strings.Builder, f insights.Finding) {
 	}
 }
 
-func writeMetricStack(b *strings.Builder, frames []metrics.FunctionFrame, limit int) {
+func writeMetricStack(b *strings.Builder, frames []metrics.FunctionFrame) {
 	if len(frames) == 0 {
 		return
 	}
-	b.WriteString("   Common stack (root → leaf):\n")
-	limit = max(limit, 4)
-	for i, frame := range frames {
-		if len(frames) > limit && i >= 2 && i < len(frames)-(limit-2) {
-			if i == 2 {
-				b.WriteString("   → [interior frames omitted; reproduction command returns the full exact stack]\n")
-			}
-			continue
-		}
-		fmt.Fprintf(b, "   → %s @ %s\n", funcName(frame.Name), functionLocation(frame))
-	}
+	leaf := frames[len(frames)-1]
+	fmt.Fprintf(b, "   Common stack reference: %s (%d frames; leaf %s @ %s)\n", insights.MetricStackID(frames), len(frames), funcName(leaf.Name), functionLocation(leaf))
 }
 
-func writeProfileFunction(b *strings.Builder, r *insights.Report, f metrics.FuncStat, limit int) {
+func writeProfileFunction(b *strings.Builder, r *insights.Report, f metrics.FuncStat) {
 	if f.ID != "" {
 		fmt.Fprintf(b, "   id=%s\n", f.ID)
 	}
 	if len(f.CommonStack) > 0 {
-		writeMetricStack(b, f.CommonStack, limit)
+		writeMetricStack(b, f.CommonStack)
 		fmt.Fprintf(b, "   full stack reproduce: %s\n", insights.FunctionStackCommand(r, f))
 	}
+}
+
+func compareStackSections(res *compare.Result, base, cand *insights.Report, c Context) []section {
+	reports := make(map[string]*insights.Report)
+	var sources []string
+	for _, group := range [][]compare.FuncDiff{res.FuncRegressed, res.FuncImproved} {
+		for _, f := range limitSlice(group, c.TopN) {
+			if len(f.CommonStack) == 0 {
+				continue
+			}
+			source := f.CommonStackSource
+			if (base != nil && base.Source == source) || (cand != nil && cand.Source == source) {
+				continue
+			}
+			report := reports[source]
+			if report == nil {
+				report = &insights.Report{Source: source, Top: c.TopN}
+				reports[source] = report
+				sources = append(sources, source)
+			}
+			report.Hotspots = append(report.Hotspots, metrics.FuncStat{
+				ID: f.ID, Name: f.Name, URL: f.URL, Line: f.Line, Column: f.Column,
+				SourceID: f.SourceID, Original: f.Original, CommonStack: f.CommonStack,
+				CommonStackID: f.CommonStackID,
+			})
+		}
+	}
+	sections := make([]section, 0, len(sources))
+	for _, source := range sources {
+		sections = append(sections, stackAppendixSection("Comparison "+oneLine(source), reports[source], (vHotspots+1)*10))
+	}
+	return sections
 }

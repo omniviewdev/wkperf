@@ -42,7 +42,8 @@ type Commands struct {
 // Stack is one exact root-to-leaf stack, never an aggregation of unrelated paths.
 // Frame locations retain generated and mapped identities from the recording.
 type Stack struct {
-	Frames         []flame.Frame `json:"frames"`
+	StackID        string        `json:"stackId"`
+	Frames         []flame.Frame `json:"-"`
 	SelfMs         float64       `json:"selfMs"`
 	Samples        int           `json:"samples"`
 	UntimedSamples int           `json:"untimedSamples"`
@@ -80,20 +81,23 @@ type Attribution struct {
 	NativeMs    float64     `json:"nativeMs"`
 	TotalMs     float64     `json:"totalMs"`
 	Stacks      []Stack     `json:"stacks"`
+	StacksTotal int         `json:"stacksTotal"`
 	Stats       []Stat      `json:"stats"`
 	Command     string      `json:"command"`
 }
 
 // Finding separates measured stack evidence from a suspected explanation.
 type Finding struct {
-	ID          string      `json:"id"`
-	Title       string      `json:"title"`
-	Severity    string      `json:"severity"`
-	Explanation string      `json:"explanation"`
-	Stats       []Stat      `json:"stats"`
-	Evidence    []Stack     `json:"evidence"`
-	Windows     []WindowRef `json:"windows"`
-	Command     string      `json:"command"`
+	ID            string      `json:"id"`
+	Title         string      `json:"title"`
+	Severity      string      `json:"severity"`
+	Explanation   string      `json:"explanation"`
+	Stats         []Stat      `json:"stats"`
+	Evidence      []Stack     `json:"-"`
+	EvidenceTotal int         `json:"evidenceTotal"`
+	Windows       []WindowRef `json:"windows"`
+	WindowsTotal  int         `json:"windowsTotal"`
+	Command       string      `json:"command"`
 }
 
 // WindowRef uses recording-relative seconds, directly reusable as query flags.
@@ -115,19 +119,21 @@ type Fire struct {
 }
 
 type PeriodicRoot struct {
-	Root         flame.Frame `json:"root"`
-	TargetID     string      `json:"targetID,omitempty"`
-	FireCount    int         `json:"fireCount"`
-	PeriodMs     float64     `json:"periodMs"`
-	JitterMs     float64     `json:"jitterMs"`
-	Regularity   float64     `json:"regularity"`
-	MeanCostMs   float64     `json:"meanCostMs"`
-	TotalMs      float64     `json:"totalMs"`
-	Fires        []Fire      `json:"fires"`
-	Evidence     []Stack     `json:"evidence"`
-	Stats        []Stat      `json:"stats"`
-	Command      string      `json:"command"`
-	SampleStatus string      `json:"sampleStatus,omitempty"`
+	Root          flame.Frame `json:"root"`
+	TargetID      string      `json:"targetID,omitempty"`
+	FireCount     int         `json:"fireCount"`
+	PeriodMs      float64     `json:"periodMs"`
+	JitterMs      float64     `json:"jitterMs"`
+	Regularity    float64     `json:"regularity"`
+	MeanCostMs    float64     `json:"meanCostMs"`
+	TotalMs       float64     `json:"totalMs"`
+	Fires         []Fire      `json:"fires"`
+	FiresTotal    int         `json:"firesTotal"`
+	Evidence      []Stack     `json:"evidence"`
+	EvidenceTotal int         `json:"evidenceTotal"`
+	Stats         []Stat      `json:"stats"`
+	Command       string      `json:"command"`
+	SampleStatus  string      `json:"sampleStatus,omitempty"`
 }
 
 // EventOverlap measures only temporal intersection with an instrumented GC pause.
@@ -145,6 +151,7 @@ type GCOverlap struct {
 	ToSec       float64        `json:"toSec"`
 	DurationMs  float64        `json:"durationMs"`
 	Events      []EventOverlap `json:"events"`
+	EventsTotal int            `json:"eventsTotal"`
 	Attribution string         `json:"attribution"`
 	Stats       []Stat         `json:"stats"`
 	Command     string         `json:"command"`
@@ -184,28 +191,37 @@ type DepthStats struct {
 	MaxRepeatedFrameDepth int            `json:"maxRepeatedFrameDepth"`
 	MaxCommitDepth        int            `json:"maxCommitDepth"`
 	Outliers              []DepthOutlier `json:"outliers"`
+	OutliersTotal         int            `json:"outliersTotal"`
 	Stats                 []Stat         `json:"stats"`
 	Command               string         `json:"command"`
 }
 
 // Report places the hot path first and keeps timeline and sampled evidence distinct.
 type Report struct {
-	SchemaVersion  string         `json:"schemaVersion"`
-	Source         string         `json:"source"`
-	Sourcemaps     []string       `json:"sourcemaps"`
-	FromSec        float64        `json:"fromSec"`
-	ToSec          float64        `json:"toSec"`
-	HotPath        Path           `json:"hotPath"`
-	Owners         []Owner        `json:"owners"`
-	AppAttribution []Attribution  `json:"appAttribution"`
-	Findings       []Finding      `json:"findings"`
-	PeriodicRoots  []PeriodicRoot `json:"periodicRoots"`
-	GCOverlaps     []GCOverlap    `json:"gcOverlaps"`
-	Windows        []Window       `json:"windows"`
-	LongTasks      []Window       `json:"longTasks"`
-	SlowFrames     []Window       `json:"slowFrames"`
-	EventBursts    []Window       `json:"eventBursts"`
-	Depth          DepthStats     `json:"depth"`
-	Stats          []Stat         `json:"stats"`
-	Commands       Commands       `json:"commands"`
+	Top                 int            `json:"-"`
+	SchemaVersion       string         `json:"schemaVersion"`
+	Source              string         `json:"source"`
+	Sourcemaps          []string       `json:"sourcemaps"`
+	FromSec             float64        `json:"fromSec"`
+	ToSec               float64        `json:"toSec"`
+	HotPath             Path           `json:"hotPath"`
+	Owners              []Owner        `json:"owners"`
+	AppAttribution      []Attribution  `json:"appAttribution"`
+	AppAttributionTotal int            `json:"appAttributionTotal"`
+	Findings            []Finding      `json:"findings"`
+	PeriodicRoots       []PeriodicRoot `json:"periodicRoots"`
+	PeriodicRootsTotal  int            `json:"periodicRootsTotal"`
+	GCOverlaps          []GCOverlap    `json:"gcOverlaps"`
+	GCOverlapsTotal     int            `json:"gcOverlapsTotal"`
+	Windows             []Window       `json:"windows"`
+	WindowsTotal        int            `json:"windowsTotal"`
+	LongTasks           []Window       `json:"longTasks"`
+	LongTasksTotal      int            `json:"longTasksTotal"`
+	SlowFrames          []Window       `json:"slowFrames"`
+	SlowFramesTotal     int            `json:"slowFramesTotal"`
+	EventBursts         []Window       `json:"eventBursts"`
+	EventBurstsTotal    int            `json:"eventBurstsTotal"`
+	Depth               DepthStats     `json:"depth"`
+	Stats               []Stat         `json:"stats"`
+	Commands            Commands       `json:"commands"`
 }

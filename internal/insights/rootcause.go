@@ -56,7 +56,12 @@ func bridgeRootFinding(c *ruleCtx, raw rootcause.Finding) Finding {
 	f.Suggestion = rootSuggestion(raw.ID)
 	f.Nodes = []NodeClue{}
 	f.Command = raw.Command
-	f.Stacks = append([]rootcause.Stack{}, raw.Evidence...)
+	f.Stacks = raw.Evidence
+	f.StackIDs = make([]string, 0, len(raw.Evidence))
+	for _, stack := range raw.Evidence {
+		f.StackIDs = append(f.StackIDs, stack.StackID)
+	}
+	f.StacksTotal = len(raw.Evidence)
 	f.Functions = []string{}
 	f.Triggers = []string{}
 	for i := range f.NumericEvidence {

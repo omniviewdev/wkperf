@@ -50,6 +50,14 @@ Export order can bound a run of untimed samples between neighboring timed sample
 
 Window coverage uses a shared 1 ns tolerance. An explicitly selected full recording includes the same samples as the default view, even when a printed endpoint is rounded. Reproduction commands omit `--from` and `--to` for whole-recording measurements.
 
+| Metric key | Unit | Meaning |
+| --- | --- | --- |
+| `samples.untimed_count` | count | untimed observations in the original recording |
+| `samples.untimed_ms` | ms | their total statistical weight |
+| `samples.untimed_excluded_ms` | ms | weight excluded from this selection because its position is unknown; zero for a whole-recording view |
+
+Query source metadata uses `untimed_samples`, `untimed_ms`, `untimed_excluded`, and `untimed_spans`. These describe missing placement in the original recording, not a claim that every unknown sample occurred inside the requested window.
+
 See WebKit's [TimelineRecording implementation](https://github.com/WebKit/WebKit/blob/main/Source/WebInspectorUI/UserInterface/Models/TimelineRecording.js) and [RenderingFrameTimelineRecord implementation](https://github.com/WebKit/WebKit/blob/main/Source/WebInspectorUI/UserInterface/Models/RenderingFrameTimelineRecord.js) for export semantics. Real recordings are not bundled; regression fixtures reproduce reported shapes and edge cases.
 
 ### Recommended workflow
@@ -139,20 +147,22 @@ wkperf version
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--format` | `term` | `term`, `md`, `html`, `json`, `folded`, or `all` |
-| `--out` | `wkperf-analysis.html` | output file; directory or prefix with `all` (writes `.md`, `.json`, `.html`). `md` and `json` print to stdout without `--out` |
+| `--out` | `wkperf-analysis.html` | output file; `-` writes to stdout; directory or prefix with `all` (writes `.md`, `.json`, `.html`). `md` and `json` print to stdout without `--out` |
 | `--top` | `10` | list length for hotspots, modules, slow frames, long tasks |
 | `--jank-ms` | `16.7` | slow-frame threshold |
 | `--long-task-ms` | `50` | long-task threshold |
 | `--no-scorecard` | off | skip the per-recording scorecard |
 | `--sourcemap` | auto-discovery only | repeatable source-map file or directory; show original and generated locations |
 | `--module-grouping` | `file` | `file` or `parent-directory`; also supported by audit and comparison's representative analyses |
-| `--brief` | off | compact agent-oriented Markdown |
-| `--max-bytes` | `0` (unlimited) | cap Markdown bytes; positive limits below 64 are rejected; JSON stays complete |
+| `--brief` | off | compact agent-oriented Markdown or terminal output |
+| `--max-bytes` | `0` (unlimited) | cap Markdown or terminal bytes, including the final truncation marker; positive limits below 64 are rejected |
 | `--open`, `--no-color` | | as in `compare` |
 
 Each recording is followed by its scorecard (see Scorecard). The unreleased fixes use `wkperf-insights/v3`; v0.4.0 emits v2. Each report carries a `scorecard` field unless `--no-scorecard`. Consumers must check the `schema` discriminator, including nullable stack times and untimed-sample metadata. HTML includes time breakdowns, self and inclusive hotspots, trigger attribution, idle wakeups, and findings with confidence and verification guidance.
 
-Bounded Markdown cannot be combined with a live `--ai` completion; emit the bounded local report or a prompt separately. The byte limit covers the whole Markdown artifact, including truncation markers.
+Bounded text cannot be combined with a live `--ai` completion; emit the bounded local report or a prompt separately. The limit applies to the complete text artifact, including scorecards and truncation markers. JSON keeps exact selected evidence and explicit retrieval metadata rather than inheriting text limits.
+
+`analyze --out -` writes a single-format report to stdout. It cannot be combined with `--format all` or `--open`.
 
 ### Findings catalogue
 
@@ -310,17 +320,19 @@ Use the `schema` discriminator before decoding a result. `wkperf schema` prints 
 | Summary | `wkperf-summary/v1`: scalar summary output |
 | Error-only result | `wkperf-error/v1`: machine-readable command errors |
 
-An analysis report retains recording identity and active duration, exclusive time breakdown, self/inclusive hotspots, file modules, slow frames, long tasks, idle wakeups, trigger tables, findings, and root-cause evidence. A hotspot retains generated URL/line/column/source identity, optional original location, weighted self/inclusive times, sample count, caller/callee edges, and a common full stack. Source-map enrichment never changes generated identity.
+An analysis report retains recording identity and active duration, exclusive time breakdown, self/inclusive hotspots, file modules, slow frames, long tasks, idle wakeups, trigger tables, findings, and root-cause evidence. Its `frames` array stores generated identity, URL/line/column, category, native/anonymous flags, and optional original location once. Hotspots use a zero-based `frame` index, retain weighted self/inclusive times and sample counts, and link caller/callee frame indices. Source-map enrichment never changes generated identity.
 
 Findings retain `id`, `severity`, `confidence`, human-readable `evidence`, `numericEvidence`, `metricKeys`, `verify`, and `suggestedWindows`. Numeric evidence contains `metricKey`, `value`, `unit`, `description`, `basis`, and a reproducing `command`. Verification entries carry metric key, direction, rough target, unit, explanation, and command. Windows contain `fromSec`, `toSec`, `reason`, and reusable flags. Supporting `functions`, `triggers`, and layout `nodes` preserve measured names and CSS paths when available. `rootCause` includes hot path, sampled owners, nearest-app attribution, exact-stack findings, periodic roots, GC overlaps, depth outliers, and ranked windows. Windows retain their heaviest full sampled stack or an explicit no-samples status.
 
-Canonical findings also carry `stacks` and a `command` when a stack detector supplies exact evidence. Raw detector output remains under `rootCause` alongside the enriched finding, so an agent can inspect the measured chain without guessing from a generic optimization suggestion.
+Exact selected paths live once in the report's `stacks` map, keyed by stable `n_` selectors. Each entry has root-to-leaf frame indices and full `depth`; occurrences use `stackId` or `stackIds` plus their own numeric observations. Canonical and raw findings reference the same paths. Detailed lists honor `--top` and carry explicit totals and retrieval commands, so a bounded default report does not pretend omitted evidence is absent. Text and HTML use shared stack references and root/leaf previews; query retrieves full stacks.
+
+When structured lists are capped, `moreEvidenceCommand` reruns `analyze` with a sufficient `--top` value and preserves selection, maps, thresholds, and module grouping. Use it for the remaining structured rows; existing `query stacks`, `query paths`, and scalar queries retrieve exact selected evidence without inventing a list operation.
 
 Query rows use explicit millisecond fields (`self_ms`, `total_ms`, deltas), `samples`, and `percent` in percentage points. `stack` is root-to-leaf. Ambiguous selectors include `candidates`; they do not return a guessed result. Caller/callee percentages use the selected function's inclusive sampled time as denominator. Sampled owner costs are self time, so their sum does not double-count callers.
 
 Errors contain `message`, `file`, and `code`. With JSON output, failures appear in the single stdout JSON document as well as human-readable stderr diagnostics. Multi-file `analyze` and `audit` keep successful results, list failed files, and exit 1 after processing the group. `compare` and `summary` may stop at the first bad input. Treat a nonempty `errors` array as incomplete evidence even when useful reports exist.
 
-For bounded agent context, use Markdown `--brief` or `--max-bytes N`. Its fixed priority is findings, hot path, top functions, then verification. A truncation marker states that material was cut; retain full JSON separately when exact downstream analysis matters.
+For bounded agent context, use `--brief` or `--max-bytes N` with Markdown or terminal output. Priority is recording identities and errors, all finding summaries, hot path, top functions, verification, then details. The final truncation marker counts toward the limit. Repeated stacks are referenced rather than expanded at every occurrence; use their query commands to retrieve full context.
 
 ## Scorecard
 

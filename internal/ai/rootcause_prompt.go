@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/omniviewdev/wkperf/internal/flame"
+	"github.com/omniviewdev/wkperf/internal/insights"
 	"github.com/omniviewdev/wkperf/internal/metrics"
 	"github.com/omniviewdev/wkperf/internal/rootcause"
 )
@@ -26,34 +27,41 @@ func rootStats(b *strings.Builder, stats []rootcause.Stat, n int) {
 	}
 }
 
-func rootFrames(b *strings.Builder, frames []flame.Frame, n int) {
-	n = max(n, 4)
-	for i, frame := range frames {
-		if len(frames) > n && i >= 2 && i < len(frames)-(n-2) {
-			if i == 2 {
-				fmt.Fprintf(b, "  → [%d interior frames omitted; use reproduction command for exact stack]\n", len(frames)-n)
-			}
-			continue
-		}
+func rootFrames(b *strings.Builder, frames []flame.Frame) {
+	root, leaf, elided := insights.PreviewFrames(frames, false)
+	for _, frame := range root {
+		fmt.Fprintf(b, "  → %s\n", rootFrame(frame))
+	}
+	if elided > 0 {
+		fmt.Fprintf(b, "  → [%d frames elided; use reproduction command for exact stack]\n", elided)
+	}
+	for _, frame := range leaf {
 		fmt.Fprintf(b, "  → %s\n", rootFrame(frame))
 	}
 }
 
-func rootStack(b *strings.Builder, stack rootcause.Stack, n int) {
+func rootStack(b *strings.Builder, stack rootcause.Stack) {
 	window := "unknown clock"
 	if stack.FirstSec != nil && stack.LastSec != nil {
 		window = num(*stack.FirstSec) + "–" + num(*stack.LastSec) + "s"
 	}
-	fmt.Fprintf(b, "Exact sampled stack: self=%sms samples=%d window=%s; reproduce: %s\n", num(stack.SelfMs), stack.Samples, window, stack.Command)
-	rootFrames(b, stack.Frames, n)
+	id := stack.StackID
+	if id == "" {
+		id = flame.StackID(stack.Frames)
+	}
+	leaf := ""
+	if len(stack.Frames) > 0 {
+		leaf = rootFrame(stack.Frames[len(stack.Frames)-1])
+	}
+	fmt.Fprintf(b, "Exact sampled stack reference: %s (%d frames; leaf %s): self=%sms samples=%d window=%s; reproduce: %s\n", id, len(stack.Frames), leaf, num(stack.SelfMs), stack.Samples, window, stack.Command)
 	rootStats(b, stack.Stats, 4)
 }
 
-func rootWindow(b *strings.Builder, window rootcause.Window, n int) {
+func rootWindow(b *strings.Builder, window rootcause.Window) {
 	fmt.Fprintf(b, "- %s %s, %s–%ss: duration=%sms active=%sms; %s; reproduce: %s\n", clip(oneLine(window.Kind), 60), clip(oneLine(window.Label), 100), num(window.FromSec), num(window.ToSec), num(window.DurationMs), num(window.ActiveMs), clip(oneLine(window.SampleStatus), 150), window.Command)
 	rootStats(b, window.Stats, 6)
 	if window.TopStack != nil {
-		rootStack(b, *window.TopStack, n)
+		rootStack(b, *window.TopStack)
 	}
 }
 
@@ -67,7 +75,7 @@ func rootCauseSections(label string, r *rootcause.Report, c Context, value int) 
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "### %s: Hot path (heaviest sampled prefix, root → leaf)\nSampled time is an estimate, not instrumented wall time. Reproduce: %s\n", label, r.HotPath.Command)
-	rootFrames(&b, r.HotPath.Frames, c.TopN)
+	rootFrames(&b, r.HotPath.Frames)
 	rootStats(&b, r.HotPath.Stats, 6)
 	add("hot path", value, b.String())
 	b.Reset()
@@ -80,7 +88,7 @@ func rootCauseSections(label string, r *rootcause.Report, c Context, value int) 
 		fmt.Fprintf(&b, "- Nearest app %s: app self=%sms framework=%sms native=%sms total=%sms; reproduce: %s\n", rootFrame(app.App), num(app.SelfMs), num(app.FrameworkMs), num(app.NativeMs), num(app.TotalMs), app.Command)
 		rootStats(&b, app.Stats, 6)
 		for _, stack := range limitSlice(app.Stacks, 1) {
-			rootStack(&b, stack, c.TopN)
+			rootStack(&b, stack)
 		}
 	}
 	add("owners", value-1, b.String())
@@ -91,7 +99,7 @@ func rootCauseSections(label string, r *rootcause.Report, c Context, value int) 
 			fmt.Fprintf(&b, "- %s [%s] %s: %s; reproduce: %s\n", clip(oneLine(finding.ID), 80), clip(oneLine(finding.Severity), 40), clip(oneLine(finding.Title), 150), clip(oneLine(finding.Explanation), 500), finding.Command)
 			rootStats(&b, finding.Stats, 6)
 			for _, stack := range limitSlice(finding.Evidence, 2) {
-				rootStack(&b, stack, c.TopN)
+				rootStack(&b, stack)
 			}
 			for _, window := range limitSlice(finding.Windows, 3) {
 				fmt.Fprintf(&b, "  window: %s–%ss; reproduce: %s\n", num(window.FromSec), num(window.ToSec), window.Command)
@@ -110,7 +118,7 @@ func rootCauseSections(label string, r *rootcause.Report, c Context, value int) 
 				rootStats(&b, fire.Stats, 4)
 			}
 			for _, stack := range limitSlice(periodic.Evidence, 1) {
-				rootStack(&b, stack, c.TopN)
+				rootStack(&b, stack)
 			}
 		}
 		add("periodic roots", value-5, b.String())
@@ -134,25 +142,43 @@ func rootCauseSections(label string, r *rootcause.Report, c Context, value int) 
 	for _, outlier := range limitSlice(r.Depth.Outliers, 2) {
 		fmt.Fprintf(&b, "- depth=%d repeated-frame=%d commit=%d; reproduce: %s\n", outlier.Depth, outlier.RepeatedFrameDepth, outlier.CommitDepth, outlier.Command)
 		rootStats(&b, outlier.Stats, 3)
-		rootStack(&b, outlier.Stack, c.TopN)
+		rootStack(&b, outlier.Stack)
 	}
 	add("depth", value-10, b.String())
 	if len(r.Windows)+len(r.LongTasks)+len(r.SlowFrames)+len(r.EventBursts) > 0 {
 		b.Reset()
 		b.WriteString("### Worst-window triage\n")
 		for _, window := range limitSlice(r.Windows, c.TopN) {
-			rootWindow(&b, window, c.TopN)
+			rootWindow(&b, window)
 		}
 		for _, window := range limitSlice(r.LongTasks, 3) {
-			rootWindow(&b, window, c.TopN)
+			rootWindow(&b, window)
 		}
 		for _, window := range limitSlice(r.SlowFrames, 3) {
-			rootWindow(&b, window, c.TopN)
+			rootWindow(&b, window)
 		}
 		for _, window := range limitSlice(r.EventBursts, 3) {
-			rootWindow(&b, window, c.TopN)
+			rootWindow(&b, window)
 		}
 		add("worst-window triage", value-3, b.String())
 	}
 	return sections
+}
+
+func stackAppendixSection(label string, report *insights.Report, value int) section {
+	var b strings.Builder
+	fmt.Fprintf(&b, "### %s: Stack appendix\nEach distinct selected stack appears once; queries return every exact frame.\n", label)
+	for _, stack := range insights.StackPreviews(report, false) {
+		fmt.Fprintf(&b, "Exact stack %s (%s; %d frames); reproduce: %s\n", stack.ID, stack.Label, stack.Depth, stack.Command)
+		for _, frame := range stack.Root {
+			fmt.Fprintf(&b, "  → %s\n", rootFrame(frame))
+		}
+		if stack.Elided > 0 {
+			fmt.Fprintf(&b, "  → [%d frames elided]\n", stack.Elided)
+		}
+		for _, frame := range stack.Leaf {
+			fmt.Fprintf(&b, "  → %s\n", rootFrame(frame))
+		}
+	}
+	return section{title: label + " stack appendix", value: value, body: b.String()}
 }

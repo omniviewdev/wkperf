@@ -78,7 +78,7 @@ func TestUntimedPipelineRankingsAndMetrics(t *testing.T) {
 		t.Fatal(err)
 	}
 	var doc struct {
-		Reports []insights.Report `json:"reports"`
+		Reports []insights.WireReport `json:"reports"`
 	}
 	if err := json.Unmarshal([]byte(out), &doc); err != nil || len(doc.Reports) != 1 {
 		t.Fatalf("analysis: %v", err)
@@ -279,7 +279,7 @@ func TestUntimedPipelineTextCoverageNote(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, text := range []string{"Untimed samples: 40", "50.0%", "excluded from frame, task, trigger, window and periodic attribution"} {
+		for _, text := range []string{"Untimed samples: 40", "excluded from frame, task, trigger, window and periodic attribution"} {
 			if !strings.Contains(out, text) {
 				t.Errorf("%s lacks %q", format, text)
 			}

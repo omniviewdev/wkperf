@@ -87,6 +87,7 @@ func (b builder) completeWindows(windows []Window) {
 		key := windowKey(*w)
 		w.TopStack = b.heaviestWindowStack(from, to, key)
 		if w.TopStack == nil {
+			w.Command = b.reproduce(key + ".duration_ms")
 			w.SampleStatus = UntimedSampleStatus(b.tree.UntimedSpans, from, to, b.o.OffsetSec)
 			if w.SampleStatus == "" {
 				w.SampleStatus = "No overlapping sampler samples; timeline evidence only."
@@ -214,7 +215,7 @@ func (b builder) gcOverlaps() []GCOverlap {
 			continue
 		}
 		seen[key] = true
-		g := GCOverlap{FromSec: b.exportTime(from), ToSec: b.exportTime(to), Attribution: "Instrumented GC pause and temporal event overlap only; sampled allocation or application causes are not established.", Command: b.query("events "+quote("garbage-collected"), from, to)}
+		g := GCOverlap{FromSec: b.exportTime(from), ToSec: b.exportTime(to), Attribution: "Instrumented GC pause and temporal event overlap only; sampled allocation or application causes are not established.", Command: b.reproduce(key + ".duration_ms")}
 		for _, p := range parts {
 			g.DurationMs += (p.End - p.Start) * 1000
 		}
@@ -241,7 +242,7 @@ func (b builder) gcOverlaps() []GCOverlap {
 				continue
 			}
 			eventsSeen[eventID] = true
-			e := EventOverlap{Event: name, FromSec: b.exportTime(lo), ToSec: b.exportTime(hi), OverlapMs: number(ms), Command: b.query("events", lo, hi)}
+			e := EventOverlap{Event: name, FromSec: b.exportTime(lo), ToSec: b.exportTime(hi), OverlapMs: number(ms), Command: b.reproduce(key + ".event." + eventID + ".overlap_ms")}
 			e.Stats = []Stat{
 				b.stat(key+".event."+eventID+".from_sec", "GC/event overlap start", e.FromSec, "s", timelineBasis),
 				b.stat(key+".event."+eventID+".to_sec", "GC/event overlap end", e.ToSec, "s", timelineBasis),

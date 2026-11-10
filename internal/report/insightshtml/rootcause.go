@@ -7,6 +7,7 @@ import (
 	"io"
 
 	"github.com/omniviewdev/wkperf/internal/flame"
+	"github.com/omniviewdev/wkperf/internal/insights"
 	"github.com/omniviewdev/wkperf/internal/metrics"
 	"github.com/omniviewdev/wkperf/internal/rootcause"
 )
@@ -30,28 +31,74 @@ func stackTime(value *float64) string {
 	return fmt.Sprintf("%.3f", *value)
 }
 
-func rootCauseHTML(r *rootcause.Report) (template.HTML, error) {
+func rootCauseHTML(r *rootcause.Report, stacks map[string]insights.StackPreview, prefix string) (template.HTML, error) {
 	if r == nil {
 		return "", nil
 	}
+	tmpl, err := rootTmpl.Clone()
+	if err != nil {
+		return "", err
+	}
+	tmpl.Funcs(template.FuncMap{"stackID": func(stack rootcause.Stack) string { return prefix + rootStackID(stack) }, "stackRef": func(stack rootcause.Stack) string {
+		if preview, ok := stacks[rootStackID(stack)]; ok {
+			return preview.Reference()
+		}
+		return rootStackReference(stack)
+	}})
 	var b bytes.Buffer
-	if err := rootTmpl.Execute(&b, r); err != nil {
+	if err := tmpl.Execute(&b, r); err != nil {
 		return "", err
 	}
 	return template.HTML(b.String()), nil
 }
 
-// RenderStacks writes exact sampled-stack evidence without a document wrapper.
-func RenderStacks(w io.Writer, stacks []rootcause.Stack) error {
+// RenderStacks writes compact references to exact sampled stacks. Analysis
+// fragments carry their distinct, bounded frame previews in the stack appendix.
+func RenderStacks(w io.Writer, stacks []rootcause.Stack, prefix string) error {
+	if len(stacks) == 0 {
+		return nil
+	}
+	tmpl, err := rootTmpl.Clone()
+	if err != nil {
+		return err
+	}
+	tmpl.Funcs(template.FuncMap{"stackID": func(stack rootcause.Stack) string { return prefix + rootStackID(stack) }})
 	for _, stack := range stacks {
-		if err := rootTmpl.ExecuteTemplate(w, "stack", stack); err != nil {
+		if err := tmpl.ExecuteTemplate(w, "stack", stack); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-var rootTmpl = template.Must(template.New("rootcause").Funcs(template.FuncMap{"frame": rootFrameLabel, "time": stackTime}).Parse(`
+func rootStackID(stack rootcause.Stack) string {
+	if stack.StackID != "" {
+		return stack.StackID
+	}
+	return flame.StackID(stack.Frames)
+}
+
+func rootStackReference(stack rootcause.Stack) string {
+	leaf := ""
+	if len(stack.Frames) > 0 {
+		leaf = rootFrameLabel(stack.Frames[len(stack.Frames)-1])
+	}
+	return fmt.Sprintf("stack %s (%d frames; leaf %s)", rootStackID(stack), len(stack.Frames), leaf)
+}
+
+type pathPreview struct {
+	Root, Leaf []flame.Frame
+	Elided     int
+}
+
+var rootTmpl = template.Must(template.New("rootcause").Funcs(template.FuncMap{
+	"frame": rootFrameLabel, "time": stackTime, "stackID": rootStackID, "stackRef": rootStackReference,
+	"preview": func(frames []flame.Frame) pathPreview {
+		root, leaf, elided := insights.PreviewFrames(frames, false)
+		return pathPreview{Root: root, Leaf: leaf, Elided: elided}
+	},
+}).Parse(`
+<p class="mut">Selected evidence shown/total: application attributions {{len .AppAttribution}}/{{.AppAttributionTotal}}; periodic roots {{len .PeriodicRoots}}/{{.PeriodicRootsTotal}}; depth outliers {{len .Depth.Outliers}}/{{.Depth.OutliersTotal}}; long tasks {{len .LongTasks}}/{{.LongTasksTotal}}; slow frames {{len .SlowFrames}}/{{.SlowFramesTotal}}; event bursts {{len .EventBursts}}/{{.EventBurstsTotal}}.</p>
 <h3>Hot path</h3>
 <div class="card"><p class="mut">Heaviest sampled prefix path, root → leaf. Sample weight estimates execution cost, not instrumented wall time.</p>{{template "path" .HotPath}}{{template "stats" .Stats}}</div>
 <h3>Owner breakdown</h3>
@@ -74,8 +121,8 @@ var rootTmpl = template.Must(template.New("rootcause").Funcs(template.FuncMap{"f
 {{if .SlowFrames}}<h4>Slow-frame windows</h4><div class="card">{{range .SlowFrames}}{{template "window" .}}{{end}}</div>{{end}}
 {{if .EventBursts}}<h4>Event-burst windows</h4><div class="card">{{range .EventBursts}}{{template "window" .}}{{end}}</div>{{end}}
 {{define "command"}}{{if .}}<div><b>Reproduce:</b> <code>{{.}}</code></div>{{end}}{{end}}
-{{define "stats"}}{{if .}}<table><tr><th>Metric key</th><th class="n">Value</th><th>Basis</th><th>Reproduce</th></tr>{{range .}}<tr><td><code>{{.Key}}</code> {{.Label}}</td><td class="n">{{printf "%.3f" .Value}} {{.Unit}}</td><td>{{.Basis}}</td><td><code>{{.Command}}</code></td></tr>{{end}}</table>{{end}}{{end}}
-{{define "path"}}<p>{{printf "%.3f" .SampledMs}} sampled ms · {{.Samples}} samples</p><ol>{{range .Frames}}<li><code>{{frame .}}</code></li>{{end}}</ol>{{template "stats" .Stats}}{{template "command" .Command}}{{end}}
-{{define "stack"}}<details open><summary>Exact stack: {{printf "%.3f" .SelfMs}} self ms · {{.Samples}} samples · {{if .FirstSec}}{{time .FirstSec}}–{{time .LastSec}} s{{else}}time unknown{{end}}{{if .UntimedSamples}} · {{.UntimedSamples}} untimed samples{{end}}</summary><ol>{{range .Frames}}<li><code>{{frame .}}</code></li>{{end}}</ol>{{template "stats" .Stats}}{{template "command" .Command}}</details>{{end}}
-{{define "window"}}<h4>{{.Kind}}: {{.Label}} · {{printf "%.3f" .FromSec}}–{{printf "%.3f" .ToSec}} s</h4><p>{{printf "%.3f" .DurationMs}} duration ms · {{printf "%.3f" .ActiveMs}} active ms · {{.SampleStatus}}</p>{{template "stats" .Stats}}{{template "command" .Command}}{{with .HotPath}}{{template "path" .}}{{end}}{{with .TopStack}}{{template "stack" .}}{{end}}{{end}}
+{{define "stats"}}{{if .}}<table><tr><th>Root-cause metric key</th><th class="n">Value</th><th>Basis</th></tr>{{range .}}<tr><td><code>{{.Key}}</code> {{.Label}}</td><td class="n">{{printf "%.3f" .Value}} {{.Unit}}</td><td>{{.Basis}}</td></tr>{{end}}</table>{{end}}{{end}}
+{{define "path"}}<p>{{printf "%.3f" .SampledMs}} sampled ms · {{.Samples}} samples</p><ol>{{with preview .Frames}}{{range .Root}}<li><code>{{frame .}}</code></li>{{end}}{{if .Elided}}<li>… {{.Elided}} frames elided; query returns the complete path.</li>{{end}}{{range .Leaf}}<li><code>{{frame .}}</code></li>{{end}}{{end}}</ol>{{template "stats" .Stats}}{{template "command" .Command}}{{end}}
+{{define "stack"}}<p><a href="#stack-{{stackID .}}">{{stackRef .}}</a>: {{printf "%.3f" .SelfMs}} self ms · {{.Samples}} samples · {{if .FirstSec}}{{time .FirstSec}}–{{time .LastSec}} s{{else}}time unknown{{end}}{{if .UntimedSamples}} · {{.UntimedSamples}} untimed samples{{end}}</p>{{end}}
+{{define "window"}}<h4>{{.Kind}}: {{.Label}} · {{printf "%.3f" .FromSec}}–{{printf "%.3f" .ToSec}} s</h4><p>{{printf "%.3f" .DurationMs}} duration ms · {{printf "%.3f" .ActiveMs}} active ms · {{.SampleStatus}}</p>{{template "stats" .Stats}}{{template "command" .Command}}{{with .TopStack}}{{template "stack" .}}{{end}}{{end}}
 `))
