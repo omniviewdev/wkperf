@@ -178,6 +178,10 @@ func decodeVLQ(encoded string) ([]int, error) {
 // Lookup uses greatest-lower-bound lookup on one generated line. Arguments and
 // returned source locations are 1-based, matching WebKit ScriptProfiler frames.
 func (m *Map) Lookup(line, column int) (model.SourceLocation, bool) {
+	return m.lookup(line, column, false)
+}
+
+func (m *Map) lookup(line, column int, before bool) (model.SourceLocation, bool) {
 	if m == nil || line < 1 || column < 1 {
 		return model.SourceLocation{}, false
 	}
@@ -192,13 +196,15 @@ func (m *Map) Lookup(line, column int) (model.SourceLocation, bool) {
 		if line == s.line {
 			column -= s.column
 		}
-		return s.mapping.Lookup(line-s.line+1, column+1)
+		return s.mapping.lookup(line-s.line+1, column+1, before)
 	}
 	if line >= len(m.lines) {
 		return model.SourceLocation{}, false
 	}
 	segments := m.lines[line]
-	i := sort.Search(len(segments), func(i int) bool { return segments[i].generated > column }) - 1
+	i := sort.Search(len(segments), func(i int) bool {
+		return segments[i].generated > column || (before && segments[i].generated == column)
+	}) - 1
 	if i < 0 || segments[i].source < 0 {
 		return model.SourceLocation{}, false
 	}
@@ -285,6 +291,7 @@ func DetectMinification(rec *model.Recording) bool {
 
 // Resolve matches repeatable map files/directories and local bundle sidecars.
 // A recording-adjacent bundle basename map also works for remote bundle URLs.
+// Explicit files are strict; unreadable discovered maps produce warnings.
 // It never fetches remote maps or overwrites generated frame identity.
 func Resolve(rec *model.Recording, paths []string, recordingPath string) (Diagnostics, error) {
 	d := Diagnostics{Minified: DetectMinification(rec)}
@@ -326,7 +333,7 @@ func Resolve(rec *model.Recording, paths []string, recordingPath string) (Diagno
 				return walkErr
 			}
 			if !entry.IsDir() && strings.HasSuffix(strings.ToLower(entry.Name()), ".map") {
-				add(p, true)
+				add(p, false)
 			}
 			return nil
 		}); err != nil {
@@ -360,20 +367,12 @@ func Resolve(rec *model.Recording, paths []string, recordingPath string) (Diagno
 	sort.Strings(ordered)
 	maps := make([]loadedMap, 0, len(ordered))
 	for _, name := range ordered {
-		file, err := os.Open(name)
+		mapping, err := loadMap(name)
 		if err != nil {
-			return d, fmt.Errorf("source map %s: %w", name, err)
-		}
-		mapping, parseErr := Parse(file)
-		closeErr := file.Close()
-		if parseErr == nil {
-			parseErr = closeErr
-		}
-		if parseErr != nil {
 			if candidates[name].explicit {
-				return d, fmt.Errorf("source map %s: %w", name, parseErr)
+				return d, fmt.Errorf("source map %s: %w", name, err)
 			}
-			d.Warnings = append(d.Warnings, fmt.Sprintf("Adjacent source map %s could not be read: %v", name, parseErr))
+			d.Warnings = append(d.Warnings, fmt.Sprintf("Source map %s could not be read: %v", name, err))
 			continue
 		}
 		maps = append(maps, loadedMap{name, mapping})
@@ -388,8 +387,14 @@ func Resolve(rec *model.Recording, paths []string, recordingPath string) (Diagno
 	type locationKey struct {
 		bundle       string
 		line, column int
+		named        bool
 	}
 	locations := map[locationKey]*model.SourceLocation{}
+	type sourceKey struct {
+		index int
+		url   string
+	}
+	sources := map[sourceKey]string{}
 	for ti := range rec.Samples {
 		for si := range rec.Samples[ti].StackTraces {
 			for fi := range rec.Samples[ti].StackTraces[si].StackFrames {
@@ -414,14 +419,32 @@ func Resolve(rec *model.Recording, paths []string, recordingPath string) (Diagno
 					matches[f.URL] = result
 				}
 				if result.index >= 0 && !result.ambiguous {
-					key := locationKey{f.URL, f.Line, f.Column}
+					named := f.Name != "" && f.Name != "(anonymous)"
+					key := locationKey{f.URL, f.Line, f.Column, named}
 					original, known := locations[key]
 					if !known {
-						if resolved, ok := maps[result.index].mapping.Lookup(f.Line, f.Column); ok {
-							if resolved.URL != "" {
-								if u, err := url.Parse(resolved.URL); err == nil && !u.IsAbs() && !filepath.IsAbs(resolved.URL) {
-									resolved.URL = filepath.Clean(filepath.Join(filepath.Dir(maps[result.index].path), filepath.FromSlash(resolved.URL)))
+						mapping := maps[result.index].mapping
+						if resolved, ok := mapping.Lookup(f.Line, f.Column); ok {
+							resolved.Name = ""
+							// Function-start columns point at parameters, not declaration names.
+							// Keep the normal location unless the preceding token supplies a name.
+							if named {
+								if declaration, ok := mapping.lookup(f.Line, f.Column, true); ok && declaration.Name != "" {
+									resolved = declaration
 								}
+							}
+							if resolved.URL != "" {
+								source := sourceKey{result.index, resolved.URL}
+								resolvedURL, known := sources[source]
+								if !known {
+									var unresolved bool
+									resolvedURL, unresolved = resolveSourcePath(maps[result.index].path, resolved.URL)
+									sources[source] = resolvedURL
+									if unresolved {
+										warnings[fmt.Sprintf("Original source paths relative to %s could not be resolved on disk; pass --sourcemap from the build directory.", maps[result.index].path)] = true
+									}
+								}
+								resolved.URL = resolvedURL
 							}
 							original = &resolved
 						}
@@ -455,6 +478,48 @@ func Resolve(rec *model.Recording, paths []string, recordingPath string) (Diagno
 	}
 	sort.Strings(d.Warnings)
 	return d, nil
+}
+
+func loadMap(name string) (*Map, error) {
+	info, err := os.Stat(name)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("not a regular file")
+	}
+	file, err := os.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	mapping, parseErr := Parse(file)
+	closeErr := file.Close()
+	if parseErr == nil {
+		parseErr = closeErr
+	}
+	return mapping, parseErr
+}
+
+func resolveSourcePath(mapPath, raw string) (string, bool) {
+	u, err := url.Parse(raw)
+	if err != nil || filepath.IsAbs(raw) {
+		return raw, false
+	}
+	if u.IsAbs() {
+		if u.Scheme != "webpack" {
+			return raw, false
+		}
+		raw = strings.TrimPrefix(u.Path, "/")
+	}
+	joined := filepath.Clean(filepath.Join(filepath.Dir(mapPath), filepath.FromSlash(raw)))
+	if _, err := os.Stat(joined); err == nil {
+		return joined, false
+	}
+	cleaned := path.Clean(filepath.ToSlash(raw))
+	for strings.HasPrefix(cleaned, "../") {
+		cleaned = strings.TrimPrefix(cleaned, "../")
+	}
+	return cleaned, true
 }
 
 func localBundle(raw, recordingPath string) string {
