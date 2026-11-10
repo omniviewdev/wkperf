@@ -1,0 +1,7 @@
+{
+  "version": 3,
+  "sources": ["../../src/app.js"],
+  "sourcesContent": ["export const PodRow = (props) => {\n  return props.items.map((item) => item.name).join(\",\");\n};\nexport function Table({ rows }) {\n  return rows.map((r) => PodRow({ items: r })).length;\n}\nconsole.log(Table({ rows: [[{ name: \"a\" }]] }));\n"],
+  "mappings": "MAAO,IAAMA,EAAUC,GACdA,EAAM,MAAM,IAAKC,GAASA,EAAK,IAAI,EAAE,KAAK,GAAG,EAE/C,SAASC,EAAM,CAAE,KAAAC,CAAK,EAAG,CAC9B,OAAOA,EAAK,IAAKC,GAAML,EAAO,CAAE,MAAOK,CAAE,CAAC,CAAC,EAAE,MAC/C,CACA,QAAQ,IAAIF,EAAM,CAAE,KAAM,CAAC,CAAC,CAAE,KAAM,GAAI,CAAC,CAAC,CAAE,CAAC,CAAC",
+  "names": ["PodRow", "props", "item", "Table", "rows", "r"]
+}

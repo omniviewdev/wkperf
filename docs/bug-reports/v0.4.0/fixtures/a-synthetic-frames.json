@@ -1,0 +1,67 @@
+{
+ "version": 1,
+ "recording": {
+  "displayName": "wkperf bug-report fixture: frame classification",
+  "startTime": 50.0,
+  "endTime": 53.0,
+  "discontinuities": [],
+  "instrumentTypes": [
+   "timeline-record-type-script",
+   "timeline-record-type-layout",
+   "timeline-record-type-rendering-frame"
+  ],
+  "markers": [],
+  "memoryPressureEvents": [],
+  "records": [
+   {
+    "type": "timeline-record-type-rendering-frame",
+    "startTime": 50.0,
+    "endTime": 51.2
+   },
+   {
+    "type": "timeline-record-type-script",
+    "eventType": "event-dispatched",
+    "startTime": 50.05,
+    "endTime": 50.05005,
+    "details": "wheel"
+   },
+   {
+    "type": "timeline-record-type-layout",
+    "eventType": "composite",
+    "startTime": 51.08,
+    "endTime": 51.0803
+   },
+   {
+    "type": "timeline-record-type-rendering-frame",
+    "startTime": 51.2005,
+    "endTime": 51.5
+   },
+   {
+    "type": "timeline-record-type-script",
+    "eventType": "event-dispatched",
+    "startTime": 51.201,
+    "endTime": 51.401,
+    "details": "scroll"
+   },
+   {
+    "type": "timeline-record-type-layout",
+    "eventType": "composite",
+    "startTime": 51.402,
+    "endTime": 51.41
+   },
+   {
+    "type": "timeline-record-type-rendering-frame",
+    "startTime": 51.5005,
+    "endTime": 53.0
+   },
+   {
+    "type": "timeline-record-type-script",
+    "eventType": "timer-fired",
+    "startTime": 52.5,
+    "endTime": 52.5002,
+    "details": 7
+   }
+  ],
+  "samples": []
+ }
+}

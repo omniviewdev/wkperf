@@ -1,0 +1,236 @@
+{
+ "displayName": "tiny",
+ "startTime": 100.0,
+ "endTime": 110.0,
+ "instrumentTypes": [
+  "timeline-record-type-script"
+ ],
+ "records": [
+  {
+   "type": "timeline-record-type-script",
+   "eventType": "timer-fired",
+   "startTime": 102.0,
+   "endTime": 102.08,
+   "details": "1"
+  },
+  {
+   "type": "timeline-record-type-script",
+   "eventType": "event-dispatched",
+   "startTime": 104.0,
+   "endTime": 104.06,
+   "details": "click"
+  },
+  {
+   "type": "timeline-record-type-script",
+   "eventType": "event-dispatched",
+   "startTime": 105.0,
+   "endTime": 105.012,
+   "details": "click"
+  }
+ ],
+ "markers": [],
+ "memoryPressureEvents": [],
+ "samples": [
+  {
+   "target": {
+    "identifier": "page-1",
+    "type": "page",
+    "name": "Page",
+    "url": ""
+   },
+   "stackTraces": [
+    {
+     "timestamp": 101.0,
+     "stackFrames": [
+      {
+       "sourceID": "1",
+       "name": "B",
+       "line": 20,
+       "column": 5,
+       "url": "file:///app/app.js"
+      },
+      {
+       "sourceID": "1",
+       "name": "A",
+       "line": 10,
+       "column": 5,
+       "url": "file:///app/app.js"
+      },
+      {
+       "sourceID": "1",
+       "name": "main",
+       "line": 1,
+       "column": 1,
+       "url": "file:///app/app.js"
+      }
+     ]
+    },
+    {
+     "timestamp": 102.0,
+     "stackFrames": [
+      {
+       "sourceID": "2",
+       "name": "C",
+       "line": 5,
+       "column": 3,
+       "url": "file:///app/lib.js"
+      },
+      {
+       "sourceID": "1",
+       "name": "A",
+       "line": 10,
+       "column": 5,
+       "url": "file:///app/app.js"
+      },
+      {
+       "sourceID": "1",
+       "name": "main",
+       "line": 1,
+       "column": 1,
+       "url": "file:///app/app.js"
+      }
+     ]
+    },
+    {
+     "timestamp": 103.0,
+     "stackFrames": [
+      {
+       "sourceID": "1",
+       "name": "A",
+       "line": 10,
+       "column": 5,
+       "url": "file:///app/app.js"
+      },
+      {
+       "sourceID": "1",
+       "name": "main",
+       "line": 1,
+       "column": 1,
+       "url": "file:///app/app.js"
+      }
+     ]
+    },
+    {
+     "timestamp": 104.0,
+     "stackFrames": [
+      {
+       "sourceID": "4294967295",
+       "name": "getAnimations",
+       "line": -1,
+       "column": -1,
+       "url": ""
+      },
+      {
+       "sourceID": "1",
+       "name": "B",
+       "line": 20,
+       "column": 5,
+       "url": "file:///app/app.js"
+      },
+      {
+       "sourceID": "1",
+       "name": "main",
+       "line": 1,
+       "column": 1,
+       "url": "file:///app/app.js"
+      }
+     ]
+    },
+    {
+     "timestamp": 105.0,
+     "stackFrames": [
+      {
+       "sourceID": "1",
+       "name": "B",
+       "line": 20,
+       "column": 5,
+       "url": "file:///app/app.js"
+      },
+      {
+       "sourceID": "1",
+       "name": "A",
+       "line": 10,
+       "column": 5,
+       "url": "file:///app/app.js"
+      },
+      {
+       "sourceID": "1",
+       "name": "main",
+       "line": 1,
+       "column": 1,
+       "url": "file:///app/app.js"
+      }
+     ]
+    },
+    {
+     "timestamp": 106.5,
+     "stackFrames": [
+      {
+       "sourceID": "1",
+       "name": "A",
+       "line": 10,
+       "column": 5,
+       "url": "file:///app/app.js"
+      },
+      {
+       "sourceID": "1",
+       "name": "A",
+       "line": 10,
+       "column": 5,
+       "url": "file:///app/app.js"
+      },
+      {
+       "sourceID": "1",
+       "name": "main",
+       "line": 1,
+       "column": 1,
+       "url": "file:///app/app.js"
+      }
+     ]
+    },
+    {
+     "timestamp": 108.0,
+     "stackFrames": [
+      {
+       "sourceID": "2",
+       "name": "C",
+       "line": 5,
+       "column": 3,
+       "url": "file:///app/lib.js"
+      },
+      {
+       "sourceID": "1",
+       "name": "B",
+       "line": 20,
+       "column": 5,
+       "url": "file:///app/app.js"
+      },
+      {
+       "sourceID": "1",
+       "name": "A",
+       "line": 10,
+       "column": 5,
+       "url": "file:///app/app.js"
+      },
+      {
+       "sourceID": "1",
+       "name": "main",
+       "line": 1,
+       "column": 1,
+       "url": "file:///app/app.js"
+      }
+     ]
+    }
+   ],
+   "durations": [
+    0.01,
+    0.02,
+    0.005,
+    0.03,
+    0.01,
+    0.004,
+    0.001
+   ]
+  }
+ ]
+}

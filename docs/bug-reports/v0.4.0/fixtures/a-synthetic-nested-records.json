@@ -1,0 +1,71 @@
+{
+ "version": 1,
+ "recording": {
+  "displayName": "wkperf bug-report fixture: nested timeline records",
+  "startTime": 100.0,
+  "endTime": 102.0,
+  "discontinuities": [],
+  "instrumentTypes": [
+   "timeline-record-type-script",
+   "timeline-record-type-layout"
+  ],
+  "markers": [],
+  "memoryPressureEvents": [],
+  "records": [
+   {
+    "type": "timeline-record-type-script",
+    "eventType": "event-dispatched",
+    "startTime": 100.1,
+    "endTime": 100.264,
+    "details": "scroll"
+   },
+   {
+    "type": "timeline-record-type-script",
+    "eventType": "microtask-dispatched",
+    "startTime": 100.1004,
+    "endTime": 100.2624,
+    "details": ""
+   },
+   {
+    "type": "timeline-record-type-script",
+    "eventType": "timer-fired",
+    "startTime": 100.4,
+    "endTime": 100.612,
+    "details": 8268
+   },
+   {
+    "type": "timeline-record-type-script",
+    "eventType": "microtask-dispatched",
+    "startTime": 100.401,
+    "endTime": 100.6106,
+    "details": ""
+   },
+   {
+    "type": "timeline-record-type-script",
+    "eventType": "observer-callback",
+    "startTime": 100.7,
+    "endTime": 100.78,
+    "details": ""
+   },
+   {
+    "type": "timeline-record-type-layout",
+    "eventType": "composite",
+    "startTime": 101.0,
+    "endTime": 101.01
+   },
+   {
+    "type": "timeline-record-type-layout",
+    "eventType": "paint",
+    "startTime": 101.001,
+    "endTime": 101.007
+   },
+   {
+    "type": "timeline-record-type-layout",
+    "eventType": "recalculate-styles",
+    "startTime": 101.0075,
+    "endTime": 101.0095
+   }
+  ],
+  "samples": []
+ }
+}

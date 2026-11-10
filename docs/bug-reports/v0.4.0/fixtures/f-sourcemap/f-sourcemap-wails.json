@@ -1,0 +1,122 @@
+{
+ "version": 1,
+ "recording": {
+  "displayName": "f-sourcemap",
+  "startTime": 10.0,
+  "endTime": 11.0,
+  "instrumentTypes": [],
+  "records": [],
+  "markers": [],
+  "memoryPressureEvents": [],
+  "samples": [
+   {
+    "target": {
+     "identifier": "page-1",
+     "type": "page",
+     "name": "Page",
+     "url": ""
+    },
+    "stackTraces": [
+     {
+      "timestamp": 10.1,
+      "stackFrames": [
+       {
+        "sourceID": "2",
+        "name": "",
+        "line": 1,
+        "column": 28,
+        "url": "wails://wails.localhost/assets/index-abc.js"
+       },
+       {
+        "sourceID": "3",
+        "name": "map",
+        "line": 1,
+        "column": 11,
+        "url": ""
+       },
+       {
+        "sourceID": "2",
+        "name": "n",
+        "line": 1,
+        "column": 13,
+        "url": "wails://wails.localhost/assets/index-abc.js"
+       },
+       {
+        "sourceID": "2",
+        "name": "",
+        "line": 1,
+        "column": 83,
+        "url": "wails://wails.localhost/assets/index-abc.js"
+       },
+       {
+        "sourceID": "3",
+        "name": "map",
+        "line": 1,
+        "column": 11,
+        "url": ""
+       },
+       {
+        "sourceID": "2",
+        "name": "t",
+        "line": 1,
+        "column": 59,
+        "url": "wails://wails.localhost/assets/index-abc.js"
+       }
+      ]
+     },
+     {
+      "timestamp": 10.2,
+      "stackFrames": [
+       {
+        "sourceID": "2",
+        "name": "n",
+        "line": 1,
+        "column": 13,
+        "url": "wails://wails.localhost/assets/index-abc.js"
+       },
+       {
+        "sourceID": "2",
+        "name": "",
+        "line": 1,
+        "column": 83,
+        "url": "wails://wails.localhost/assets/index-abc.js"
+       },
+       {
+        "sourceID": "3",
+        "name": "map",
+        "line": 1,
+        "column": 11,
+        "url": ""
+       },
+       {
+        "sourceID": "2",
+        "name": "t",
+        "line": 1,
+        "column": 59,
+        "url": "wails://wails.localhost/assets/index-abc.js"
+       }
+      ]
+     },
+     {
+      "timestamp": 10.299999999999999,
+      "stackFrames": [
+       {
+        "sourceID": "2",
+        "name": "t",
+        "line": 1,
+        "column": 59,
+        "url": "wails://wails.localhost/assets/index-abc.js"
+       }
+      ]
+     }
+    ],
+    "durations": [
+     0.03,
+     0.01,
+     0.005
+    ]
+   }
+  ]
+ },
+ "overview": {}
+}
