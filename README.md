@@ -101,6 +101,73 @@ wkperf compare baseline/ --vs candidate/ --fail-on-regression --strict-fixture
 
 Exit code `2` means a real regression, `3` means the two captures weren't comparable enough to trust. Details in the [reference](docs/REFERENCE.md#exit-codes).
 
+## Audit one build across many scenes
+
+`compare` answers "did my change help?". `audit` answers "how healthy is this build overall, and what should I fix first?". Record several scenes of the *same* build (home, a big table, a log view, settings...), one folder per scene:
+
+```
+scenes/
+  home/           run-1.json  run-2.json  run-3.json
+  table-scroll/   run-1.json  run-2.json  run-3.json
+  log-stream/     run-1.json  run-2.json
+  settings.json                      # a loose file is its own scene
+```
+
+```bash
+wkperf sample --out /tmp/demo          # includes a demo scenes/ tree
+wkperf audit /tmp/demo/scenes
+wkperf audit scenes/ --format html --out audit.html --open
+wkperf audit scenes/ --min-score 70    # exit code 4 below 70: gate CI on the whole app
+wkperf audit captures/ --group-by-prefix   # home-1.json, home-2.json -> scene "home"
+```
+
+Each subdirectory is a scene (its files are repeat runs, medians are used); loose files are one scene each. You get a scene leaderboard, an overall grade, where the time goes, a cross-scene **Fix first** list (ranked by how many scenes a problem hits times how much it costs), hot functions, and the worst scene per standard. `--ai` / `--emit-prompt` work as in `analyze`.
+
+```
+4 scenes · 12 runs · 120.0s recorded
+Overall (typical scene): grade B · score 86/100
+
+Scene leaderboard (worst first)
+  scene                    grade score    frame p95      jank        TBT  top finding
+  table-scroll             D        49      53.5 ms     98.1%     0.0 ms  One module dominates CPU time: https://…
+  settings                 C        72      17.1 ms      8.0%  1317.4 ms  One module dominates CPU time: https://…
+  log-stream               C        74      21.8 ms     54.1%     0.0 ms  One module dominates CPU time: https://…
+  home                     A        97      17.4 ms      9.0%     0.0 ms  One module dominates CPU time: https://…
+
+Fix first
+ 3.  HIGH  Layout thrashing (forced synchronous layout)
+    forced-layout · layout · 4 scenes · 8304.1ms total · 20.9% avg impact · rank 215.9
+    • table-scroll: 241 forced-layout records, 4888.9ms total
+    → Fix: Batch DOM reads and writes: read all layout properties first, then apply all writes...
+```
+
+## How far from a performant UI?
+
+`analyze` and `audit` rate every recording against a small set of published targets and show the distance to "good" (for example "jank ratio is 12.4x the 5% target"). Scores run 0 to 100, graded A (90+), B (75+), C (60+), D (40+), F. `analyze --no-scorecard` hides it for single recordings.
+
+An honest note: this is **not Lighthouse and not Core Web Vitals scoring**. Those tools measure page loads in a browser; wkperf reads Web Inspector timelines of a long-lived app.
+
+- **Borrowed from Lighthouse / Core Web Vitals**: Total Blocking Time (summed over the whole recording and normalized per 10 s, not FCP-to-TTI), an INP *approximation* (handler time only, no input or presentation delay, so real INP is higher), and FCP/LCP only when the recording actually contains those records.
+- **Not used**: CLS and any page-load scoring.
+- **wkperf-specific**: frame budget (p95, FPS), jank ratio, GC share, memory growth, forced layouts per second, long tasks per minute, main-thread busy share. Their thresholds are our choices for a desktop webview app, not a standard.
+
+| Standard | Source | ID | Good | Poor | Weight |
+| --- | --- | --- | --- | --- | --- |
+| Frame time p95 | frame budget (60Hz) | `frame-p95` | ≤ 16.7 ms | > 33.4 ms | 3 |
+| Jank ratio | frame budget (60Hz) | `jank-ratio` | ≤ 5% | > 25% | 3 |
+| Average FPS | frame budget (60Hz) | `fps` | ≥ 55 | < 30 | 3 |
+| Total Blocking Time | Lighthouse | `tbt` | ≤ 200 ms per 10 s | > 600 ms per 10 s | 2 |
+| Interaction latency (INP approx.) | Core Web Vitals | `inp` | ≤ 200 ms | > 500 ms | 2 |
+| Long tasks per minute | wkperf heuristic | `long-task-rate` | ≤ 3 | > 12 | 2 |
+| First Contentful Paint | Lighthouse | `fcp` | ≤ 1800 ms | > 3000 ms | 1 |
+| Largest Contentful Paint | Core Web Vitals | `lcp` | ≤ 2500 ms | > 4000 ms | 1 |
+| Main thread script busy | wkperf heuristic | `main-busy` | ≤ 25% | > 50% | 1 |
+| GC share of wall time | wkperf heuristic | `gc-share` | ≤ 3% | > 10% | 1 |
+| Memory growth | wkperf heuristic | `memory-growth` | ≤ 1 MB/min | > 10 MB/min | 1 |
+| Forced layouts per second | wkperf heuristic | `forced-layout-rate` | ≤ 0.5 /s | > 5 /s | 1 |
+
+Treat scores as a compass, not a certificate.
+
 ## "My two recordings aren't the same length / scenario"
 
 That's common, and `wkperf` deals with it instead of silently lying:

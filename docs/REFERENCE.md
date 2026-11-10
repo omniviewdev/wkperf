@@ -117,9 +117,10 @@ wkperf version
 | `--top` | `10` | list length for hotspots, modules, slow frames, long tasks |
 | `--jank-ms` | `16.7` | slow-frame threshold |
 | `--long-task-ms` | `50` | long-task threshold |
+| `--no-scorecard` | off | skip the per-recording scorecard |
 | `--open`, `--no-color` | | as in `compare` |
 
-JSON output is `{"schema": "wkperf-insights/v1", "reports": [...]}`. The HTML report is self-contained (inline SVG, light/dark): a stacked wall-time bar with legend, hotspot and module tables, slow frames, long tasks, and finding cards with severity, evidence and suggestion.
+Each recording is followed by its scorecard (see Scorecard). JSON output is `{"schema": "wkperf-insights/v1", "reports": [...]}`; each report carries a `scorecard` field unless `--no-scorecard`. The HTML report is self-contained (inline SVG, light/dark): a stacked wall-time bar with legend, hotspot and module tables, slow frames, long tasks, and finding cards with severity, evidence and suggestion.
 
 ### Findings catalogue
 
@@ -141,6 +142,55 @@ JSON output is `{"schema": "wkperf-insights/v1", "reports": [...]}`. The HTML re
 | `low-sample-coverage` | sampling profiler covers little of script time (hotspots may mislead) |
 
 Severity is `high`, `medium`, `low`, or `info`, derived from the share of wall time affected. Findings are heuristics: treat them as leads and verify with a second capture.
+
+## audit
+
+`wkperf audit PATH...` audits one build across many scenes (no baseline). Scene discovery: each subdirectory of a given directory is a scene and its `*.json` files are the runs; loose `*.json` files (and files given directly) are one scene each, named after the file. A directory with both is handled both ways. Each recording is windowed, analyzed, rated against the scorecard, and then aggregated: median per scene, scenes ranked worst first, overall scorecard across scenes, a cross-scene priority list, merged hot functions/modules and a duration-weighted breakdown. A file that fails to parse aborts the run with its name.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--format` | `term` | `term`, `md`, `json`, `html`, or `all` |
+| `--out` | `wkperf-audit.html` | output file; directory or prefix with `all` |
+| `--group-by-prefix` | off | group loose files `<scene>-<n>.json` / `<scene>_<n>.json` into scene `<scene>` |
+| `--min-score` | `0` (off) | exit 4 when the overall score is below N |
+| `--top` | `10` | list length for priorities, hotspots, modules |
+| `--jank-ms`, `--long-task-ms` | `16.7`, `50` | thresholds as in `analyze` |
+| `--trim-start`, `--trim-end`, `--from`, `--to` | `0` | window applied to every recording |
+| `--open`, `--no-color` | | as in `compare` |
+| `--ai`, `--emit-prompt`, `--ai-*`, `--app-*` | | see AI workflow (audit prompt) |
+
+JSON output is `{"schema": "wkperf-audit/v1", "report": {...}}`.
+
+## Scorecard
+
+Each recording is rated per standard as `good` / `needs-improvement` / `poor` (or `n/a` when the recording lacks the data), scored 0 to 100 (weighted mean), and graded A (90+), B (75+), C (60+), D (40+), F. "Gap" lists what is not good, with how many times over target. Targets are not Lighthouse or Core Web Vitals scores: TBT is normalized per 10 s of recording, INP is a handler-time approximation, FCP/LCP need load records, CLS is not measured, and wkperf-heuristic thresholds are our choices.
+
+| Standard | Source | ID | Good | Poor | Weight |
+| --- | --- | --- | --- | --- | --- |
+| Frame time p95 | frame budget (60Hz) | `frame-p95` | ≤ 16.7 ms | > 33.4 ms | 3 |
+| Jank ratio | frame budget (60Hz) | `jank-ratio` | ≤ 5% | > 25% | 3 |
+| Average FPS | frame budget (60Hz) | `fps` | ≥ 55 | < 30 | 3 |
+| Total Blocking Time | Lighthouse | `tbt` | ≤ 200 ms per 10 s | > 600 ms per 10 s | 2 |
+| Interaction latency (INP approx.) | Core Web Vitals | `inp` | ≤ 200 ms | > 500 ms | 2 |
+| Long tasks per minute | wkperf heuristic | `long-task-rate` | ≤ 3 | > 12 | 2 |
+| First Contentful Paint | Lighthouse | `fcp` | ≤ 1800 ms | > 3000 ms | 1 |
+| Largest Contentful Paint | Core Web Vitals | `lcp` | ≤ 2500 ms | > 4000 ms | 1 |
+| Main thread script busy | wkperf heuristic | `main-busy` | ≤ 25% | > 50% | 1 |
+| GC share of wall time | wkperf heuristic | `gc-share` | ≤ 3% | > 10% | 1 |
+| Memory growth | wkperf heuristic | `memory-growth` | ≤ 1 MB/min | > 10 MB/min | 1 |
+| Forced layouts per second | wkperf heuristic | `forced-layout-rate` | ≤ 0.5 /s | > 5 /s | 1 |
+
+### Findings → scorecard
+
+| Finding | Standards it typically moves |
+| --- | --- |
+| `jank`, `layout-heavy`, `style-recalc-heavy`, `paint-heavy`, `raf-load` | `frame-p95`, `jank-ratio`, `fps` |
+| `forced-layout` | `forced-layout-rate`, `frame-p95` |
+| `long-tasks` | `tbt`, `long-task-rate`, `main-busy` |
+| `event-handler-heavy` | `inp`, `main-busy` |
+| `timer-storm`, `microtask-heavy`, `observer-callback-heavy`, `hot-function`, `hot-module` | `main-busy` |
+| `gc-pressure` | `gc-share` |
+| `memory-growth` | `memory-growth` |
 
 ## AI workflow
 
@@ -231,6 +281,7 @@ Verdicts: `improved`, `regressed`, `unchanged`, `noisy` (change within run-to-ru
 | 1 | error (bad input, unreadable file, write failure) |
 | 2 | `--fail-on-regression` and a regressed metric with confidence other than `low` in the frames, script, layout, or cpu groups |
 | 3 | `--strict-fixture` and the comparability score is below `--min-comparability` |
+| 4 | `audit --min-score N` and the overall score is below N |
 
 ## CI usage
 

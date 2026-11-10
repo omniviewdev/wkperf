@@ -227,3 +227,153 @@ func TestSampleWritesDifferentLengthPair(t *testing.T) {
 		}
 	}
 }
+
+// sceneTree writes home (good, 2 runs) and table (janky, 2 runs) scenes.
+func sceneTree(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	bad := testgen.Baseline()
+	bad.FrameMeanMs = 45
+	bad.LayoutScale = 6
+	for _, sc := range []struct {
+		name string
+		p    testgen.Params
+	}{{"home", testgen.Improved()}, {"table-scroll", bad}} {
+		d := filepath.Join(root, sc.name)
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for i := int64(1); i <= 2; i++ {
+			writeRec(t, d, "r"+string(rune('0'+i))+".json", i, sc.p)
+		}
+	}
+	return root
+}
+
+func TestDiscoverScenes(t *testing.T) {
+	root := sceneTree(t)
+	writeRec(t, root, "loose.json", 9, testgen.Baseline())
+	got, err := discoverScenes([]string{root}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int{}
+	for _, s := range got {
+		counts[s.Name] = len(s.Files)
+	}
+	want := map[string]int{"home": 2, "table-scroll": 2, "loose": 1}
+	if !reflect.DeepEqual(counts, want) {
+		t.Fatalf("got %v want %v", counts, want)
+	}
+
+	dir := t.TempDir()
+	for _, n := range []string{"login-1.json", "login-2.json", "feed_1.json", "feed_2.json", "feed_3.json", "solo.json"} {
+		writeRec(t, dir, n, 1, testgen.Baseline())
+	}
+	got, err = discoverScenes([]string{dir}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts = map[string]int{}
+	for _, s := range got {
+		counts[s.Name] = len(s.Files)
+	}
+	want = map[string]int{"login": 2, "feed": 3, "solo": 1}
+	if !reflect.DeepEqual(counts, want) {
+		t.Fatalf("prefix: got %v want %v", counts, want)
+	}
+	got, _ = discoverScenes([]string{dir}, false)
+	if len(got) != 6 {
+		t.Fatalf("no grouping: want 6 scenes, got %d", len(got))
+	}
+}
+
+func TestAuditMarkdown(t *testing.T) {
+	out, err := run(t, "audit", sceneTree(t), "--format", "md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Fix first") || !strings.Contains(out, "table-scroll") {
+		t.Fatalf("md lacks Fix first / worst scene:\n%.600s", out)
+	}
+}
+
+func TestAuditJSONAndMinScore(t *testing.T) {
+	root := sceneTree(t)
+	out, err := run(t, "audit", root, "--format", "json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Schema string          `json:"schema"`
+		Report json.RawMessage `json:"report"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil || doc.Schema != "wkperf-audit/v1" || len(doc.Report) == 0 {
+		t.Fatalf("bad json: %v %.200s", err, out)
+	}
+	_, err = run(t, "audit", root, "--format", "json", "--min-score", "100")
+	var ee *ExitError
+	if !errors.As(err, &ee) || ee.Code != 4 {
+		t.Fatalf("want exit 4, got %v", err)
+	}
+	if _, err := run(t, "audit", root, "--format", "json", "--min-score", "1"); err != nil {
+		t.Fatalf("min-score 1 should pass: %v", err)
+	}
+}
+
+func TestAuditBadFileNamed(t *testing.T) {
+	root := sceneTree(t)
+	bad := filepath.Join(root, "home", "broken.json")
+	if err := os.WriteFile(bad, []byte("{nope"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := run(t, "audit", root, "--format", "json")
+	if err == nil || !strings.Contains(err.Error(), "broken.json") {
+		t.Fatalf("want error naming broken.json, got %v", err)
+	}
+}
+
+func TestEmitPromptAudit(t *testing.T) {
+	out, err := run(t, "audit", sceneTree(t), "--emit-prompt", "-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Data (user prompt)", "home", "table-scroll"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("prompt lacks %q", want)
+		}
+	}
+}
+
+func TestAnalyzeScorecard(t *testing.T) {
+	f := writeRec(t, t.TempDir(), "a.json", 1, testgen.Baseline())
+	out, err := run(t, "analyze", f, "--format", "json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Reports []struct {
+			Scorecard *struct {
+				Grade string `json:"grade"`
+			} `json:"scorecard"`
+		} `json:"reports"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil || len(doc.Reports) != 1 || doc.Reports[0].Scorecard == nil || doc.Reports[0].Scorecard.Grade == "" {
+		t.Fatalf("scorecard missing: %v %.300s", err, out)
+	}
+	out, err = run(t, "analyze", f, "--format", "json", "--no-scorecard")
+	if err != nil || strings.Contains(out, `"scorecard"`) {
+		t.Fatalf("--no-scorecard ignored: %v", err)
+	}
+}
+
+func TestSampleWritesScenes(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := run(t, "sample", "--out", dir); err != nil {
+		t.Fatal(err)
+	}
+	ents, err := os.ReadDir(filepath.Join(dir, "scenes"))
+	if err != nil || len(ents) < 4 {
+		t.Fatalf("want >=4 scenes: %v %d", err, len(ents))
+	}
+}

@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"strings"
 
@@ -13,6 +15,7 @@ import (
 	"github.com/omniviewdev/wkperf/internal/insights"
 	"github.com/omniviewdev/wkperf/internal/model"
 	"github.com/omniviewdev/wkperf/internal/report/insightshtml"
+	"github.com/omniviewdev/wkperf/internal/scorecard"
 )
 
 const defaultAnalyzeBase = "wkperf-analysis"
@@ -34,7 +37,7 @@ or --emit-prompt to get the prompt for pasting into another agent.`,
   wkperf analyze recording.json --emit-prompt=prompt.md`,
 		Args: cobra.MinimumNArgs(1),
 		PreRunE: func(cmd *cobra.Command, _ []string) error {
-			if err := bindFlags(cmd, "format", "out", "top", "jank-ms", "long-task-ms", "no-color", "open"); err != nil {
+			if err := bindFlags(cmd, "format", "out", "top", "jank-ms", "long-task-ms", "no-color", "open", "no-scorecard"); err != nil {
 				return err
 			}
 			if err := bindFlags(cmd, windowKeys...); err != nil {
@@ -52,6 +55,7 @@ or --emit-prompt to get the prompt for pasting into another agent.`,
 	f.Float64("long-task-ms", 50, "script duration above which a task is long")
 	f.Bool("no-color", false, "disable colored output (NO_COLOR is also respected)")
 	f.Bool("open", false, "open the HTML report after writing it")
+	f.Bool("no-scorecard", false, "skip the performance scorecard for each recording")
 	addWindowFlags(c)
 	addAIFlags(c)
 	return c
@@ -77,6 +81,8 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		LongTaskMs: viper.GetFloat64("long-task-ms"),
 	}
 	reps := make([]*insights.Report, 0, len(files))
+	cards := make([]*scorecard.Scorecard, 0, len(files))
+	withCard := !viper.GetBool("no-scorecard")
 	for _, f := range files {
 		rec, err := model.Load(f)
 		if err != nil {
@@ -89,7 +95,13 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("%s: %w", f, err)
 		}
-		reps = append(reps, insights.Analyze(rec, f, iopts))
+		rep := insights.Analyze(rec, f, iopts)
+		reps = append(reps, rep)
+		if withCard {
+			cards = append(cards, scorecard.Evaluate(rec, rep))
+		} else {
+			cards = append(cards, nil)
+		}
 	}
 
 	emit := viper.GetString("emit-prompt")
@@ -124,6 +136,12 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 			if err := insights.RenderTerm(stdout, r, color); err != nil {
 				return err
 			}
+			if cards[i] != nil {
+				fmt.Fprintln(stdout)
+				if err := scorecard.RenderTerm(stdout, cards[i], color); err != nil {
+					return err
+				}
+			}
 		}
 		if err := runModel(); err != nil {
 			return err
@@ -131,7 +149,7 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		printAI(cmd, "term", aiText)
 	}
 	if format == "md" {
-		render := func(w io.Writer) error { return renderMarkdownAll(w, reps) }
+		render := func(w io.Writer) error { return renderMarkdownAll(w, reps, cards) }
 		if out == "" {
 			if err := render(stdout); err != nil {
 				return err
@@ -148,12 +166,12 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	}
 	if format == "all" {
 		p := reportPathBase(out, format, ".md", defaultAnalyzeBase)
-		if err := writeFileNote(cmd, p, func(w io.Writer) error { return renderMarkdownAll(w, reps) }); err != nil {
+		if err := writeFileNote(cmd, p, func(w io.Writer) error { return renderMarkdownAll(w, reps, cards) }); err != nil {
 			return err
 		}
 	}
 	if format == "json" || format == "all" {
-		render := func(w io.Writer) error { return renderInsightsJSON(w, reps, aiText) }
+		render := func(w io.Writer) error { return renderInsightsJSON(w, reps, cards, aiText) }
 		if format == "json" {
 			if err := runModel(); err != nil {
 				return err
@@ -175,7 +193,7 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		p := reportPathBase(out, format, ".html", defaultAnalyzeBase)
-		if err := writeFileNote(cmd, p, func(w io.Writer) error { return insightshtml.RenderWithAI(w, reps, aiText) }); err != nil {
+		if err := writeFileNote(cmd, p, func(w io.Writer) error { return renderInsightsHTML(w, reps, cards, aiText) }); err != nil {
 			return err
 		}
 		if viper.GetBool("open") {
@@ -197,7 +215,7 @@ func writeFileNote(cmd *cobra.Command, path string, render func(io.Writer) error
 	return nil
 }
 
-func renderMarkdownAll(w io.Writer, reps []*insights.Report) error {
+func renderMarkdownAll(w io.Writer, reps []*insights.Report, cards []*scorecard.Scorecard) error {
 	for i, r := range reps {
 		if i > 0 {
 			if _, err := io.WriteString(w, "\n---\n\n"); err != nil {
@@ -207,16 +225,61 @@ func renderMarkdownAll(w io.Writer, reps []*insights.Report) error {
 		if err := insights.RenderMarkdown(w, r); err != nil {
 			return err
 		}
+		if cards[i] != nil {
+			if _, err := io.WriteString(w, "\n"); err != nil {
+				return err
+			}
+			if err := scorecard.RenderMarkdown(w, cards[i]); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
 
-func renderInsightsJSON(w io.Writer, reps []*insights.Report, aiText string) error {
+func renderInsightsJSON(w io.Writer, reps []*insights.Report, cards []*scorecard.Scorecard, aiText string) error {
+	type entry struct {
+		*insights.Report
+		Scorecard *scorecard.Scorecard `json:"scorecard,omitempty"`
+	}
+	entries := make([]entry, len(reps))
+	for i, r := range reps {
+		entries[i] = entry{r, cards[i]}
+	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(struct {
-		Schema  string             `json:"schema"`
-		Reports []*insights.Report `json:"reports"`
-		AI      string             `json:"ai,omitempty"`
-	}{insightsSchema, reps, aiText})
+		Schema  string  `json:"schema"`
+		Reports []entry `json:"reports"`
+		AI      string  `json:"ai,omitempty"`
+	}{insightsSchema, entries, aiText})
+}
+
+// renderInsightsHTML renders the insights page and appends each recording's
+// scorecard (escaped Markdown) before </body>.
+func renderInsightsHTML(w io.Writer, reps []*insights.Report, cards []*scorecard.Scorecard, aiText string) error {
+	var buf bytes.Buffer
+	if err := insightshtml.RenderWithAI(&buf, reps, aiText); err != nil {
+		return err
+	}
+	page := buf.String()
+	var sec strings.Builder
+	for i, c := range cards {
+		if c == nil {
+			continue
+		}
+		var md bytes.Buffer
+		if err := scorecard.RenderMarkdown(&md, c); err != nil {
+			return err
+		}
+		fmt.Fprintf(&sec, `<div style="max-width:1000px;margin:0 auto;padding:0 16px 24px;font:14px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif"><h2>Scorecard: %s</h2><pre style="background:rgba(128,128,128,.15);padding:10px;border-radius:6px;overflow:auto">%s</pre></div>`,
+			html.EscapeString(reps[i].Source), html.EscapeString(md.String()))
+	}
+	if i := strings.LastIndex(page, "</body>"); i >= 0 {
+		page = page[:i] + sec.String() + page[i:]
+	} else {
+		page += sec.String()
+	}
+	_, err := io.WriteString(w, page)
+	return err
 }

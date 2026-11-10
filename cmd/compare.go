@@ -284,6 +284,9 @@ func repReport(group []*loaded, rep *metrics.Summary, wo analyze.Options, top in
 // printAI shows the model answer: stdout for text formats, stderr when stdout
 // carries JSON, nowhere extra for html-only (it lands in the report).
 func printAI(cmd *cobra.Command, format, text string) {
+	if text == "" {
+		return
+	}
 	switch format {
 	case "term", "md", "all":
 		fmt.Fprintf(cmd.OutOrStdout(), "\n## AI analysis\n\n%s\n", text)

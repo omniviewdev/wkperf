@@ -29,6 +29,8 @@ type Params struct {
 	CPUMean              float64 // mean total CPU usage, percent
 	MemoryStartMB        float64
 	MemoryGrowthMBPerSec float64
+	LongTaskRate         float64 // probability per 16ms tick of an extra 60-140ms script task (0 = none)
+	ForcedLayoutRate     float64 // probability per 16ms tick of a forced-layout record (0 = none)
 	Functions            []FuncWeight
 }
 
@@ -143,6 +145,20 @@ func genFrames(rng *rand.Rand, p Params, rec *model.Recording) {
 			d := e.ms * p.LayoutScale * (0.5 + rng.Float64()) / 1000
 			rec.Records = append(rec.Records, model.Record{
 				Type: model.TypeLayout, EventType: e.name, StartTime: cursor, EndTime: cursor + d,
+			})
+			cursor += d
+		}
+		if p.LongTaskRate > 0 && rng.Float64() < p.LongTaskRate {
+			d := (60 + rng.Float64()*80) / 1000
+			rec.Records = append(rec.Records, model.Record{
+				Type: model.TypeScript, EventType: "timer-fired", StartTime: cursor, EndTime: cursor + d,
+			})
+			cursor += d
+		}
+		if p.ForcedLayoutRate > 0 && rng.Float64() < p.ForcedLayoutRate {
+			d := (2 + rng.Float64()*4) * p.LayoutScale / 1000
+			rec.Records = append(rec.Records, model.Record{
+				Type: model.TypeLayout, EventType: "forced-layout", StartTime: cursor, EndTime: cursor + d,
 			})
 			cursor += d
 		}
