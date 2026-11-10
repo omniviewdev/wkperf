@@ -9,6 +9,7 @@ const (
 	UnitCount Unit = "count"
 	UnitPct   Unit = "%"
 	UnitBytes Unit = "bytes"
+	UnitMB    Unit = "MB"
 	UnitFPS   Unit = "fps"
 	UnitRatio Unit = "ratio" // 0..1
 )

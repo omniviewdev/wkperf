@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}}</title>
+<style>
+:root{--bg:#fff;--fg:#1b1f24;--muted:#57606a;--card:#f6f8fa;--line:#d0d7de;--good:#1a7f37;--bad:#cf222e;--noisy:#9a6700;--flat:#6e7781;--axis:#8c959f;--base:#6e7fd8;--cand:#e07b00;--guide:#8250df}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--muted:#9da7b3;--card:#161b22;--line:#30363d;--good:#3fb950;--bad:#ff7b72;--noisy:#e3b341;--flat:#8b949e;--axis:#6e7681;--base:#8b9cf5;--cand:#f0a030;--guide:#bc8cff}}
+body{background:var(--bg);color:var(--fg);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;margin:0;padding:24px;max-width:1200px;margin-inline:auto}
+h1{margin:0 0 4px}h2{margin:32px 0 12px;font-size:18px}h3{margin:20px 0 6px;text-transform:capitalize}
+.muted{color:var(--muted)}
+.cards{display:flex;flex-wrap:wrap;gap:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 16px;min-width:150px}
+.card .l{color:var(--muted);font-size:12px}.card .v{font-size:18px;font-weight:600}
+.good{color:var(--good)}.bad{color:var(--bad)}.noisy{color:var(--noisy)}.flat{color:var(--flat)}
+table{border-collapse:collapse;width:100%}
+th,td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--line);vertical-align:middle}
+th{cursor:pointer;user-select:none;white-space:nowrap}th.nosort{cursor:default}
+td.n{text-align:right;font-variant-numeric:tabular-nums}
+.ctl{display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin:8px 0}
+input[type=search]{background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:4px 8px}
+svg.bar{display:block}
+svg.chart{width:100%;max-width:640px;height:auto}
+svg text.lt{fill:var(--muted);font-size:10px}
+.charts{display:flex;flex-wrap:wrap;gap:20px}
+code{font-family:ui-monospace,Menlo,monospace;font-size:12px}
+button.copy{font-size:11px;margin-left:6px;cursor:pointer}
+tr.hidden{display:none}
+.sources{margin:4px 0;padding-left:18px;color:var(--muted);font-size:12px}
+</style>
+</head>
+<body>
+<header>
+<h1>{{.Title}}</h1>
+{{if .Generated}}<div class="muted">Generated {{.Generated}}</div>{{end}}
+<div class="cards" style="margin-top:12px">
+<div class="card"><div class="l">Baseline: {{.Base.Label}}</div><div class="v">{{.Base.Runs}} run(s)</div>
+<ul class="sources">{{range .Base.Sources}}<li>{{.}}</li>{{end}}</ul></div>
+<div class="card"><div class="l">Candidate: {{.Cand.Label}}</div><div class="v">{{.Cand.Runs}} run(s)</div>
+<ul class="sources">{{range .Cand.Sources}}<li>{{.}}</li>{{end}}</ul></div>
+</div>
+</header>
+
+<h2>Summary</h2>
+<div class="cards">
+<div class="card"><div class="l">Overall</div><div class="v {{.OverallClass}}">{{.Overall}}</div></div>
+<div class="card"><div class="l">Improved</div><div class="v good">▲ {{.Counts.Improved}}</div></div>
+<div class="card"><div class="l">Regressed</div><div class="v bad">▼ {{.Counts.Regressed}}</div></div>
+<div class="card"><div class="l">Noisy</div><div class="v noisy">~ {{.Counts.Noisy}}</div></div>
+<div class="card"><div class="l">Unchanged</div><div class="v flat">· {{.Counts.Unchanged}}</div></div>
+</div>
+
+{{if .Cards}}
+<h2>Key metrics</h2>
+<div class="cards">
+{{range .Cards}}<div class="card"><div class="l">{{.Label}}</div><div class="v">{{.Base}} → {{.Cand}}</div><div class="{{.Class}}">{{.Glyph}} {{.Pct}}</div></div>
+{{end}}</div>
+{{end}}
+
+{{if .Charts}}
+<h2>Charts</h2>
+<div class="charts">
+{{range .Charts}}<figure style="margin:0"><figcaption><b>{{.Title}}</b></figcaption>{{.SVG}}</figure>
+{{end}}</div>
+{{end}}
+
+<h2>Metrics</h2>
+<div class="ctl">
+<label><input type="checkbox" class="flt" value="improved" checked> <span class="good">▲ improved</span></label>
+<label><input type="checkbox" class="flt" value="regressed" checked> <span class="bad">▼ regressed</span></label>
+<label><input type="checkbox" class="flt" value="noisy" checked> <span class="noisy">~ noisy</span></label>
+<label><input type="checkbox" class="flt" value="unchanged"> <span class="flat">· unchanged</span></label>
+<label><input type="checkbox" class="flt" value="info"> <span class="flat">info</span></label>
+<input type="search" id="q" placeholder="Search metrics…" aria-label="Search metrics">
+</div>
+{{range .Groups}}
+<h3>{{.Name}}</h3>
+<table class="metrics">
+<thead><tr><th>Metric</th><th class="n">Baseline</th><th class="n">Candidate</th><th class="n">Δ%</th><th class="nosort">Change</th><th>Verdict</th><th>Runs</th></tr></thead>
+<tbody>
+{{range .Rows}}<tr data-verdict="{{.Verdict}}" data-text="{{.Label}} {{.Key}}">
+<td data-v="{{.Label}}" title="{{.Key}}">{{.Label}}</td>
+<td class="n" data-v="{{.BaseRaw}}"{{if .Tooltip}} title="{{.Tooltip}}"{{end}}>{{.Base}}</td>
+<td class="n" data-v="{{.CandRaw}}"{{if .Tooltip}} title="{{.Tooltip}}"{{end}}>{{.Cand}}</td>
+<td class="n {{.Class}}" data-v="{{.PctRaw}}">{{.Glyph}} {{.Pct}}</td>
+<td>{{.Bar}}</td>
+<td class="{{.Class}}" data-v="{{.Verdict}}" title="confidence: {{.Confidence}}">{{.Glyph}} {{.Verdict}}</td>
+<td data-v="{{.Runs}}"{{if .Tooltip}} title="{{.Tooltip}}"{{end}}>{{.Runs}}</td>
+</tr>
+{{end}}</tbody></table>
+{{end}}
+
+{{if .Regressed}}
+<h2>Top regressed functions (self time)</h2>
+<table class="funcs">
+<thead><tr><th class="nosort">Function</th><th class="n">Base ms</th><th class="n">Cand ms</th><th class="n">Δ ms</th><th class="n">Δ%</th><th class="nosort">Base / Cand</th></tr></thead>
+<tbody>
+{{range .Regressed}}<tr><td><code class="fn">{{.Name}}</code><button class="copy" type="button">copy</button><div class="muted"><code>{{.Loc}}</code></div></td>
+<td class="n">{{.Base}}</td><td class="n">{{.Cand}}</td><td class="n {{.Class}}">{{.Glyph}} {{.Delta}}</td><td class="n {{.Class}}">{{.Pct}}</td><td>{{.Bars}}</td></tr>
+{{end}}</tbody></table>
+{{end}}
+
+{{if .Improved}}
+<h2>Top improved functions (self time)</h2>
+<table class="funcs">
+<thead><tr><th class="nosort">Function</th><th class="n">Base ms</th><th class="n">Cand ms</th><th class="n">Δ ms</th><th class="n">Δ%</th><th class="nosort">Base / Cand</th></tr></thead>
+<tbody>
+{{range .Improved}}<tr><td><code class="fn">{{.Name}}</code><button class="copy" type="button">copy</button><div class="muted"><code>{{.Loc}}</code></div></td>
+<td class="n">{{.Base}}</td><td class="n">{{.Cand}}</td><td class="n {{.Class}}">{{.Glyph}} {{.Delta}}</td><td class="n {{.Class}}">{{.Pct}}</td><td>{{.Bars}}</td></tr>
+{{end}}</tbody></table>
+{{end}}
+
+<script>
+(function () {
+  var flts = document.querySelectorAll('.flt');
+  var q = document.getElementById('q');
+  function apply() {
+    var on = {};
+    flts.forEach(function (c) { on[c.value] = c.checked; });
+    var needle = q.value.toLowerCase();
+    document.querySelectorAll('table.metrics tbody tr').forEach(function (tr) {
+      var v = tr.getAttribute('data-verdict');
+      var show = (v in on) ? on[v] : true;
+      if (show && needle && tr.getAttribute('data-text').toLowerCase().indexOf(needle) < 0) show = false;
+      tr.classList.toggle('hidden', !show);
+    });
+  }
+  flts.forEach(function (c) { c.addEventListener('change', apply); });
+  q.addEventListener('input', apply);
+  apply();
+
+  document.querySelectorAll('table.metrics').forEach(function (t) {
+    t.querySelectorAll('th').forEach(function (th, i) {
+      if (th.classList.contains('nosort')) return;
+      var dir = 1;
+      th.addEventListener('click', function () {
+        var body = t.tBodies[0];
+        var rows = Array.prototype.slice.call(body.rows);
+        rows.sort(function (a, b) {
+          var x = a.cells[i].getAttribute('data-v'), y = b.cells[i].getAttribute('data-v');
+          var nx = parseFloat(x), ny = parseFloat(y);
+          if (!isNaN(nx) && !isNaN(ny) && String(nx) === x && String(ny) === y) return (nx - ny) * dir;
+          return x.localeCompare(y) * dir;
+        });
+        dir = -dir;
+        rows.forEach(function (r) { body.appendChild(r); });
+      });
+    });
+  });
+
+  document.querySelectorAll('button.copy').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var name = b.parentNode.querySelector('code.fn').textContent;
+      if (navigator.clipboard) navigator.clipboard.writeText(name);
+    });
+  });
+})();
+</script>
+</body>
+</html>
