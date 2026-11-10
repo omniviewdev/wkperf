@@ -18,7 +18,9 @@ func TestRenderRoundTrip(t *testing.T) {
 			Base:   10, Cand: 12, Pct: 0.2, Verdict: compare.Regressed,
 			CandRuns: []float64{11, 13},
 		}},
-		BaseRep: &metrics.Summary{Source: "must-not-appear"},
+		FuncRegressed: []compare.FuncDiff{{Name: "f", URL: "bundle.js", Line: 1, Column: 222, SourceID: "7", Original: &metrics.SourceLocation{URL: "src/App.tsx", Line: 17, Column: 4}, Verdict: compare.Regressed}},
+		Comparability: compare.Comparability{Score: 0.6, Normalized: true, Warnings: []compare.Warning{{Code: "duration-mismatch", Level: "warn"}}},
+		BaseRep:       &metrics.Summary{Source: "must-not-appear"},
 	}
 	var buf bytes.Buffer
 	if err := Render(&buf, r); err != nil {
@@ -34,6 +36,16 @@ func TestRenderRoundTrip(t *testing.T) {
 	ms, ok := got["metrics"].([]any)
 	if !ok || len(ms) != 1 {
 		t.Fatalf("metrics = %v", got["metrics"])
+	}
+	if ms[0].(map[string]any)["verdict"] != "regressed" {
+		t.Fatal("metric verdict missing")
+	}
+	if got["comparability"].(map[string]any)["normalized"] != true {
+		t.Fatal("comparability missing")
+	}
+	f := got["funcRegressed"].([]any)[0].(map[string]any)
+	if f["column"] != float64(222) || f["sourceID"] != "7" || f["original"].(map[string]any)["column"] != float64(4) {
+		t.Fatal("function source identity missing")
 	}
 	if got["candidate"].(map[string]any)["runs"].(float64) != 2 {
 		t.Fatalf("candidate runs wrong: %v", got["candidate"])

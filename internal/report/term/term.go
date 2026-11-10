@@ -313,7 +313,7 @@ func renderFuncs(b *strings.Builder, p painter, title string, fs []compare.FuncD
 			FormatValue(f.CandSelf, metrics.UnitMs),
 			FormatDelta(f.Delta, metrics.UnitMs),
 			FormatPct(f.Pct),
-			FuncLabel(f.Name, f.URL, f.Line),
+			functionLabel(f),
 		}
 		for j, c := range []string{rows[i].base, rows[i].cand, rows[i].delta, rows[i].pct} {
 			if n := utf8.RuneCountInString(c); n > w[j] {
@@ -321,7 +321,6 @@ func renderFuncs(b *strings.Builder, p painter, title string, fs []compare.FuncD
 			}
 		}
 	}
-	nameW := max(o.Width-(2+w[0]+w[1]+w[2]+w[3]+4*2), 20)
 	col := "Function (self ms)"
 	if perSecond {
 		col = "Function (self ms per s)"
@@ -329,36 +328,26 @@ func renderFuncs(b *strings.Builder, p painter, title string, fs []compare.FuncD
 	hdr := fmt.Sprintf("  %s  %s  %s  %s  %s", padLeft("Base", w[0]), padLeft("Cand", w[1]),
 		padLeft("Δ", w[2]), padLeft("Δ%", w[3]), col)
 	b.WriteString(p.paint(ansiDim, hdr) + "\n")
-	for _, r := range rows {
+	for i, r := range rows {
 		line := fmt.Sprintf("  %s  %s  %s  %s  %s", padLeft(r.base, w[0]), padLeft(r.cand, w[1]),
-			padLeft(r.delta, w[2]), padLeft(r.pct, w[3]), Truncate(r.name, nameW))
+			padLeft(r.delta, w[2]), padLeft(r.pct, w[3]), r.name)
 		b.WriteString(p.verdict(v, line) + "\n")
+		if stack := fs[i].StackLabel(); stack != "" {
+			b.WriteString("    Common stack: " + stack + "\n")
+		}
 	}
 	b.WriteString("\n")
 }
 
-// FuncLabel returns "name  url:line" with the URL trimmed to its last path
-// segments.
-func FuncLabel(name, url string, line int) string {
+func functionLabel(f compare.FuncDiff) string {
+	name := f.Name
 	if name == "" {
 		name = "(anonymous)"
 	}
-	if url == "" {
-		return name
+	if f.ID != "" {
+		name += " [" + f.ID + "]"
 	}
-	u := url
-	if i := strings.IndexAny(u, "?#"); i >= 0 {
-		u = u[:i]
-	}
-	parts := strings.Split(strings.TrimRight(u, "/"), "/")
-	if len(parts) > 2 {
-		parts = parts[len(parts)-2:]
-	}
-	u = strings.Join(parts, "/")
-	if line > 0 {
-		u = fmt.Sprintf("%s:%d", u, line)
-	}
-	return name + "  " + u
+	return name + "  " + f.Location()
 }
 
 const barLen = 8

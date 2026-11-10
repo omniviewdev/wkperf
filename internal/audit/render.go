@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/omniviewdev/wkperf/internal/insights"
 	"github.com/omniviewdev/wkperf/internal/metrics"
 	"github.com/omniviewdev/wkperf/internal/scorecard"
 )
@@ -106,18 +107,92 @@ func mdEscape(s string) string {
 	return strings.NewReplacer("|", "\\|", "\n", " ").Replace(s)
 }
 
-func funcLabel(name, url string, line int) string {
+// Location shows generated identity and its optional original source.
+func (h HotFunction) Location() string {
+	return (metrics.FunctionFrame{Name: h.Name, URL: h.URL, Line: h.Line, Column: h.Column, SourceID: h.SourceID, Original: h.Original}).Location()
+}
+
+func (h HotFunction) StackLabel() string {
+	var b strings.Builder
+	for i, frame := range h.CommonStack {
+		if i > 0 {
+			b.WriteString(" → ")
+		}
+		name := frame.Name
+		if name == "" {
+			name = "(anonymous)"
+		}
+		b.WriteString(name + " @ " + frame.Location())
+	}
+	return b.String()
+}
+
+func funcLabel(h HotFunction) string {
+	name := h.Name
 	if name == "" {
 		name = "(anonymous)"
 	}
-	loc := url
-	if loc != "" && line > 0 {
-		loc = fmt.Sprintf("%s:%d", loc, line)
+	if h.ID != "" {
+		name += " [" + h.ID + "]"
 	}
-	if loc == "" {
-		return name
+	return name + " " + h.Location()
+}
+
+func priorityDetails(pr Priority) []string {
+	var lines []string
+	if pr.Command != "" {
+		lines = append(lines, "Reproduce: "+pr.Command)
 	}
-	return name + " " + loc
+	for _, stack := range pr.Stacks {
+		lines = append(lines, fmt.Sprintf("Exact stack: %.3f sampled self ms; %d samples; %.3f–%.3f s; reproduce: %s", stack.SelfMs, stack.Samples, stack.FirstSec, stack.LastSec, stack.Command))
+		var path strings.Builder
+		for i, frame := range stack.Frames {
+			if i > 0 {
+				path.WriteString(" → ")
+			}
+			function := metrics.FunctionFrame{Name: frame.Name, URL: frame.URL, Line: frame.Line, Column: frame.Column, SourceID: frame.SourceID}
+			if frame.Original != nil {
+				function.Original = &metrics.SourceLocation{Name: frame.Original.Name, URL: frame.Original.URL, Line: frame.Original.Line, Column: frame.Original.Column}
+			}
+			name := frame.Name
+			if name == "" {
+				name = "(anonymous)"
+			}
+			path.WriteString(name + " @ " + function.Location())
+		}
+		lines = append(lines, path.String())
+		for _, stat := range stack.Stats {
+			lines = append(lines, fmt.Sprintf("%s = %.3f %s [%s]; reproduce: %s", stat.Key, stat.Value, stat.Unit, stat.Basis, stat.Command))
+		}
+	}
+	if pr.EvidenceScene != "" {
+		lines = append(lines, "Evidence scene: "+pr.EvidenceScene)
+	}
+	if len(pr.MetricKeys) > 0 {
+		lines = append(lines, "Metric keys: "+strings.Join(pr.MetricKeys, ", "))
+	}
+	for _, e := range pr.NumericEvidence {
+		lines = append(lines, fmt.Sprintf("Numeric evidence: %s = %.3f %s [%s] %s; reproduce: %s", e.MetricKey, e.Value, e.Unit, e.Basis, e.Description, e.Command))
+	}
+	if pr.Confidence != "" {
+		lines = append(lines, "Confidence: "+pr.Confidence+"; "+strings.Join(pr.ConfidenceReasons, "; "))
+	}
+	for _, v := range pr.Verify {
+		lines = append(lines, fmt.Sprintf("Verify: %s %s; target %.3f %s; %s; reproduce: %s", v.MetricKey, v.Direction, v.Target, v.Unit, v.Description, v.Command))
+	}
+	for _, win := range pr.SuggestedWindows {
+		lines = append(lines, fmt.Sprintf("Suggested window: %.3f–%.3f s; %s; %s", win.FromSec, win.ToSec, win.Reason, strings.Join(win.Flags, " ")))
+	}
+	if len(pr.Functions) > 0 {
+		lines = append(lines, "Functions: "+strings.Join(pr.Functions, "; "))
+	}
+	if len(pr.Triggers) > 0 {
+		lines = append(lines, "Triggers: "+strings.Join(pr.Triggers, "; "))
+	}
+	for _, node := range pr.Nodes {
+		lines = append(lines, fmt.Sprintf("Recorded node: %s; %s; %s", node.EventType, node.CSSPath, node.DisplayName))
+	}
+	return lines
 }
 
 // FormatValue renders v with the unit conventions used across the audit
@@ -276,6 +351,9 @@ func RenderTerm(w io.Writer, r *Report, color bool) error {
 				}
 			}
 		}
+		for _, detail := range priorityDetails(pr) {
+			ln("    %s", detail)
+		}
 		for j, l := range wrapText(pr.Suggestion, termWidth-12) {
 			if j == 0 {
 				ln("    → %s %s", p.bold("Fix:"), l)
@@ -291,7 +369,10 @@ func RenderTerm(w io.Writer, r *Report, color bool) error {
 	}
 	for i, h := range r.Hotspots {
 		ln("  %2d. %9.1fms %5.1f%% %2d %-6s %s", i+1, h.SelfMs, h.Pct, h.SceneCount, plural(h.SceneCount, "scene", "scenes"),
-			trunc(funcLabel(h.Name, h.URL, h.Line), 65))
+			funcLabel(h))
+		if stack := h.StackLabel(); stack != "" {
+			ln("      Common stack (%s): %s", h.CommonStackScene, stack)
+		}
 	}
 
 	sec("Hot modules")
@@ -319,6 +400,14 @@ func RenderTerm(w io.Writer, r *Report, color bool) error {
 			u := StdUnit(r.Overall, gi.ID)
 			ln("  %s %s %12s → target %-12s %5.1f× over", padR(gi.Name, 34), p.rating(gi.Rating),
 				FormatValue(u, gi.Value), FormatValue(u, gi.Target), gi.Factor)
+		}
+	}
+	for _, scene := range r.Scenes {
+		if scene.Rep != nil {
+			sec("Scene detail: " + scene.Name)
+			if err := insights.RenderTerm(&b, scene.Rep, color); err != nil {
+				return err
+			}
 		}
 	}
 	_, err := io.WriteString(w, b.String())
@@ -406,6 +495,9 @@ func RenderMarkdown(w io.Writer, r *Report) error {
 		for _, e := range pr.Evidence {
 			ln("   - Evidence: %s", strings.ReplaceAll(e, "\n", " "))
 		}
+		for _, detail := range priorityDetails(pr) {
+			ln("   - %s", strings.ReplaceAll(detail, "\n", " "))
+		}
 		if pr.Suggestion != "" {
 			ln("   - Suggestion: %s", strings.ReplaceAll(pr.Suggestion, "\n", " "))
 		}
@@ -417,10 +509,10 @@ func RenderMarkdown(w io.Writer, r *Report) error {
 	if len(r.Hotspots) == 0 {
 		ln("_No sampling data._")
 	} else {
-		ln("| Function | Self ms | Share | Scenes |")
-		ln("|---|---:|---:|---:|")
+		ln("| Function | Self ms | Share | Scenes | Common stack (representative scene) |")
+		ln("|---|---:|---:|---:|---|")
 		for _, h := range r.Hotspots {
-			ln("| `%s` | %.1f | %.1f%% | %d |", mdEscape(strings.ReplaceAll(funcLabel(h.Name, h.URL, h.Line), "`", "'")), h.SelfMs, h.Pct, h.SceneCount)
+			ln("| `%s` | %.1f | %.1f%% | %d | %s: %s |", mdEscape(strings.ReplaceAll(funcLabel(h), "`", "'")), h.SelfMs, h.Pct, h.SceneCount, mdEscape(h.CommonStackScene), mdEscape(h.StackLabel()))
 		}
 	}
 
@@ -462,6 +554,14 @@ func RenderMarkdown(w io.Writer, r *Report) error {
 		for _, gi := range r.Overall.Gap {
 			u := StdUnit(r.Overall, gi.ID)
 			ln("| %s | %s | %s | %s | %.1f× |", mdEscape(gi.Name), gi.Rating, FormatValue(u, gi.Value), FormatValue(u, gi.Target), gi.Factor)
+		}
+	}
+	for _, scene := range r.Scenes {
+		if scene.Rep != nil {
+			ln("\n## Scene detail: %s\n", mdEscape(scene.Name))
+			if err := insights.RenderMarkdown(&b, scene.Rep); err != nil {
+				return err
+			}
 		}
 	}
 	_, err := io.WriteString(w, b.String())

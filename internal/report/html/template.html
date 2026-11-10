@@ -105,7 +105,7 @@ tr.hidden{display:none}
 <table class="funcs">
 <thead><tr><th class="nosort">Function</th><th class="n">Base {{.Unit}}</th><th class="n">Cand {{.Unit}}</th><th class="n">Δ {{.Unit}}</th><th class="n">Δ%</th><th class="nosort">Base / Cand</th></tr></thead>
 <tbody>
-{{range .Regressed}}<tr><td><code class="fn">{{.Name}}</code><button class="copy" type="button">copy</button><div class="muted"><code>{{.Loc}}</code></div></td>
+{{range .Regressed}}<tr><td><code class="fn">{{.Name}}</code><button class="copy" type="button">copy</button><div class="muted"><code>{{.Loc}}</code>{{if .ID}} · ID <code>{{.ID}}</code>{{end}}</div>{{if .Stack}}<details><summary>Common stack</summary><code>{{.Stack}}</code></details>{{end}}</td>
 <td class="n">{{.Base}}</td><td class="n">{{.Cand}}</td><td class="n {{.Class}}">{{.Glyph}} {{.Delta}}</td><td class="n {{.Class}}">{{.Pct}}</td><td>{{.Bars}}</td></tr>
 {{end}}</tbody></table>
 {{end}}
@@ -115,7 +115,7 @@ tr.hidden{display:none}
 <table class="funcs">
 <thead><tr><th class="nosort">Function</th><th class="n">Base {{.Unit}}</th><th class="n">Cand {{.Unit}}</th><th class="n">Δ {{.Unit}}</th><th class="n">Δ%</th><th class="nosort">Base / Cand</th></tr></thead>
 <tbody>
-{{range .Improved}}<tr><td><code class="fn">{{.Name}}</code><button class="copy" type="button">copy</button><div class="muted"><code>{{.Loc}}</code></div></td>
+{{range .Improved}}<tr><td><code class="fn">{{.Name}}</code><button class="copy" type="button">copy</button><div class="muted"><code>{{.Loc}}</code>{{if .ID}} · ID <code>{{.ID}}</code>{{end}}</div>{{if .Stack}}<details><summary>Common stack</summary><code>{{.Stack}}</code></details>{{end}}</td>
 <td class="n">{{.Base}}</td><td class="n">{{.Cand}}</td><td class="n {{.Class}}">{{.Glyph}} {{.Delta}}</td><td class="n {{.Class}}">{{.Pct}}</td><td>{{.Bars}}</td></tr>
 {{end}}</tbody></table>
 {{end}}

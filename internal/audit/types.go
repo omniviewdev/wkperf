@@ -5,6 +5,8 @@ package audit
 
 import (
 	"github.com/omniviewdev/wkperf/internal/insights"
+	"github.com/omniviewdev/wkperf/internal/metrics"
+	"github.com/omniviewdev/wkperf/internal/rootcause"
 	"github.com/omniviewdev/wkperf/internal/scorecard"
 )
 
@@ -26,36 +28,55 @@ type SceneResult struct {
 	Name        string               `json:"name"`
 	Sources     []string             `json:"sources"`
 	Runs        int                  `json:"runs"`
-	DurationSec float64              `json:"durationSec"` // median
-	Card        *scorecard.Scorecard `json:"card"`        // scorecard of per-metric medians across runs
-	Breakdown   []insights.Slice     `json:"breakdown"`   // median share per slice
-	TopFinding  string               `json:"topFinding"`  // title of highest-impact finding
-	Rep         *insights.Report     `json:"-"`           // representative run (closest to median frame p95) for detail
+	DurationSec float64              `json:"durationSec"`        // median
+	Card        *scorecard.Scorecard `json:"card"`               // scorecard of per-metric medians across runs
+	Breakdown   []insights.Slice     `json:"breakdown"`          // median share per slice
+	TopFinding  string               `json:"topFinding"`         // title of highest-impact finding
+	Rep         *insights.Report     `json:"analysis,omitempty"` // representative run, closest to median frame p95
 }
 
 // Priority is a cross-scene finding rollup, the "fix this first" list.
 type Priority struct {
-	ID            string            `json:"id"`
-	Title         string            `json:"title"`
-	Category      string            `json:"category"`
-	Severity      insights.Severity `json:"severity"` // max across scenes
-	Scenes        []string          `json:"scenes"`   // scenes where it fired
-	TotalImpactMs float64           `json:"totalImpactMs"`
-	AvgImpactPct  float64           `json:"avgImpactPct"` // mean ImpactPct over ALL scenes (0 where absent)
-	Rank          float64           `json:"rank"`         // sort key: breadth-weighted impact; documented in implementation
-	Evidence      []string          `json:"evidence"`     // from the scene with highest impact, prefixed by scene name
-	Suggestion    string            `json:"suggestion"`
+	ID                string                     `json:"id"`
+	Title             string                     `json:"title"`
+	Category          string                     `json:"category"`
+	Severity          insights.Severity          `json:"severity"` // max across scenes
+	Scenes            []string                   `json:"scenes"`   // scenes where it fired
+	TotalImpactMs     float64                    `json:"totalImpactMs"`
+	AvgImpactPct      float64                    `json:"avgImpactPct"` // mean ImpactPct over ALL scenes (0 where absent)
+	Rank              float64                    `json:"rank"`         // sort key: breadth-weighted impact; documented in implementation
+	Evidence          []string                   `json:"evidence"`     // from the scene with highest impact, prefixed by scene name
+	Suggestion        string                     `json:"suggestion"`
+	EvidenceScene     string                     `json:"evidenceScene,omitempty"`
+	NumericEvidence   []insights.Evidence        `json:"numericEvidence,omitempty"`
+	MetricKeys        []string                   `json:"metricKeys,omitempty"`
+	Verify            []insights.Verification    `json:"verify,omitempty"`
+	Confidence        string                     `json:"confidence,omitempty"`
+	ConfidenceReasons []string                   `json:"confidenceReasons,omitempty"`
+	SuggestedWindows  []insights.SuggestedWindow `json:"suggestedWindows,omitempty"`
+	Functions         []string                   `json:"functions,omitempty"`
+	Triggers          []string                   `json:"triggers,omitempty"`
+	Nodes             []insights.NodeClue        `json:"nodes,omitempty"`
+	Stacks            []rootcause.Stack          `json:"stacks,omitempty"`
+	Command           string                     `json:"command,omitempty"`
 }
 
 // HotFunction is a function merged across scenes by FuncStat.Key.
 type HotFunction struct {
-	Name       string   `json:"name"`
-	URL        string   `json:"url"`
-	Line       int      `json:"line"`
-	SelfMs     float64  `json:"selfMs"` // sum of per-scene median self ms
-	Pct        float64  `json:"pct"`    // of total sampled self time across scenes
-	SceneCount int      `json:"sceneCount"`
-	Scenes     []string `json:"scenes"`
+	ID               string                  `json:"id,omitempty"`
+	Name             string                  `json:"name"`
+	URL              string                  `json:"url"`
+	Line             int                     `json:"line"`
+	Column           int                     `json:"column"`
+	SourceID         string                  `json:"sourceID,omitempty"`
+	Original         *metrics.SourceLocation `json:"original,omitempty"`
+	CommonStack      []metrics.FunctionFrame `json:"commonStack,omitempty"`
+	CommonStackID    string                  `json:"commonStackID,omitempty"`
+	CommonStackScene string                  `json:"commonStackScene,omitempty"`
+	SelfMs           float64                 `json:"selfMs"` // sum of per-scene median self ms
+	Pct              float64                 `json:"pct"`    // of total sampled self time across scenes
+	SceneCount       int                     `json:"sceneCount"`
+	Scenes           []string                `json:"scenes"`
 }
 
 type Report struct {

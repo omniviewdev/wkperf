@@ -273,10 +273,9 @@ func verdict(d MetricDiff, opts Options, scaled bool) (Verdict, string) {
 }
 
 type funcAgg struct {
-	name, url   string
-	line        int
+	function    metrics.FuncStat
+	source      string
 	self, total []float64
-	present     bool
 }
 
 // collectFuncs returns per-function per-run values; a run lacking the
@@ -289,15 +288,15 @@ func collectFuncs(group []*metrics.Summary, norm bool) map[string]*funcAgg {
 			a, ok := out[k]
 			if !ok {
 				a = &funcAgg{
-					name: f.Name, url: f.URL, line: f.Line,
-					self:  make([]float64, len(group)),
-					total: make([]float64, len(group)),
+					function: f,
+					source:   s.Source,
+					self:     make([]float64, len(group)),
+					total:    make([]float64, len(group)),
 				}
 				out[k] = a
 			}
 			a.self[i] += perSecond(f.SelfMs, s, norm)
 			a.total[i] += perSecond(f.TotalMs, s, norm)
-			a.present = true
 		}
 	}
 	return out
@@ -321,12 +320,16 @@ func compareFuncs(base, cand []*metrics.Summary, opts Options, norm bool) (regre
 		b, c := bf[k], cf[k]
 		var d FuncDiff
 		switch {
-		case b != nil && c != nil:
-			d.Name, d.URL, d.Line = c.name, c.url, c.line
 		case c != nil:
-			d.Name, d.URL, d.Line = c.name, c.url, c.line
+			d.Name, d.URL, d.Line = c.function.Name, c.function.URL, c.function.Line
+			d.Column, d.SourceID, d.Original = c.function.Column, c.function.SourceID, c.function.Original
+			d.ID, d.CommonStack = c.function.ID, c.function.CommonStack
+			d.CommonStackID, d.CommonStackSource = c.function.CommonStackID, c.source
 		default:
-			d.Name, d.URL, d.Line = b.name, b.url, b.line
+			d.Name, d.URL, d.Line = b.function.Name, b.function.URL, b.function.Line
+			d.Column, d.SourceID, d.Original = b.function.Column, b.function.SourceID, b.function.Original
+			d.ID, d.CommonStack = b.function.ID, b.function.CommonStack
+			d.CommonStackID, d.CommonStackSource = b.function.CommonStackID, b.source
 		}
 		if b != nil {
 			d.BaseSelf, d.BaseTotal = median(b.self), median(b.total)
@@ -366,7 +369,13 @@ func compareFuncs(base, cand []*metrics.Summary, opts Options, norm bool) (regre
 		if a.URL != b.URL {
 			return a.URL < b.URL
 		}
-		return a.Line < b.Line
+		if a.Line != b.Line {
+			return a.Line < b.Line
+		}
+		if a.Column != b.Column {
+			return a.Column < b.Column
+		}
+		return a.SourceID < b.SourceID
 	}
 	sort.Slice(regressed, func(i, j int) bool {
 		if regressed[i].Delta != regressed[j].Delta {

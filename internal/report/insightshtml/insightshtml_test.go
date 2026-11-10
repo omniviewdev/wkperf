@@ -22,7 +22,7 @@ func TestRender(t *testing.T) {
 			t.Errorf("missing %q", want)
 		}
 	}
-	if strings.Contains(out, "<script") {
+	if strings.Contains(out, "x<script>") || strings.Contains(out, "<script>alert(1)") {
 		t.Error("unescaped script tag")
 	}
 }

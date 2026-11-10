@@ -8,9 +8,10 @@ import (
 	"html/template"
 	"io"
 	"strings"
-	"time"
 
 	"github.com/omniviewdev/wkperf/internal/insights"
+	"github.com/omniviewdev/wkperf/internal/metrics"
+	flamehtml "github.com/omniviewdev/wkperf/internal/report/flame"
 )
 
 var palette = map[string]string{
@@ -42,31 +43,38 @@ type sliceView struct {
 }
 
 type barRow struct {
-	Name, Detail string
-	Value, Pct   string
-	W            string
+	Name, Detail              string
+	Value, Pct                string
+	W                         string
+	Callers, Callees          []metrics.CallEdge
+	SelfCommand, TotalCommand string
+	Report                    *insights.Report
+	Function                  metrics.FuncStat
 }
 
 type reportView struct {
-	R          *insights.Report
-	Duration   string
-	Slices     []sliceView
-	Hotspots   []barRow
-	Modules    []barRow
-	SlowFrames []insights.SlowFrame
-	LongTasks  []insights.LongTask
-	Findings   []findingView
+	R                *insights.Report
+	Duration         string
+	Slices           []sliceView
+	Hotspots         []barRow
+	Inclusive        []barRow
+	CommonStacks     []metrics.StackStat
+	Modules          []barRow
+	SlowFrames       []insights.SlowFrame
+	LongTasks        []insights.LongTask
+	Findings         []findingView
+	RootCause, Flame template.HTML
 }
 
 type findingView struct {
 	insights.Finding
-	Impact string
+	Impact    string
+	StackHTML template.HTML
 }
 
 type pageView struct {
-	Reports   []reportView
-	Generated string
-	AI        template.HTML
+	Reports []reportView
+	AI      template.HTML
 }
 
 func f1(v float64) string { return fmt.Sprintf("%.1f", v) }
@@ -81,8 +89,20 @@ func clampPct(v float64) float64 {
 	return v
 }
 
-func buildView(r *insights.Report) reportView {
+func buildView(r *insights.Report) (reportView, error) {
 	v := reportView{R: r, Duration: fmt.Sprintf("%.2fs", r.DurationSec)}
+	var err error
+	v.RootCause, err = rootCauseHTML(r.RootCause)
+	if err != nil {
+		return reportView{}, err
+	}
+	if r.FlameTree != nil {
+		var fragment strings.Builder
+		if err := flamehtml.HTMLFragment(&fragment, []flamehtml.Chart{{Label: r.Name, Tree: r.FlameTree}}, flamehtml.Options{}); err != nil {
+			return reportView{}, err
+		}
+		v.Flame = template.HTML(fragment.String())
+	}
 	x := 0.0
 	for i, s := range r.Breakdown {
 		w := clampPct(s.Pct)
@@ -95,26 +115,11 @@ func buildView(r *insights.Report) reportView {
 		})
 		x += w
 	}
-	maxSelf := 0.0
-	for _, h := range r.Hotspots {
-		if h.SelfMs > maxSelf {
-			maxSelf = h.SelfMs
-		}
-	}
-	for _, h := range r.Hotspots {
-		loc := h.URL
-		if loc != "" && h.Line > 0 {
-			loc = fmt.Sprintf("%s:%d", loc, h.Line)
-		}
-		name := h.Name
-		if name == "" {
-			name = "(anonymous)"
-		}
-		w := 0.0
-		if maxSelf > 0 {
-			w = h.SelfMs / maxSelf * 100
-		}
-		v.Hotspots = append(v.Hotspots, barRow{Name: name, Detail: loc, Value: f1(h.SelfMs) + " ms", Pct: f1(h.TotalMs) + " ms", W: f1(w)})
+	v.Hotspots = functionRows(r, r.Hotspots, false)
+	v.Inclusive = functionRows(r, r.InclusiveHotspots, true)
+	v.CommonStacks = r.CommonStacks
+	if len(v.CommonStacks) == 0 && r.Summary != nil {
+		v.CommonStacks = r.Summary.CommonStacks
 	}
 	for _, m := range r.Modules {
 		v.Modules = append(v.Modules, barRow{Name: m.Name, Value: f1(m.SelfMs) + " ms", Pct: f1(m.Pct) + "%", W: f1(clampPct(m.Pct))})
@@ -122,9 +127,57 @@ func buildView(r *insights.Report) reportView {
 	v.SlowFrames = r.SlowFrames
 	v.LongTasks = r.LongTasks
 	for _, f := range r.Findings {
-		v.Findings = append(v.Findings, findingView{Finding: f, Impact: fmt.Sprintf("%.1f ms (%.1f%%)", f.ImpactMs, f.ImpactPct)})
+		var stacks strings.Builder
+		if err := RenderStacks(&stacks, f.Stacks); err != nil {
+			return reportView{}, err
+		}
+		v.Findings = append(v.Findings, findingView{Finding: f, Impact: fmt.Sprintf("%.1f ms (%.1f%%)", f.ImpactMs, f.ImpactPct), StackHTML: template.HTML(stacks.String())})
 	}
-	return v
+	return v, nil
+}
+func functionRows(r *insights.Report, functions []metrics.FuncStat, inclusive bool) []barRow {
+	maxTime := 0.0
+	for _, h := range functions {
+		value := h.SelfMs
+		if inclusive {
+			value = h.TotalMs
+		}
+		maxTime = max(maxTime, value)
+	}
+	rows := make([]barRow, 0, len(functions))
+	for _, h := range functions {
+		name := h.Name
+		if name == "" {
+			name = "(anonymous)"
+		}
+		value := h.SelfMs
+		if inclusive {
+			value = h.TotalMs
+		}
+		width := 0.0
+		if maxTime > 0 {
+			width = value / maxTime * 100
+		}
+		rows = append(rows, barRow{Name: name, Detail: h.Location(), Value: f1(h.SelfMs) + " ms", Pct: f1(h.TotalMs) + " ms", W: f1(width), Callers: h.Callers, Callees: h.Callees, SelfCommand: insights.FunctionCommand(r, h, "self_ms"), TotalCommand: insights.FunctionCommand(r, h, "total_ms"), Report: r, Function: h})
+	}
+	return rows
+}
+
+// RenderFragment writes recording sections without a document wrapper.
+// Callers must include the report stylesheet when embedding the fragment.
+func RenderFragment(w io.Writer, reps []*insights.Report) error {
+	for _, r := range reps {
+		if r != nil {
+			v, err := buildView(r)
+			if err != nil {
+				return err
+			}
+			if err := pageTmpl.ExecuteTemplate(w, "report", v); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // Render writes a standalone HTML analysis of reps.
@@ -135,10 +188,14 @@ func Render(w io.Writer, reps []*insights.Report) error {
 // RenderWithAI is Render plus an AI answer (Markdown text) appended as an
 // escaped, preformatted-free section. Empty ai omits the section.
 func RenderWithAI(w io.Writer, reps []*insights.Report, ai string) error {
-	pv := pageView{Generated: time.Now().Format("2006-01-02 15:04:05")}
+	pv := pageView{}
 	for _, r := range reps {
 		if r != nil {
-			pv.Reports = append(pv.Reports, buildView(r))
+			v, err := buildView(r)
+			if err != nil {
+				return err
+			}
+			pv.Reports = append(pv.Reports, v)
 		}
 	}
 	if strings.TrimSpace(ai) != "" {
@@ -147,7 +204,7 @@ func RenderWithAI(w io.Writer, reps []*insights.Report, ai string) error {
 	return pageTmpl.Execute(w, pv)
 }
 
-const css = `
+const CSS = `
 :root{--bg:#f6f7f9;--card:#fff;--fg:#1c2430;--mut:#667085;--bd:#e1e5ea;--bar:#4b8bd9;--hi:#d9534f;--med:#e0a400;--lo:#4b8bd9;--info:#8a94a3;--code:#eef1f5}
 @media (prefers-color-scheme:dark){:root{--bg:#12161c;--card:#1a2029;--fg:#e4e8ee;--mut:#97a1b0;--bd:#2b3340;--code:#232b36}}
 *{box-sizing:border-box}
@@ -155,7 +212,7 @@ body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,B
 main{max-width:1000px;margin:0 auto;padding:24px 16px 64px}
 h1{font-size:22px;margin:0 0 4px}h2{font-size:17px;margin:28px 0 10px}h3{font-size:14px;margin:16px 0 6px}
 .mut{color:var(--mut)}.card{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:14px 16px;margin:10px 0}
-table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--bd);vertical-align:middle}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--bd);vertical-align:middle;overflow-wrap:anywhere}
 th{color:var(--mut);font-weight:600;font-size:12px}td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
 .bar{background:var(--code);border-radius:3px;height:10px;min-width:80px}.bar i{display:block;height:100%;background:var(--bar);border-radius:3px}
 .legend{display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:10px;padding:0;list-style:none}
@@ -164,23 +221,41 @@ th{color:var(--mut);font-weight:600;font-size:12px}td.n,th.n{text-align:right;fo
 .sev-high{background:var(--hi)}.sev-medium{background:var(--med)}.sev-low{background:var(--lo)}.sev-info{background:var(--info)}
 .finding h3{display:flex;gap:10px;align-items:center;margin:0 0 6px}
 .finding ul{margin:4px 0 8px 18px;padding:0}.sug{background:var(--code);border-radius:6px;padding:8px 10px}
-code{background:var(--code);border-radius:3px;padding:0 4px;font-size:12.5px}
+code{background:var(--code);border-radius:3px;padding:0 4px;font-size:12.5px;white-space:pre-wrap;overflow-wrap:anywhere}
+pre{max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere}
 .ai pre.code{background:var(--code);padding:10px;border-radius:6px;overflow:auto}
 .ai{white-space:normal}.ai h4,.ai h5{margin:14px 0 4px}
 svg{display:block;width:100%;height:auto}
 `
 
-var pageTmpl = template.Must(template.New("page").Parse(`<!DOCTYPE html>
+func displayName(name string) string {
+	if name == "" {
+		return "(anonymous)"
+	}
+	return name
+}
+
+var pageTmpl = template.Must(template.New("page").Funcs(template.FuncMap{
+	"name":                   displayName,
+	"numeric":                insights.NumericCommand,
+	"triggerCommand":         insights.TriggerCommand,
+	"triggerFunctionCommand": insights.TriggerFunctionCommand,
+	"edgeCommand":            insights.EdgeCommand,
+	"stackCommand":           insights.StackCommand,
+}).Parse(`<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>wkperf analysis</title><style>` + css + `</style></head><body><main>
-<h1>wkperf analysis</h1><div class="mut">Generated {{.Generated}}</div>
+<title>wkperf analysis</title><style>` + CSS + `</style></head><body><main>
+<h1>wkperf analysis</h1>
 {{range .Reports}}{{template "report" .}}{{else}}<p class="mut">No recordings analyzed.</p>{{end}}
 {{if .AI}}<h2>AI analysis</h2><div class="card ai">{{.AI}}</div>{{end}}
 </main></body></html>
 {{define "report"}}
 <section>
+{{$r := .R}}
 <h2>{{if .R.Name}}{{.R.Name}}{{else}}{{.R.Source}}{{end}}</h2>
 <div class="mut">{{.R.Source}} &middot; {{.Duration}}</div>
+{{if .RootCause}}{{.RootCause}}{{end}}
+{{if .Flame}}<h3>Sampled flame graph</h3>{{.Flame}}{{end}}
 
 <h3>Where time goes</h3>
 <div class="card">
@@ -195,13 +270,47 @@ var pageTmpl = template.Must(template.New("page").Parse(`<!DOCTYPE html>
 <h3><span class="badge sev-{{.Severity}}">{{.Severity}}</span>{{.Title}}</h3>
 <div class="mut">{{.Category}} &middot; impact {{.Impact}} &middot; <code>{{.ID}}</code></div>
 {{if .Evidence}}<ul>{{range .Evidence}}<li>{{.}}</li>{{end}}</ul>{{end}}
+{{if .MetricKeys}}<div><b>Metric keys:</b> {{range .MetricKeys}}<code>{{.}}</code> {{end}}</div>{{end}}
+{{if .NumericEvidence}}<table><tr><th>Numeric evidence</th><th class="n">Value</th><th>Basis / description</th><th>Reproduce</th></tr>{{range .NumericEvidence}}<tr><td><code>{{.MetricKey}}</code></td><td class="n">{{printf "%.3f" .Value}} {{.Unit}}</td><td>{{.Basis}} · {{.Description}}</td><td><code>{{.Command}}</code></td></tr>{{end}}</table>{{end}}
+{{if .Confidence}}<div><b>Confidence:</b> {{.Confidence}}{{range .ConfidenceReasons}} · {{.}}{{end}}</div>{{end}}
+{{if .Verify}}<h4>Verify</h4><table><tr><th>Metric key</th><th>Direction</th><th class="n">Target</th><th>Check</th><th>Reproduce</th></tr>{{range .Verify}}<tr><td><code>{{.MetricKey}}</code></td><td>{{.Direction}}</td><td class="n">{{printf "%.3f" .Target}} {{.Unit}}</td><td>{{.Description}}</td><td><code>{{.Command}}</code></td></tr>{{end}}</table>{{end}}
+{{if .SuggestedWindows}}<h4>Suggested windows</h4><ul>{{range .SuggestedWindows}}<li>{{printf "%.3f" .FromSec}}–{{printf "%.3f" .ToSec}} s: {{.Reason}} <code>{{range .Flags}}{{.}} {{end}}</code></li>{{end}}</ul>{{end}}
+{{if .Functions}}<div><b>Functions:</b> {{range .Functions}}<code>{{.}}</code> {{end}}</div>{{end}}
+{{if .Triggers}}<div><b>Triggers:</b> {{range .Triggers}}<code>{{.}}</code> {{end}}</div>{{end}}
+{{if .Nodes}}<h4>Recorded nodes</h4><ul>{{range .Nodes}}<li>{{.EventType}}: <code>{{.CSSPath}}</code> {{.DisplayName}}</li>{{end}}</ul><div class="mut">Recorded node identifiers do not provide stylesheet source locations.</div>{{end}}
+{{if .Command}}<div><b>Reproduce:</b> <code>{{.Command}}</code></div>{{end}}
+{{if .StackHTML}}{{.StackHTML}}{{end}}
 {{if .Suggestion}}<div class="sug"><b>Suggestion:</b> {{.Suggestion}}</div>{{end}}
 </div>{{else}}<div class="card mut">No findings.</div>{{end}}
 
 <h3>Hotspot functions (self time)</h3>
 <div class="card">{{if .Hotspots}}<table><tr><th>Function</th><th>Location</th><th class="n">Self</th><th class="n">Total</th><th></th></tr>
-{{range .Hotspots}}<tr><td><code>{{.Name}}</code></td><td class="mut">{{.Detail}}</td><td class="n">{{.Value}}</td><td class="n">{{.Pct}}</td><td><div class="bar"><i style="width:{{.W}}%"></i></div></td></tr>{{end}}</table>
+{{range .Hotspots}}<tr><td><code>{{.Name}}</code>{{template "edges" .}}</td><td class="mut">{{.Detail}}</td><td class="n">{{.Value}}<div><code>{{.SelfCommand}}</code></div></td><td class="n">{{.Pct}}<div><code>{{.TotalCommand}}</code></div></td><td><div class="bar"><i style="width:{{.W}}%"></i></div></td></tr>{{end}}</table>
 {{else}}<span class="mut">No sampling data.</span>{{end}}</div>
+
+<h3>Inclusive hotspot functions</h3>
+<div class="card">{{if .Inclusive}}<p class="mut">Ranked by inclusive sampled time. Parent totals overlap child totals; do not sum this table.</p><table><tr><th>Function / call context</th><th>Location</th><th class="n">Self</th><th class="n">Inclusive</th><th></th></tr>
+{{range .Inclusive}}<tr><td><code>{{.Name}}</code>{{template "edges" .}}</td><td class="mut">{{.Detail}}</td><td class="n">{{.Value}}<div><code>{{.SelfCommand}}</code></div></td><td class="n">{{.Pct}}<div><code>{{.TotalCommand}}</code></div></td><td><div class="bar"><i style="width:{{.W}}%"></i></div></td></tr>{{end}}</table>
+{{else}}<span class="mut">No inclusive sampling data.</span>{{end}}</div>
+
+<h3>Common stacks</h3>
+<div class="card">{{if .CommonStacks}}<table><tr><th>Root → leaf stack</th><th class="n">Sample weight ms</th><th class="n">Samples</th></tr>
+{{range $index, $stack := .CommonStacks}}<tr><td>{{range $i, $f := .Frames}}{{if $i}} → {{end}}<code>{{name $f.Name}} @ {{$f.Location}}</code>{{end}}</td><td class="n">{{printf "%.3f" .WeightMs}}<div><code>{{stackCommand $r $index "weight_ms"}}</code></div></td><td class="n">{{.Samples}}<div><code>{{stackCommand $r $index "samples"}}</code></div></td></tr>{{end}}</table>
+{{else}}<span class="mut">No stack samples.</span>{{end}}</div>
+
+<h3>Trigger timing</h3>
+<div class="card">{{if .R.Triggers}}<table><tr><th>Kind</th><th>Trigger</th><th class="n">Count</th><th class="n">Total ms</th><th class="n">Mean ms</th><th class="n">P95 ms</th><th class="n">Max ms</th></tr>
+{{range .R.Triggers}}<tr><td>{{.Kind}}</td><td>{{.Name}}</td><td class="n">{{.Count}}<div><code>{{triggerCommand $r . "count"}}</code></div></td><td class="n">{{printf "%.3f" .TotalMs}}<div><code>{{triggerCommand $r . "total_ms"}}</code></div></td><td class="n">{{printf "%.3f" .MeanMs}}<div><code>{{triggerCommand $r . "mean_ms"}}</code></div></td><td class="n">{{printf "%.3f" .P95Ms}}<div><code>{{triggerCommand $r . "p95_ms"}}</code></div></td><td class="n">{{printf "%.3f" .MaxMs}}<div><code>{{triggerCommand $r . "max_ms"}}</code></div></td></tr>{{end}}</table>
+{{else}}<span class="mut">No script trigger records.</span>{{end}}</div>
+
+<h3>Trigger code attribution</h3>
+<div class="card"><p class="mut">Sample overlap links code to trigger windows; overlap alone does not prove causation.</p>
+{{range .R.Triggers}}{{$trigger := .}}<h4>{{.Kind}}: {{.Name}}</h4>{{if .SampleMessage}}<p class="mut">{{.SampleMessage}}</p>{{end}}
+<table><tr><th>Ranking</th><th>Function</th><th>Generated → original location</th><th class="n">Sampled ms</th></tr>
+{{range .TopSelf}}<tr><td>Self</td><td><code>{{name .Name}}</code></td><td>{{.Location}}</td><td class="n">{{printf "%.3f" .SelfMs}}<div><code>{{triggerFunctionCommand $r $trigger . "self_ms"}}</code></div></td></tr>{{end}}
+{{range .TopInclusive}}<tr><td>Inclusive</td><td><code>{{name .Name}}</code></td><td>{{.Location}}</td><td class="n">{{printf "%.3f" .TotalMs}}<div><code>{{triggerFunctionCommand $r $trigger . "total_ms"}}</code></div></td></tr>{{end}}
+</table>{{else}}<span class="mut">No trigger attribution data.</span>{{end}}</div>
+<p class="mut">Wakeups: {{.R.Wakeups.Count}} callbacks <code>{{numeric $r "wakeups.count"}}</code>; {{printf "%.3f" .R.Wakeups.PerSecond}} per second <code>{{numeric $r "wakeups.per_second"}}</code>. {{.R.SampleCoverage.Interpretation}}</p>
 
 <h3>Modules</h3>
 <div class="card">{{if .Modules}}<table><tr><th>Module</th><th class="n">Self</th><th class="n">Share</th><th></th></tr>
@@ -218,6 +327,13 @@ var pageTmpl = template.Must(template.New("page").Parse(`<!DOCTYPE html>
 {{range .LongTasks}}<tr><td class="n">{{printf "%.2f" .T}}</td><td class="n">{{printf "%.1f" .Ms}}</td><td>{{.EventType}}</td><td>{{.Detail}}</td><td>{{if .TopFunc}}<code>{{.TopFunc}}</code>{{end}}</td></tr>{{end}}</table>
 {{else}}<span class="mut">No long tasks.</span>{{end}}</div>
 </section>
+{{end}}
+{{define "edges"}}
+{{$report := .Report}}{{$function := .Function}}
+{{if .Function.ID}}<div class="mut">ID <code>{{.Function.ID}}</code></div>{{end}}
+{{if .Function.CommonStack}}<details><summary>Common stack</summary><ol>{{range .Function.CommonStack}}<li><code>{{name .Name}} @ {{.Location}}</code></li>{{end}}</ol></details>{{end}}
+{{if .Callers}}<details><summary>Callers</summary><ul>{{range .Callers}}<li><code>{{name .Function.Name}} @ {{.Function.Location}}</code> — {{printf "%.3f" .WeightMs}} ms <code>{{edgeCommand $report $function . "callers" "weight_ms"}}</code>, {{.Samples}} samples <code>{{edgeCommand $report $function . "callers" "samples"}}</code></li>{{end}}</ul></details>{{end}}
+{{if .Callees}}<details><summary>Callees</summary><ul>{{range .Callees}}<li><code>{{name .Function.Name}} @ {{.Function.Location}}</code> — {{printf "%.3f" .WeightMs}} ms <code>{{edgeCommand $report $function . "callees" "weight_ms"}}</code>, {{.Samples}} samples <code>{{edgeCommand $report $function . "callees" "samples"}}</code></li>{{end}}</ul></details>{{end}}
 {{end}}`))
 
 // AISection converts model Markdown into a small, escaped HTML fragment

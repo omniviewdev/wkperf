@@ -27,7 +27,7 @@ func gcRec(s, e float64) model.Record {
 	return model.Record{Type: model.TypeScript, StartTime: s, EndTime: e, Details: json.RawMessage(`{"__type":"GarbageCollection"}`)}
 }
 func sample(t float64, name, url string) model.StackTrace {
-	return model.StackTrace{Timestamp: t, StackFrames: []model.StackFrame{{Name: "root", URL: "app.js"}, {Name: name, URL: url, Line: 1}}}
+	return model.StackTrace{Timestamp: t, StackFrames: []model.StackFrame{{Name: name, URL: url, Line: 1}, {Name: "root", URL: "app.js"}}}
 }
 
 func find(r *Report, id string) *Finding {
@@ -67,7 +67,7 @@ func TestBreakdownNoDoubleCount(t *testing.T) {
 		got[s.Name] = s.Ms
 		sum += s.Pct
 	}
-	want := map[string]float64{"GC": 40, "Script": 80, "Layout": 30, "Idle": 50}
+	want := map[string]float64{"GC": 40, "Script": 50, "Layout": 60, "Idle": 50}
 	for k, v := range want {
 		if math.Abs(got[k]-v) > 1e-6 {
 			t.Errorf("%s = %v, want %v", k, got[k], v)
@@ -86,7 +86,7 @@ func TestBreakdownOtherIsUnclaimedFrameTime(t *testing.T) {
 	for _, s := range computeBreakdown(rec) {
 		got[s.Name] = s.Ms
 	}
-	if math.Abs(got["Other"]-300) > 1e-6 || math.Abs(got["Idle"]-500) > 1e-6 {
+	if math.Abs(got["Frame time not attributed to work"]-300) > 1e-6 || math.Abs(got["Idle"]-500) > 1e-6 {
 		t.Errorf("got %v", got)
 	}
 }
@@ -95,10 +95,10 @@ func TestModuleOf(t *testing.T) {
 	cases := map[string]string{
 		"":              "(native)",
 		"[native code]": "(native)",
-		"http://x/node_modules/react-dom/cjs/a.js?v=1":     "react-dom",
-		"http://x/a/node_modules/@mui/material/Box.js#h":   "@mui/material",
-		"http://x/node_modules/a/node_modules/lodash/x.js": "lodash",
-		"http://localhost:5173/src/app/main.js?t=3":        "http://localhost:5173/src/app",
+		"http://x/node_modules/react-dom/cjs/a.js?v=1":     "http://x/node_modules/react-dom/cjs/a.js",
+		"http://x/a/node_modules/@mui/material/Box.js#h":   "http://x/a/node_modules/@mui/material/Box.js",
+		"http://x/node_modules/a/node_modules/lodash/x.js": "http://x/node_modules/a/node_modules/lodash/x.js",
+		"http://localhost:5173/src/app/main.js?t=3":        "http://localhost:5173/src/app/main.js",
 	}
 	for in, want := range cases {
 		if got := moduleOf(in); got != want {
@@ -263,7 +263,7 @@ func TestHotFunctionAndModule(t *testing.T) {
 	}
 	rec := &model.Recording{StartTime: 0, EndTime: 1, Samples: []model.TargetSamples{{StackTraces: st}}}
 	r := Analyze(rec, "x", Options{})
-	if r.Modules[0].Name != "@scope/lib" {
+	if r.Modules[0].Name != "http://x/node_modules/@scope/lib/i.js" {
 		t.Errorf("modules %+v", r.Modules)
 	}
 	if find(r, "hot-function") == nil || find(r, "hot-module") == nil {

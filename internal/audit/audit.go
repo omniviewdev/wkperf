@@ -4,7 +4,6 @@ import (
 	"sort"
 
 	"github.com/omniviewdev/wkperf/internal/insights"
-	"github.com/omniviewdev/wkperf/internal/metrics"
 	"github.com/omniviewdev/wkperf/internal/scorecard"
 )
 
@@ -277,8 +276,8 @@ func mergeBreakdown(scenes []SceneResult) []insights.Slice {
 		}
 	}
 	sum := 0.0
-	for _, v := range pct {
-		sum += v
+	for _, name := range order {
+		sum += pct[name]
 	}
 	out := make([]insights.Slice, 0, len(order))
 	for _, n := range order {
@@ -326,6 +325,12 @@ func buildPriorities(scenes []SceneResult, top int) []Priority {
 			if !a.hasBest || f.ImpactMs > a.bestImp {
 				a.hasBest, a.bestImp = true, f.ImpactMs
 				a.p.Title, a.p.Category, a.p.Suggestion = f.Title, f.Category, f.Suggestion
+				a.p.EvidenceScene = s.Name
+				a.p.NumericEvidence, a.p.MetricKeys, a.p.Verify = f.NumericEvidence, f.MetricKeys, f.Verify
+				a.p.Confidence, a.p.ConfidenceReasons = f.Confidence, f.ConfidenceReasons
+				a.p.SuggestedWindows, a.p.Functions, a.p.Triggers = f.SuggestedWindows, f.Functions, f.Triggers
+				a.p.Nodes = f.Nodes
+				a.p.Stacks, a.p.Command = f.Stacks, f.Command
 				a.p.Evidence = nil
 				for _, e := range f.Evidence {
 					a.p.Evidence = append(a.p.Evidence, s.Name+": "+e)
@@ -368,11 +373,15 @@ func mergeHotspots(scenes []SceneResult, top int) ([]HotFunction, []insights.Mod
 		}
 		seenFn := map[string]bool{}
 		for _, h := range s.Rep.Hotspots {
-			k := metrics.FuncStat{Name: h.Name, URL: h.URL, Line: h.Line}.Key()
+			k := h.Key()
 			hf := fn[k]
 			if hf == nil {
-				hf = &HotFunction{Name: h.Name, URL: h.URL, Line: h.Line}
+				hf = &HotFunction{ID: h.ID, Name: h.Name, URL: h.URL, Line: h.Line, Column: h.Column, SourceID: h.SourceID, Original: h.Original}
 				fn[k] = hf
+			}
+			if len(hf.CommonStack) == 0 && len(h.CommonStack) > 0 {
+				hf.CommonStack, hf.CommonStackScene = h.CommonStack, s.Name
+				hf.CommonStackID = h.CommonStackID
 			}
 			hf.SelfMs += h.SelfMs
 			totalSelf += h.SelfMs
@@ -411,7 +420,13 @@ func mergeHotspots(scenes []SceneResult, top int) ([]HotFunction, []insights.Mod
 		if a.URL != b.URL {
 			return a.URL < b.URL
 		}
-		return a.Line < b.Line
+		if a.Line != b.Line {
+			return a.Line < b.Line
+		}
+		if a.Column != b.Column {
+			return a.Column < b.Column
+		}
+		return a.SourceID < b.SourceID
 	})
 	if len(hot) > top {
 		hot = hot[:top]

@@ -88,7 +88,7 @@ func TestAnalyzePromptContent(t *testing.T) {
 	for _, want := range []string{
 		"Omniview", "WKWebView", "React", "cold start",
 		"Script 4000ms (32%)", "Layout 1500.5ms (12%)",
-		"renderList", "https://app/src/List.tsx:42", "(anonymous)", "(native)",
+		"renderList", "https://app/src/List.tsx:42", "(anonymous)", "sourceID::0:0",
 		"react-dom", "t=3.2s 88.4ms", "event=event-dispatched click", "topFunc=onClick",
 		"[high] Forced synchronous layout", "id=forced-layout", "layout.forced_count=42",
 		"Batch DOM reads before writes.",

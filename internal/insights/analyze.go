@@ -2,16 +2,16 @@ package insights
 
 import (
 	"encoding/json"
-	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/omniviewdev/wkperf/internal/analyze"
+	"github.com/omniviewdev/wkperf/internal/flame"
 	"github.com/omniviewdev/wkperf/internal/metrics"
 	"github.com/omniviewdev/wkperf/internal/model"
+	"github.com/omniviewdev/wkperf/internal/profile"
+	"github.com/omniviewdev/wkperf/internal/rootcause"
 )
-
-const defaultSampleSeconds = 0.001
 
 func (o Options) withDefaults() Options {
 	if o.Top <= 0 {
@@ -23,6 +23,9 @@ func (o Options) withDefaults() Options {
 	if o.LongTaskMs <= 0 {
 		o.LongTaskMs = 50
 	}
+	if o.ModuleGrouping == "" {
+		o.ModuleGrouping = "file"
+	}
 	return o
 }
 
@@ -32,18 +35,31 @@ func Analyze(rec *model.Recording, source string, o Options) *Report {
 	if rec == nil {
 		rec = &model.Recording{}
 	}
-	sum := analyze.Summarize(rec, source)
+	tree := flame.Build(rec)
+	sum := analyze.SummarizeWithTree(rec, source, tree)
 	r := &Report{
-		Source:      source,
-		Name:        rec.DisplayName,
-		DurationSec: sum.DurationSec,
-		Summary:     sum,
-		Breakdown:   computeBreakdown(rec),
-		Hotspots:    []metrics.FuncStat{},
-		Modules:     []ModuleStat{},
-		SlowFrames:  []SlowFrame{},
-		LongTasks:   []LongTask{},
-		Findings:    []Finding{},
+		SchemaVersion:     "wkperf-insights/v2",
+		FlameTree:         tree,
+		Source:            source,
+		WindowStartSec:    o.WindowStartSec,
+		WindowEndSec:      o.WindowStartSec + rec.EndTime - rec.StartTime,
+		ModuleGrouping:    o.ModuleGrouping,
+		JankMs:            o.JankMs,
+		LongTaskMs:        o.LongTaskMs,
+		Sourcemaps:        append([]string{}, o.Sourcemaps...),
+		Name:              rec.DisplayName,
+		DurationSec:       sum.DurationSec,
+		Summary:           sum,
+		Breakdown:         computeBreakdown(rec),
+		Hotspots:          []metrics.FuncStat{},
+		InclusiveHotspots: []metrics.FuncStat{},
+		CommonStacks:      []metrics.StackStat{},
+		Triggers:          []TriggerStat{},
+		Wakeups:           WakeupStats{Causes: []TriggerStat{}},
+		Modules:           []ModuleStat{},
+		SlowFrames:        []SlowFrame{},
+		LongTasks:         []LongTask{},
+		Findings:          []Finding{},
 	}
 	for _, f := range sum.Functions {
 		if len(r.Hotspots) >= o.Top || f.SelfMs <= 0 {
@@ -51,21 +67,41 @@ func Analyze(rec *model.Recording, source string, o Options) *Report {
 		}
 		r.Hotspots = append(r.Hotspots, f)
 	}
-	mods := computeModules(sum.Functions)
+	for _, f := range sum.InclusiveFunctions {
+		if len(r.InclusiveHotspots) >= o.Top || f.TotalMs <= 0 {
+			break
+		}
+		r.InclusiveHotspots = append(r.InclusiveHotspots, f)
+	}
+	r.CommonStacks = sum.CommonStacks
+	if len(r.CommonStacks) > o.Top {
+		r.CommonStacks = r.CommonStacks[:o.Top]
+	}
+	mods := computeModules(sum.Functions, o.ModuleGrouping)
 	if len(mods) > o.Top {
 		r.Modules = mods[:o.Top]
 	} else if mods != nil {
 		r.Modules = mods
 	}
 
-	idx := newSampleIndex(rec)
+	idx := newSampleIndex(tree, rec.StartTime)
+	r.Triggers = triggerStatsWithTree(rec, tree, o.Top)
+	r.Wakeups = idleWakeups(rec, tree, o.Top)
+	r.SampleCoverage = sampleCoverage(rec, sum)
+	r.SampleCoverage.SampleCount = len(tree.Samples)
 	allSlow := slowFrames(rec, idx, o.JankMs)
 	allLong := longTasks(rec, idx, o.LongTaskMs)
 	r.SlowFrames = topN(allSlow, o.Top)
 	r.LongTasks = topNLong(allLong, o.Top)
 
+	r.RootCause = rootcause.Build(rec, tree, rootcause.Options{
+		Source: source, OffsetSec: o.WindowStartSec, Sourcemaps: o.Sourcemaps,
+		Top: o.Top, JankMs: o.JankMs, LongTaskMs: o.LongTaskMs,
+	})
 	ctx := &ruleCtx{rec: rec, sum: sum, rep: r, opt: o, mods: mods, slow: allSlow, long: allLong, wallMs: sum.DurationSec * 1000}
 	r.Findings = runRules(ctx)
+	r.Findings = append(r.Findings, rootFindings(ctx)...)
+	sortFindings(r.Findings)
 	return r
 }
 
@@ -89,19 +125,6 @@ func topNLong(in []LongTask, n int) []LongTask {
 	return in
 }
 
-func recIsGC(r *model.Record) bool {
-	if r.EventType == "garbage-collected" {
-		return true
-	}
-	if len(r.Details) == 0 {
-		return false
-	}
-	var d struct {
-		Type string `json:"__type"`
-	}
-	return json.Unmarshal(r.Details, &d) == nil && d.Type == "GarbageCollection"
-}
-
 // detailString returns Details when it is a JSON string, or the "url" field
 // of an object; otherwise "".
 func detailString(r *model.Record) string {
@@ -121,9 +144,7 @@ func detailString(r *model.Record) string {
 	return ""
 }
 
-// moduleOf maps a script URL to a module name: npm package from the last
-// node_modules segment (scoped packages keep @scope/pkg), else the URL
-// directory, else "(native)". Query strings and hashes are dropped.
+// moduleOf preserves file identity. Parent-directory rollup is opt-in.
 func moduleOf(url string) string {
 	if i := strings.IndexAny(url, "?#"); i >= 0 {
 		url = url[:i]
@@ -131,29 +152,27 @@ func moduleOf(url string) string {
 	if url == "" || strings.HasPrefix(url, "[") || strings.Contains(url, "native code") {
 		return "(native)"
 	}
-	if i := strings.LastIndex(url, "node_modules/"); i >= 0 {
-		parts := strings.Split(url[i+len("node_modules/"):], "/")
-		if len(parts) > 0 && parts[0] != "" {
-			if strings.HasPrefix(parts[0], "@") && len(parts) > 1 {
-				return parts[0] + "/" + parts[1]
-			}
-			return parts[0]
+	return url
+}
+
+func moduleGroup(url, grouping string) string {
+	url = moduleOf(url)
+	if grouping == "parent-directory" && url != "(native)" {
+		if i := strings.LastIndex(url, "/"); i > 0 && !strings.HasSuffix(url[:i], ":/") && !strings.HasSuffix(url[:i], ":") {
+			return url[:i]
 		}
-	}
-	if i := strings.LastIndex(url, "/"); i > 0 && !strings.HasSuffix(url[:i], ":/") && !strings.HasSuffix(url[:i], ":") {
-		return url[:i]
 	}
 	return url
 }
 
-func computeModules(fns []metrics.FuncStat) []ModuleStat {
+func computeModules(fns []metrics.FuncStat, grouping string) []ModuleStat {
 	agg := map[string]float64{}
 	total := 0.0
 	for _, f := range fns {
 		if f.SelfMs <= 0 {
 			continue
 		}
-		agg[moduleOf(f.URL)] += f.SelfMs
+		agg[moduleGroup(f.URL, grouping)] += f.SelfMs
 		total += f.SelfMs
 	}
 	var out []ModuleStat
@@ -171,69 +190,46 @@ func computeModules(fns []metrics.FuncStat) []ModuleStat {
 
 // sampleIndex is a time-sorted flattening of all samples for range queries.
 type sampleIndex struct {
-	t     []float64
-	w     []float64
-	label []string
+	rows []indexedSample
 }
 
-func funcLabel(f model.StackFrame) string {
-	name := f.Name
-	if name == "" {
-		name = "(anonymous)"
-	}
-	u := f.URL
-	if i := strings.IndexAny(u, "?#"); i >= 0 {
-		u = u[:i]
-	}
-	if i := strings.LastIndex(u, "/"); i >= 0 {
-		u = u[i+1:]
-	}
-	if u == "" {
-		return name
-	}
-	return fmt.Sprintf("%s (%s:%d)", name, u, f.Line)
-}
-
-func newSampleIndex(rec *model.Recording) *sampleIndex {
-	type row struct {
-		t, w  float64
-		label string
-	}
-	var rows []row
-	for _, ts := range rec.Samples {
-		for i, st := range ts.StackTraces {
-			if len(st.StackFrames) == 0 {
-				continue
-			}
-			w := defaultSampleSeconds
-			if i < len(ts.Durations) {
-				w = ts.Durations[i]
-			}
-			rows = append(rows, row{st.Timestamp, w, funcLabel(st.StackFrames[len(st.StackFrames)-1])})
+func newSampleIndex(tree *flame.Tree, origin float64) *sampleIndex {
+	x := &sampleIndex{rows: make([]indexedSample, 0, len(tree.Samples))}
+	for _, sample := range tree.Samples {
+		if len(sample.Frames) == 0 {
+			continue
 		}
+		leaf := sample.Frames[len(sample.Frames)-1]
+		x.rows = append(x.rows, indexedSample{sample.Timestamp + origin, sample.WeightMs, frameLabel(leaf)})
 	}
-	sort.SliceStable(rows, func(i, j int) bool { return rows[i].t < rows[j].t })
-	x := &sampleIndex{}
-	for _, r := range rows {
-		x.t = append(x.t, r.t)
-		x.w = append(x.w, r.w)
-		x.label = append(x.label, r.label)
-	}
+	sort.Slice(x.rows, func(i, j int) bool {
+		a, b := x.rows[i], x.rows[j]
+		if a.t != b.t {
+			return a.t < b.t
+		}
+		if a.label != b.label {
+			return a.label < b.label
+		}
+		return a.w < b.w
+	})
 	return x
 }
 
 // top returns the hottest self function among samples with ts in [s,e).
 func (x *sampleIndex) top(s, e float64) string {
-	i := sort.SearchFloat64s(x.t, s)
+	i := sort.Search(len(x.rows), func(i int) bool { return x.rows[i].t >= s })
 	agg := map[string]float64{}
-	for ; i < len(x.t) && x.t[i] < e; i++ {
-		agg[x.label[i]] += x.w[i]
+	for ; i < len(x.rows) && x.rows[i].t < e; i++ {
+		agg[x.rows[i].label] += x.rows[i].w
 	}
 	best, bw := "", 0.0
 	for l, w := range agg {
 		if w > bw || (w == bw && l < best) {
 			best, bw = l, w
 		}
+	}
+	if best == "" {
+		return "No samples in this interval"
 	}
 	return best
 }
@@ -270,35 +266,23 @@ func stringDetail(r *model.Record) string {
 
 func slowFrames(rec *model.Recording, idx *sampleIndex, jankMs float64) []SlowFrame {
 	var out []SlowFrame
-	for i := range rec.Records {
-		f := &rec.Records[i]
-		if f.Type != model.TypeRenderingFrame || f.Duration()*1000 <= jankMs {
+	for _, f := range profile.Frames(rec, rec.StartTime, rec.EndTime) {
+		if f.IdleGap || f.DurationMs <= jankMs {
 			continue
 		}
-		sf := SlowFrame{T: f.StartTime - rec.StartTime, Ms: f.Duration() * 1000}
+		work := f.Occupancy
+		sf := SlowFrame{
+			T: f.Start - rec.StartTime, Ms: f.DurationMs,
+			ScriptMs: work.ScriptMs, LayoutMs: work.LayoutMs + work.StyleMs,
+			PaintMs: work.PaintMs + work.CompositeMs, GCMs: work.GCMs,
+		}
 		byEvent := map[string]float64{}
 		for j := range rec.Records {
 			r := &rec.Records[j]
-			ov := overlap(f.StartTime, f.EndTime, r.StartTime, r.EndTime) * 1000
-			if ov == 0 {
+			if r.Type != model.TypeScript || profile.IsGC(*r) {
 				continue
 			}
-			switch r.Type {
-			case model.TypeScript:
-				if recIsGC(r) {
-					sf.GCMs += ov
-				} else {
-					sf.ScriptMs += ov
-					byEvent[eventLabel(r)] += ov
-				}
-			case model.TypeLayout:
-				switch {
-				case isStyleEvent(r.EventType) || isLayoutEvent(r.EventType):
-					sf.LayoutMs += ov
-				case isPaintEvent(r.EventType) || r.EventType == "composite":
-					sf.PaintMs += ov
-				}
-			}
+			byEvent[eventLabel(r)] += overlap(f.Start, f.End, r.StartTime, r.EndTime) * 1000
 		}
 		best, bm := "", 0.0
 		for l, ms := range byEvent {
@@ -307,30 +291,38 @@ func slowFrames(rec *model.Recording, idx *sampleIndex, jankMs float64) []SlowFr
 			}
 		}
 		sf.TopEvent = best
-		sf.TopFunc = idx.top(f.StartTime, f.EndTime)
+		sf.TopFunc = idx.top(f.Start, f.End)
 		out = append(out, sf)
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Ms > out[j].Ms })
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Ms != out[j].Ms {
+			return out[i].Ms > out[j].Ms
+		}
+		if out[i].T != out[j].T {
+			return out[i].T < out[j].T
+		}
+		if out[i].TopEvent != out[j].TopEvent {
+			return out[i].TopEvent < out[j].TopEvent
+		}
+		return out[i].TopFunc < out[j].TopFunc
+	})
 	return out
 }
 
 func longTasks(rec *model.Recording, idx *sampleIndex, thr float64) []LongTask {
 	var out []LongTask
-	for i := range rec.Records {
-		r := &rec.Records[i]
-		if r.Type != model.TypeScript || recIsGC(r) || r.Duration()*1000 <= thr {
-			continue
-		}
+	for _, record := range LongTaskRecords(rec, thr) {
 		out = append(out, LongTask{
-			T: r.StartTime - rec.StartTime, Ms: r.Duration() * 1000,
-			EventType: r.EventType, Detail: detailString(r),
-			TopFunc: idx.top(r.StartTime, r.EndTime),
+			T:         record.StartTime - rec.StartTime,
+			Ms:        profile.ActiveDuration(rec, record.StartTime, record.EndTime) * 1000,
+			EventType: record.EventType, Detail: detailString(&record),
+			TopFunc: idx.top(record.StartTime, record.EndTime),
 		})
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Ms > out[j].Ms })
 	return out
 }
 
-func modelFrame(name, url string, line int) model.StackFrame {
-	return model.StackFrame{Name: name, URL: url, Line: line}
+type indexedSample struct {
+	t, w  float64
+	label string
 }

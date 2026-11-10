@@ -8,10 +8,10 @@ import (
 	"html/template"
 	"io"
 	"strings"
-	"time"
 
 	"github.com/omniviewdev/wkperf/internal/audit"
 	"github.com/omniviewdev/wkperf/internal/insights"
+	"github.com/omniviewdev/wkperf/internal/report/insightshtml"
 	"github.com/omniviewdev/wkperf/internal/scorecard"
 )
 
@@ -75,14 +75,17 @@ type priorityView struct {
 	AvgPct     string
 	Evidence   []string
 	Suggestion string
+	Details    audit.Priority
+	StackHTML  template.HTML
 }
 
 type funcView struct {
-	Name, Loc  string
-	Self, Pct  string
-	SceneCount int
-	Scenes     string
-	W          string
+	Name, Loc             string
+	Self, Pct             string
+	SceneCount            int
+	Scenes                string
+	W                     string
+	ID, Stack, StackScene string
 }
 
 type moduleView struct {
@@ -97,8 +100,12 @@ type gapView struct {
 	Name, Rating, Label, Value, Target, Factor string
 }
 
+type sceneDetail struct {
+	Name    string
+	Content template.HTML
+}
+
 type pageView struct {
-	Generated string
 	Empty     bool
 	Scenes    int
 	Runs      int
@@ -113,18 +120,18 @@ type pageView struct {
 	Modules   []moduleView
 	Worst     []worstView
 	Gap       []gapView
+	Details   []sceneDetail
 	AI        string
 }
 
 func buildView(r *audit.Report, ai string) pageView {
 	pv := pageView{
-		Generated: time.Now().Format("2006-01-02 15:04:05"),
-		Empty:     len(r.Scenes) == 0,
-		Scenes:    len(r.Scenes),
-		Runs:      r.TotalRuns(),
-		Recorded:  fmt.Sprintf("%.1fs", r.TotalSec()),
-		Grade:     "-",
-		AI:        strings.TrimSpace(ai),
+		Empty:    len(r.Scenes) == 0,
+		Scenes:   len(r.Scenes),
+		Runs:     r.TotalRuns(),
+		Recorded: fmt.Sprintf("%.1fs", r.TotalSec()),
+		Grade:    "-",
+		AI:       strings.TrimSpace(ai),
 	}
 	if r.Overall != nil {
 		pv.Grade = r.Overall.Grade
@@ -159,6 +166,7 @@ func buildView(r *audit.Report, ai string) pageView {
 			Rank: i + 1, Title: p.Title, ID: p.ID, Category: p.Category, Severity: sevClass(p.Severity),
 			Scenes: p.Scenes, SceneCount: len(p.Scenes),
 			Total: f1(p.TotalImpactMs), AvgPct: f1(p.AvgImpactPct), Evidence: p.Evidence, Suggestion: p.Suggestion,
+			Details: p,
 		})
 	}
 
@@ -169,10 +177,7 @@ func buildView(r *audit.Report, ai string) pageView {
 		}
 	}
 	for _, h := range r.Hotspots {
-		loc := h.URL
-		if loc != "" && h.Line > 0 {
-			loc = fmt.Sprintf("%s:%d", loc, h.Line)
-		}
+		loc := h.Location()
 		name := h.Name
 		if name == "" {
 			name = "(anonymous)"
@@ -182,7 +187,7 @@ func buildView(r *audit.Report, ai string) pageView {
 			w = h.SelfMs / maxSelf * 100
 		}
 		pv.Funcs = append(pv.Funcs, funcView{Name: name, Loc: loc, Self: f1(h.SelfMs), Pct: f1(h.Pct),
-			SceneCount: h.SceneCount, Scenes: strings.Join(h.Scenes, ", "), W: f1(w)})
+			SceneCount: h.SceneCount, Scenes: strings.Join(h.Scenes, ", "), W: f1(w), ID: h.ID, Stack: h.StackLabel(), StackScene: h.CommonStackScene})
 	}
 	for _, m := range r.Modules {
 		pv.Modules = append(pv.Modules, moduleView{Name: m.Name, Self: f1(m.SelfMs), Pct: f1(m.Pct), W: f1(clampPct(m.Pct))})
@@ -230,7 +235,25 @@ func Render(w io.Writer, r *audit.Report, aiMarkdown string) error {
 	if r == nil {
 		r = &audit.Report{}
 	}
-	return pageTmpl.Execute(w, buildView(r, aiMarkdown))
+	pv := buildView(r, aiMarkdown)
+	for i, priority := range r.Priorities {
+		var content strings.Builder
+		if err := insightshtml.RenderStacks(&content, priority.Stacks); err != nil {
+			return err
+		}
+		pv.Priority[i].StackHTML = template.HTML(content.String())
+	}
+	for _, scene := range r.Scenes {
+		if scene.Rep == nil {
+			continue
+		}
+		var content strings.Builder
+		if err := insightshtml.RenderFragment(&content, []*insights.Report{scene.Rep}); err != nil {
+			return err
+		}
+		pv.Details = append(pv.Details, sceneDetail{Name: scene.Name, Content: template.HTML(content.String())})
+	}
+	return pageTmpl.Execute(w, pv)
 }
 
 const css = `
@@ -264,8 +287,8 @@ svg{display:block;width:100%;height:auto}
 
 var pageTmpl = template.Must(template.New("page").Parse(`<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>wkperf audit</title><style>` + css + `</style></head><body><main>
-<h1>wkperf audit</h1><div class="mut">Generated {{.Generated}}</div>
+<title>wkperf audit</title><style>` + insightshtml.CSS + css + `</style></head><body><main>
+<h1>wkperf audit</h1>
 <div class="stats">
 <div class="stat"><span class="mut">Scenes</span><b>{{.Scenes}}</b></div>
 <div class="stat"><span class="mut">Runs</span><b>{{.Runs}}</b></div>
@@ -293,12 +316,25 @@ var pageTmpl = template.Must(template.New("page").Parse(`<!DOCTYPE html>
 <div class="mut">{{.Category}} &middot; <code>{{.ID}}</code> &middot; {{.SceneCount}} scene(s) &middot; {{.Total}} ms total &middot; {{.AvgPct}}% avg impact over all scenes</div>
 <div class="mut">Scenes: {{range $i, $s := .Scenes}}{{if $i}}, {{end}}{{$s}}{{end}}</div>
 {{if .Evidence}}<ul>{{range .Evidence}}<li>{{.}}</li>{{end}}</ul>{{end}}
+{{with .Details}}
+{{if .EvidenceScene}}<div class="mut">Evidence scene: {{.EvidenceScene}}</div>{{end}}
+{{if .MetricKeys}}<div><b>Metric keys:</b> {{range .MetricKeys}}<code>{{.}}</code> {{end}}</div>{{end}}
+{{if .NumericEvidence}}<table><tr><th>Numeric evidence</th><th class="n">Value</th><th>Basis / description</th><th>Reproduce</th></tr>{{range .NumericEvidence}}<tr><td><code>{{.MetricKey}}</code></td><td class="n">{{printf "%.3f" .Value}} {{.Unit}}</td><td>{{.Basis}} · {{.Description}}</td><td><code>{{.Command}}</code></td></tr>{{end}}</table>{{end}}
+{{if .Confidence}}<div><b>Confidence:</b> {{.Confidence}}{{range .ConfidenceReasons}} · {{.}}{{end}}</div>{{end}}
+{{if .Verify}}<h4>Verify</h4><table><tr><th>Metric key</th><th>Direction</th><th class="n">Target</th><th>Check / reproduce</th></tr>{{range .Verify}}<tr><td><code>{{.MetricKey}}</code></td><td>{{.Direction}}</td><td class="n">{{printf "%.3f" .Target}} {{.Unit}}</td><td>{{.Description}} <code>{{.Command}}</code></td></tr>{{end}}</table>{{end}}
+{{if .SuggestedWindows}}<h4>Suggested windows</h4><ul>{{range .SuggestedWindows}}<li>{{printf "%.3f" .FromSec}}–{{printf "%.3f" .ToSec}} s: {{.Reason}} <code>{{range .Flags}}{{.}} {{end}}</code></li>{{end}}</ul>{{end}}
+{{if .Functions}}<div><b>Functions:</b> {{range .Functions}}<code>{{.}}</code> {{end}}</div>{{end}}
+{{if .Triggers}}<div><b>Triggers:</b> {{range .Triggers}}<code>{{.}}</code> {{end}}</div>{{end}}
+{{if .Nodes}}<h4>Recorded nodes</h4><ul>{{range .Nodes}}<li>{{.EventType}}: <code>{{.CSSPath}}</code> {{.DisplayName}}</li>{{end}}</ul><div class="mut">Recorded node identifiers do not provide stylesheet source locations.</div>{{end}}
+{{if .Command}}<div><b>Reproduce:</b> <code>{{.Command}}</code></div>{{end}}
+{{end}}
+{{if .StackHTML}}{{.StackHTML}}{{end}}
 {{if .Suggestion}}<div class="sug"><b>Suggestion:</b> {{.Suggestion}}</div>{{end}}
 </div>{{else}}<div class="card mut">No findings.</div>{{end}}
 
 <h2>Hot functions across scenes</h2>
 <div class="card">{{if .Funcs}}<table><tr><th>Function</th><th>Location</th><th class="n">Self ms</th><th class="n">Share</th><th class="n">Scenes</th><th></th></tr>
-{{range .Funcs}}<tr><td><code>{{.Name}}</code></td><td class="mut">{{.Loc}}</td><td class="n">{{.Self}}</td><td class="n">{{.Pct}}%</td><td class="n" title="{{.Scenes}}">{{.SceneCount}}</td><td><div class="bar"><i style="width:{{.W}}%"></i></div></td></tr>{{end}}</table>
+{{range .Funcs}}<tr><td><code>{{.Name}}</code>{{if .ID}}<div class="mut">ID <code>{{.ID}}</code></div>{{end}}{{if .Stack}}<details><summary>Common stack · {{.StackScene}}</summary><code>{{.Stack}}</code></details>{{end}}</td><td class="mut">{{.Loc}}</td><td class="n">{{.Self}}</td><td class="n">{{.Pct}}%</td><td class="n" title="{{.Scenes}}">{{.SceneCount}}</td><td><div class="bar"><i style="width:{{.W}}%"></i></div></td></tr>{{end}}</table>
 {{else}}<span class="mut">No sampling data.</span>{{end}}</div>
 
 <h2>Hot modules</h2>
@@ -315,5 +351,6 @@ var pageTmpl = template.Must(template.New("page").Parse(`<!DOCTYPE html>
 <div class="card">{{if .Gap}}<table><tr><th>Standard</th><th>Rating</th><th class="n">Typical scene</th><th class="n">Target</th><th class="n">Over target</th></tr>
 {{range .Gap}}<tr><td>{{.Name}}</td><td class="rate-{{.Rating}}">{{.Label}}</td><td class="n">{{.Value}}</td><td class="n">{{.Target}}</td><td class="n">{{.Factor}}&times;</td></tr>{{end}}</table>
 {{else}}<span class="mut">Every available standard is rated good for the typical scene.</span>{{end}}</div>
+{{if .Details}}<h2>Scene details</h2>{{range .Details}}<details class="card" open><summary>{{.Name}}</summary>{{.Content}}</details>{{end}}{{end}}
 {{if .AI}}<h2>AI analysis</h2><div class="card"><pre class="ai">{{.AI}}</pre></div>{{end}}
 </main></body></html>`))

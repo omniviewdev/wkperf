@@ -4,6 +4,7 @@ import (
 	"sort"
 
 	"github.com/omniviewdev/wkperf/internal/model"
+	"github.com/omniviewdev/wkperf/internal/profile"
 )
 
 type span struct{ s, e float64 }
@@ -29,91 +30,44 @@ func mergeSpans(in []span) []span {
 	return out
 }
 
-func spanLen(in []span) float64 {
-	t := 0.0
-	for _, x := range in {
-		t += x.e - x.s
-	}
-	return t
-}
+func isStyleEvent(t string) bool { return t == "recalculate-styles" }
 
-// isStyleEvent etc. classify layout-record event types.
-func isStyleEvent(t string) bool  { return t == "recalculate-styles" }
-func isLayoutEvent(t string) bool { return t == "layout" || t == "forced-layout" }
-func isPaintEvent(t string) bool  { return t == "paint" }
-
-// computeBreakdown builds the exclusive wall-time breakdown.
-//
-// Algorithm: for each category, collect its record intervals clipped to
-// [StartTime, EndTime] and merge overlaps. Categories are then claimed in
-// priority order GC > Script > Style > Layout > Paint > Composite > Other:
-// each category's exclusive time is |union(claimed, cat)| - |claimed|, so any
-// instant is credited to exactly one category (the highest-priority one
-// active). Other is time inside rendering frames not claimed by any category.
-// Idle is the wall time left unclaimed, so slices sum to 100%.
+// computeBreakdown partitions active recording time without treating sparse
+// rendering-frame cadence as work. Idle-gap frames contribute only their
+// measured work; their unused time remains Idle.
 func computeBreakdown(rec *model.Recording) []Slice {
-	start, end := rec.StartTime, rec.EndTime
-	wall := end - start
-	cats := map[string][]span{}
-	add := func(name string, r *model.Record) {
-		s, e := r.StartTime, r.EndTime
-		if s < start {
-			s = start
-		}
-		if e > end {
-			e = end
-		}
-		if e > s {
-			cats[name] = append(cats[name], span{s, e})
+	work := profile.Measure(rec, rec.StartTime, rec.EndTime)
+	wallMs := profile.ActiveDuration(rec, rec.StartTime, rec.EndTime) * 1000
+	const unattributed = "Frame time not attributed to work"
+	values := map[string]float64{
+		"Script": work.ScriptMs, "Style": work.StyleMs, "Layout": work.LayoutMs,
+		"Paint": work.PaintMs, "Composite": work.CompositeMs, "GC": work.GCMs,
+	}
+	var activeFrames []span
+	for _, f := range profile.Frames(rec, rec.StartTime, rec.EndTime) {
+		if !f.IdleGap {
+			activeFrames = append(activeFrames, span{f.Start, f.End})
 		}
 	}
-	for i := range rec.Records {
-		r := &rec.Records[i]
-		switch r.Type {
-		case model.TypeScript:
-			if recIsGC(r) {
-				add("GC", r)
-			} else {
-				add("Script", r)
-			}
-		case model.TypeLayout:
-			switch {
-			case isStyleEvent(r.EventType):
-				add("Style", r)
-			case isLayoutEvent(r.EventType):
-				add("Layout", r)
-			case isPaintEvent(r.EventType):
-				add("Paint", r)
-			case r.EventType == "composite":
-				add("Composite", r)
-			}
-		case model.TypeRenderingFrame:
-			add("Other", r)
+	for _, f := range mergeSpans(activeFrames) {
+		occupancy := profile.Measure(rec, f.s, f.e)
+		unused := profile.ActiveDuration(rec, f.s, f.e)*1000 - occupancy.WorkMs
+		if unused > 0 {
+			values[unattributed] += unused
 		}
 	}
-	excl := map[string]float64{}
-	var claimed []span
-	for _, name := range []string{"GC", "Script", "Style", "Layout", "Paint", "Composite", "Other"} {
-		if len(cats[name]) == 0 {
-			continue
-		}
-		u := mergeSpans(append(append([]span(nil), claimed...), cats[name]...))
-		excl[name] = spanLen(u) - spanLen(claimed)
-		claimed = u
-	}
-	idle := wall - spanLen(claimed)
-	if idle < 0 || wall <= 0 {
+	idle := wallMs - work.WorkMs - values[unattributed]
+	if idle < 0 {
 		idle = 0
 	}
-	excl["Idle"] = idle
-	var out []Slice
-	for _, name := range []string{"Script", "Style", "Layout", "Paint", "Composite", "GC", "Other", "Idle"} {
-		ms := excl[name] * 1000
+	values["Idle"] = idle
+	out := make([]Slice, 0, 8)
+	for _, name := range []string{"Script", "Style", "Layout", "Paint", "Composite", "GC", unattributed, "Idle"} {
 		pct := 0.0
-		if wall > 0 {
-			pct = excl[name] / wall * 100
+		if wallMs > 0 {
+			pct = values[name] / wallMs * 100
 		}
-		out = append(out, Slice{Name: name, Ms: ms, Pct: pct})
+		out = append(out, Slice{Name: name, Ms: values[name], Pct: pct})
 	}
 	return out
 }

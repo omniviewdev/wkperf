@@ -280,6 +280,7 @@ func reportSections(label string, r *insights.Report, c Context, idx, offset int
 	// The header outlives every section of its own report so surviving
 	// sections are never orphaned.
 	out = append(out, section{title: tag + " header", value: val(vFindings) + 1, body: head})
+	out = append(out, rootCauseSections(tag, r.RootCause, c, val(vFindings)+2)...)
 
 	if len(r.Breakdown) > 0 {
 		bd := "### Wall-time breakdown\n"
@@ -301,6 +302,7 @@ func reportSections(label string, r *insights.Report, c Context, idx, offset int
 			for _, e := range f.Evidence {
 				fmt.Fprintf(&b, "   - evidence: %s\n", clip(oneLine(e), maxEvidenceChars))
 			}
+			writeFindingDetails(&b, f)
 			if f.Suggestion != "" {
 				fmt.Fprintf(&b, "   - heuristic hint: %s\n", clip(oneLine(f.Suggestion), maxSuggestChars))
 			}
@@ -316,9 +318,51 @@ func reportSections(label string, r *insights.Report, c Context, idx, offset int
 		b.WriteString("### Top functions by self time\n")
 		for i, h := range limitSlice(r.Hotspots, c.TopN) {
 			fmt.Fprintf(&b, "%d. %s — self %sms, total %sms, %s\n",
-				i+1, funcName(h.Name), num(h.SelfMs), num(h.TotalMs), location(h.URL, h.Line))
+				i+1, funcName(h.Name), num(h.SelfMs), num(h.TotalMs), functionLocation(h.Frame()))
+			fmt.Fprintf(&b, "   self reproduce: %s\n   inclusive reproduce: %s\n", insights.FunctionCommand(r, h, "self_ms"), insights.FunctionCommand(r, h, "total_ms"))
+			writeProfileFunction(&b, r, h, c.TopN)
 		}
 		out = append(out, section{title: tag + " hotspots", value: val(vHotspots), body: b.String()})
+	}
+	if len(r.InclusiveHotspots) > 0 {
+		var b strings.Builder
+		b.WriteString("### Top functions by inclusive sampled time (overlapping; do not sum)\n")
+		for i, h := range limitSlice(r.InclusiveHotspots, c.TopN) {
+			fmt.Fprintf(&b, "%d. %s — inclusive %sms, self %sms, %s\n", i+1, funcName(h.Name), num(h.TotalMs), num(h.SelfMs), functionLocation(h.Frame()))
+			fmt.Fprintf(&b, "   inclusive reproduce: %s\n   self reproduce: %s\n", insights.FunctionCommand(r, h, "total_ms"), insights.FunctionCommand(r, h, "self_ms"))
+			writeProfileFunction(&b, r, h, c.TopN)
+			for _, edge := range limitSlice(h.Callers, 3) {
+				fmt.Fprintf(&b, "   caller: %s @ %s (%sms, %d samples); weight reproduce: %s; samples reproduce: %s\n", funcName(edge.Function.Name), functionLocation(edge.Function), num(edge.WeightMs), edge.Samples, insights.EdgeCommand(r, h, edge, "callers", "weight_ms"), insights.EdgeCommand(r, h, edge, "callers", "samples"))
+			}
+			for _, edge := range limitSlice(h.Callees, 3) {
+				fmt.Fprintf(&b, "   callee: %s @ %s (%sms, %d samples); weight reproduce: %s; samples reproduce: %s\n", funcName(edge.Function.Name), functionLocation(edge.Function), num(edge.WeightMs), edge.Samples, insights.EdgeCommand(r, h, edge, "callees", "weight_ms"), insights.EdgeCommand(r, h, edge, "callees", "samples"))
+			}
+		}
+		out = append(out, section{title: tag + " inclusive hotspots", value: val(vHotspots), body: b.String()})
+	}
+	if len(r.Triggers) > 0 {
+		var b strings.Builder
+		b.WriteString("### Trigger timing and sampled code attribution (overlap does not establish causation)\n")
+		for _, trigger := range limitSlice(r.Triggers, c.TopN) {
+			fmt.Fprintf(&b, "- %s %s; %s\n", clip(oneLine(trigger.Kind), 60), clip(oneLine(trigger.Name), 100), clip(oneLine(trigger.SampleMessage), 200))
+			for _, figure := range []struct {
+				key   string
+				value float64
+				unit  string
+			}{
+				{"count", float64(trigger.Count), "count"}, {"total_ms", trigger.TotalMs, "ms"}, {"mean_ms", trigger.MeanMs, "ms"}, {"p95_ms", trigger.P95Ms, "ms"}, {"max_ms", trigger.MaxMs, "ms"},
+			} {
+				fmt.Fprintf(&b, "  %s=%s %s; reproduce: %s\n", figure.key, num(figure.value), figure.unit, insights.TriggerCommand(r, trigger, figure.key))
+			}
+			for _, h := range limitSlice(trigger.TopSelf, 3) {
+				fmt.Fprintf(&b, "  self: %s @ %s %sms; reproduce: %s\n", funcName(h.Name), functionLocation(h.Frame()), num(h.SelfMs), insights.TriggerFunctionCommand(r, trigger, h, "self_ms"))
+			}
+			for _, h := range limitSlice(trigger.TopInclusive, 3) {
+				fmt.Fprintf(&b, "  inclusive: %s @ %s %sms; reproduce: %s\n", funcName(h.Name), functionLocation(h.Frame()), num(h.TotalMs), insights.TriggerFunctionCommand(r, trigger, h, "total_ms"))
+			}
+		}
+		fmt.Fprintf(&b, "Wakeups: %d callbacks (reproduce: %s), %s/s (reproduce: %s); sample coverage: %s\n", r.Wakeups.Count, insights.NumericCommand(r, "wakeups.count"), num(r.Wakeups.PerSecond), insights.NumericCommand(r, "wakeups.per_second"), clip(oneLine(r.SampleCoverage.Interpretation), 300))
+		out = append(out, section{title: tag + " triggers", value: val(vHotspots) + 1, body: b.String()})
 	}
 
 	if len(r.Modules) > 0 {
@@ -472,7 +516,14 @@ func funcList(title string, l []compare.FuncDiff, n int) string {
 	for i, f := range limitSlice(l, n) {
 		fmt.Fprintf(&b, "%d. %s — self %s → %sms (%sms, %s), total %s → %sms, %s\n",
 			i+1, funcName(f.Name), num(f.BaseSelf), num(f.CandSelf), signed(f.Delta), pctFrac(f.Pct, f.BaseSelf),
-			num(f.BaseTotal), num(f.CandTotal), location(f.URL, f.Line))
+			num(f.BaseTotal), num(f.CandTotal), diffLocation(f))
+		if f.ID != "" {
+			fmt.Fprintf(&b, "   id=%s\n", f.ID)
+		}
+		writeMetricStack(&b, f.CommonStack, n)
+		if command := f.StackCommand(); command != "" {
+			fmt.Fprintf(&b, "   full stack reproduce: %s\n", command)
+		}
 	}
 	return b.String()
 }
@@ -522,20 +573,6 @@ func funcName(n string) string {
 		return "(anonymous)"
 	}
 	return clip(oneLine(n), 80)
-}
-
-func location(url string, line int) string {
-	if url == "" {
-		return "(native)"
-	}
-	u := url
-	if r := []rune(u); len(r) > maxLocChars {
-		u = "…" + string(r[len(r)-maxLocChars+1:])
-	}
-	if line > 0 {
-		return u + ":" + strconv.Itoa(line)
-	}
-	return u
 }
 
 func joinSources(s []string) string {

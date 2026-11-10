@@ -8,6 +8,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/omniviewdev/wkperf/internal/audit"
+	"github.com/omniviewdev/wkperf/internal/insights"
+	"github.com/omniviewdev/wkperf/internal/metrics"
 	"github.com/omniviewdev/wkperf/internal/scorecard"
 )
 
@@ -108,6 +110,10 @@ func auditSections(a *audit.Report, c Context) []section {
 			for _, e := range limitSlice(p.Evidence, 3) {
 				fmt.Fprintf(&b, "   - evidence: %s\n", clip(oneLine(e), maxEvidenceChars))
 			}
+			if p.EvidenceScene != "" {
+				fmt.Fprintf(&b, "   - evidence scene: %s\n", clip(oneLine(p.EvidenceScene), 100))
+			}
+			writeFindingDetails(&b, priorityFinding(p))
 			if p.Suggestion != "" {
 				fmt.Fprintf(&b, "   - suggestion: %s\n", clip(oneLine(p.Suggestion), maxSuggestChars))
 			}
@@ -159,7 +165,20 @@ func auditSections(a *audit.Report, c Context) []section {
 		b.WriteString("## Hot functions (merged across scenes)\n")
 		for i, h := range limitSlice(a.Hotspots, c.TopN) {
 			fmt.Fprintf(&b, "%d. %s @ %s: self %sms (%s%%), %d scene(s) [%s]\n", i+1, funcName(h.Name),
-				clip(location(h.URL, h.Line), maxLocChars), num(h.SelfMs), num(h.Pct), h.SceneCount, clip(strings.Join(h.Scenes, ", "), 150))
+				auditLocation(h), num(h.SelfMs), num(h.Pct), h.SceneCount, clip(strings.Join(h.Scenes, ", "), 150))
+			if h.ID != "" {
+				fmt.Fprintf(&b, "   id=%s\n", h.ID)
+			}
+			writeMetricStack(&b, h.CommonStack, c.TopN)
+			if len(h.CommonStack) > 0 {
+				fmt.Fprintf(&b, "   Common stack scene: %s\n", clip(oneLine(h.CommonStackScene), 100))
+				for _, scene := range a.Scenes {
+					if scene.Name == h.CommonStackScene && scene.Rep != nil {
+						fmt.Fprintf(&b, "   full stack reproduce: %s\n", insights.FunctionStackCommand(scene.Rep, metrics.FuncStat{ID: h.ID, Name: h.Name, URL: h.URL, Line: h.Line, Column: h.Column, SourceID: h.SourceID, CommonStackID: h.CommonStackID}))
+						break
+					}
+				}
+			}
 		}
 		secs = append(secs, section{title: "hot functions", value: vAuditHotspots, body: b.String()})
 	}
@@ -187,6 +206,11 @@ func auditSections(a *audit.Report, c Context) []section {
 			fmt.Fprintf(&b, "- %s: %sms (%s%%)\n", clip(oneLine(m.Name), maxLocChars), num(m.SelfMs), num(m.Pct))
 		}
 		secs = append(secs, section{title: "modules", value: vAuditModules, body: b.String()})
+	}
+	for i, scene := range limitSlice(a.Scenes, c.TopN) {
+		if scene.Rep != nil && scene.Rep.RootCause != nil {
+			secs = append(secs, rootCauseSections("scene "+clip(oneLine(scene.Name), 80), scene.Rep.RootCause, c, vAuditPriorities-i)...)
+		}
 	}
 	return secs
 }

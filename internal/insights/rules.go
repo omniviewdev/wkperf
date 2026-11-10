@@ -10,6 +10,7 @@ import (
 	"github.com/omniviewdev/wkperf/internal/analyze"
 	"github.com/omniviewdev/wkperf/internal/metrics"
 	"github.com/omniviewdev/wkperf/internal/model"
+	"github.com/omniviewdev/wkperf/internal/profile"
 )
 
 type ruleCtx struct {
@@ -30,15 +31,16 @@ type evStat struct {
 }
 
 type recStats struct {
-	script       map[string]*evStat // eventType -> stat (non-GC)
-	layout       map[string]*evStat
-	gc           evStat
-	eventNames   map[string]*evStat // event-dispatched details -> stat
-	paintQuads   int                // paint records with a large quad
-	maxQuad      float64
-	frames       int
-	thrashFrames int
-	selfTotalMs  float64
+	script         map[string]*evStat // eventType -> stat (non-GC)
+	layout         map[string]*evStat
+	gc             evStat
+	eventNames     map[string]*evStat // event-dispatched details -> stat
+	paintQuads     int                // paint records with a large quad
+	maxQuad        float64
+	forced         evStat
+	forcedExplicit int
+	afterScript    evStat
+	selfTotalMs    float64
 }
 
 const largeQuadPx = 2_000_000
@@ -69,13 +71,16 @@ func (c *ruleCtx) collect() *recStats {
 		}
 		return m[k]
 	}
-	var scripts, layouts, frames []span
+	var scripts []span
 	for i := range c.rec.Records {
 		r := &c.rec.Records[i]
-		ms := r.Duration() * 1000
+		if !profile.Observed(c.rec, *r) {
+			continue
+		}
+		ms := profile.ActiveDuration(c.rec, r.StartTime, r.EndTime) * 1000
 		switch r.Type {
 		case model.TypeScript:
-			if recIsGC(r) {
+			if profile.IsGC(*r) {
 				st.gc.n++
 				st.gc.ms += ms
 				continue
@@ -107,29 +112,37 @@ func (c *ruleCtx) collect() *recStats {
 					st.paintQuads++
 				}
 			}
-			if (isLayoutEvent(r.EventType) || isStyleEvent(r.EventType)) && ms > 0 {
-				layouts = append(layouts, span{r.StartTime, r.EndTime})
-			}
-		case model.TypeRenderingFrame:
-			if ms > 0 {
-				frames = append(frames, span{r.StartTime, r.EndTime})
-			}
 		}
 	}
-	st.frames = len(frames)
-	// A frame "thrashes" when a script record starts in the frame and a
-	// layout/style record starts after it within the same frame.
-	sort.Slice(scripts, func(i, j int) bool { return scripts[i].s < scripts[j].s })
-	sort.Slice(layouts, func(i, j int) bool { return layouts[i].s < layouts[j].s })
-	for _, f := range frames {
-		si := sort.Search(len(scripts), func(i int) bool { return scripts[i].s >= f.s })
-		if si >= len(scripts) || scripts[si].s >= f.e {
-			continue
+	for _, r := range profile.ForcedLayoutRecords(c.rec) {
+		st.forced.n++
+		st.forced.ms += profile.ActiveDuration(c.rec, r.StartTime, r.EndTime) * 1000
+		if r.EventType == "forced-layout" {
+			st.forcedExplicit++
 		}
-		first := scripts[si].s
-		li := sort.Search(len(layouts), func(i int) bool { return layouts[i].s > first })
-		if li < len(layouts) && layouts[li].s < f.e {
-			st.thrashFrames++
+	}
+	for _, f := range profile.Frames(c.rec, c.rec.StartTime, c.rec.EndTime) {
+		for i := range c.rec.Records {
+			r := &c.rec.Records[i]
+			if !profile.Observed(c.rec, *r) {
+				continue
+			}
+			if r.Type != model.TypeLayout || (r.EventType != "layout" && !isStyleEvent(r.EventType)) || r.StartTime < f.Start || r.StartTime >= f.End {
+				continue
+			}
+			inside, follows := false, false
+			for _, s := range scripts {
+				if s.s <= r.StartTime && r.StartTime < s.e {
+					inside = true
+				}
+				if s.s >= f.Start && s.e <= r.StartTime {
+					follows = true
+				}
+			}
+			if follows && !inside {
+				st.afterScript.n++
+				st.afterScript.ms += profile.ActiveDuration(c.rec, r.StartTime, r.EndTime) * 1000
+			}
 		}
 	}
 	for _, f := range c.sum.Functions {
@@ -191,6 +204,7 @@ func runRules(c *ruleCtx) []Finding {
 	}
 	add(ruleLongTasks(c))
 	add(ruleForcedLayout(c, st))
+	add(ruleLayoutAfterScript(c, st))
 	add(ruleLayoutKind(c, st, "style-recalc-heavy", "Style recalculation is heavy", "recalculate-styles",
 		"Reduce the number of elements invalidated per change: avoid toggling classes on high-level ancestors, simplify deep or broad selectors (descendant/universal), batch DOM mutations, and use contain: style/content on isolated widgets."))
 	add(ruleLayoutKind(c, st, "layout-heavy", "Layout is heavy", "layout",
@@ -212,16 +226,11 @@ func runRules(c *ruleCtx) []Finding {
 	add(ruleNetwork(c))
 	add(ruleCoverage(c, st))
 
-	rank := map[Severity]int{SevHigh: 0, SevMedium: 1, SevLow: 2, SevInfo: 3}
-	sort.SliceStable(out, func(i, j int) bool {
-		if rank[out[i].Severity] != rank[out[j].Severity] {
-			return rank[out[i].Severity] < rank[out[j].Severity]
-		}
-		return out[i].ImpactMs > out[j].ImpactMs
-	})
+	sortFindings(out)
 	if out == nil {
 		out = []Finding{}
 	}
+	enrichFindings(c, out)
 	return out
 }
 
@@ -246,34 +255,26 @@ func ruleLongTasks(c *ruleCtx) *Finding {
 }
 
 func ruleForcedLayout(c *ruleCtx, st *recStats) *Finding {
-	forced := st.layout["forced-layout"]
-	nThrash := st.thrashFrames
-	frac := 0.0
-	if st.frames > 0 {
-		frac = float64(nThrash) / float64(st.frames)
-	}
-	hasForced := forced != nil && forced.n > 0
-	if !hasForced && !(nThrash >= 5 && frac >= 0.3) {
+	if st.forced.n == 0 {
 		return nil
 	}
-	ms := 0.0
-	var ev []string
-	if hasForced {
-		ms = forced.ms
-		ev = append(ev, fmt.Sprintf("%d forced-layout records, %sms total", forced.n, f1(forced.ms)))
+	ev := []string{
+		fmt.Sprintf("%d explicit forced-layout records; %d layout records start inside script spans", st.forcedExplicit, st.forced.n-st.forcedExplicit),
+		fmt.Sprintf("%sms measured layout time; overlap suggests synchronous work, not proof of repeated DOM read/write thrashing", f1(st.forced.ms)),
 	}
-	if nThrash > 0 {
-		ev = append(ev, fmt.Sprintf("%d of %d frames run layout/style after script in the same frame (%s%%)", nThrash, st.frames, f1(frac*100)))
-		if !hasForced {
-			for _, k := range []string{"layout", "recalculate-styles"} {
-				if s := st.layout[k]; s != nil {
-					ms += s.ms
-				}
-			}
-		}
+	f := c.finding("forced-layout", "Synchronous layout evidence", "layout", st.forced.ms, ev,
+		"Inspect the implicated script spans for layout reads after DOM writes. Batch layout reads before writes, reduce style invalidation, and verify with an explicit forced-layout trace before claiming layout thrashing.")
+	return &f
+}
+
+func ruleLayoutAfterScript(c *ruleCtx, st *recStats) *Finding {
+	if st.afterScript.n == 0 || c.pct(st.afterScript.ms) < 5 {
+		return nil
 	}
-	f := c.finding("forced-layout", "Layout thrashing (forced synchronous layout)", "layout", ms, ev,
-		"Batch DOM reads and writes: read all layout properties (offsetWidth, getBoundingClientRect, scrollTop, getComputedStyle) first, then apply all writes. Never read layout properties inside loops that also mutate the DOM; use requestAnimationFrame to separate phases or a library like fastdom.")
+	ev := []string{fmt.Sprintf("%d layout/style records begin after script ends within a frame; %sms measured rendering time", st.afterScript.n, f1(st.afterScript.ms)),
+		"Rendering after script is a normal browser phase, not evidence of forced synchronous layout."}
+	f := c.finding("layout-after-script", "Rendering after script is costly", "layout", st.afterScript.ms, ev,
+		"Inspect style invalidation from the preceding trigger: reduce the changed subtree, batch DOM mutations, and use containment where appropriate. Do not treat normal post-script rendering as forced layout.")
 	return &f
 }
 
@@ -308,7 +309,12 @@ func rulePaint(c *ruleCtx, st *recStats) *Finding {
 }
 
 func ruleJank(c *ruleCtx) *Finding {
-	frames := c.sum.FrameMs
+	var frames []float64
+	for _, frame := range profile.Frames(c.rec, c.rec.StartTime, c.rec.EndTime) {
+		if !frame.IdleGap {
+			frames = append(frames, frame.DurationMs)
+		}
+	}
 	if len(frames) == 0 {
 		return nil
 	}
@@ -533,20 +539,18 @@ func ruleHotFunction(c *ruleCtx, st *recStats) *Finding {
 	}
 	h := c.rep.Hotspots[0]
 	share := h.SelfMs / st.selfTotalMs * 100
-	if share <= 10 {
+	if share <= 10 || h.SelfMs < 20 || c.pct(h.SelfMs) < 0.1 {
 		return nil
 	}
 	ev := []string{
-		fmt.Sprintf("%s is %s%% of sampled self time (%sms)", funcLabel(model.StackFrame{Name: h.Name, URL: h.URL, Line: h.Line}), f1(share), f1(h.SelfMs)),
+		fmt.Sprintf("%s is %s%% of sampled self time (%sms; %s%% of wall time)", functionLabel(h), f1(share), f1(h.SelfMs), f1(c.pct(h.SelfMs))),
 		fmt.Sprintf("inclusive time %sms", f1(h.TotalMs)),
 	}
-	sev := SevMedium
-	if share >= 30 {
-		sev = SevHigh
-	}
-	return &Finding{ID: "hot-function", Title: "A single function dominates CPU time", Severity: sev, Category: "script",
+	sev := sampledSeverity(c, h.SelfMs, share)
+	return &Finding{ID: "hot-function", Title: "Sampled function concentration: " + h.Name, Severity: sev, Category: "script",
 		ImpactMs: h.SelfMs, ImpactPct: c.pct(h.SelfMs), Evidence: ev,
-		Suggestion: "Optimize or avoid calling this function: memoize pure results, hoist invariant work out of loops, reduce call frequency (debounce/dedupe), and prefer cheaper algorithms or data structures."}
+		Functions:  []string{functionLabel(h)},
+		Suggestion: "Confirm the sampled function's wall-time impact in a repeated capture. Then reduce repeated calls, hoist invariant work, or choose a cheaper algorithm; sample share alone does not establish a bottleneck."}
 }
 
 func ruleHotModule(c *ruleCtx) *Finding {
@@ -554,17 +558,13 @@ func ruleHotModule(c *ruleCtx) *Finding {
 		if m.Name == "(native)" {
 			continue
 		}
-		if m.Pct <= 25 {
+		if m.Pct <= 25 || m.SelfMs < 20 || c.pct(m.SelfMs) < 0.1 {
 			return nil
 		}
-		ev := []string{fmt.Sprintf("module %s is %s%% of sampled self time (%sms)", m.Name, f1(m.Pct), f1(m.SelfMs))}
-		sev := SevMedium
-		if m.Pct >= 50 {
-			sev = SevHigh
-		}
-		return &Finding{ID: "hot-module", Title: "One module dominates CPU time: " + m.Name, Severity: sev, Category: "script",
+		ev := []string{fmt.Sprintf("file/module %s is %s%% of sampled self time (%sms; %s%% of wall time)", m.Name, f1(m.Pct), f1(m.SelfMs), f1(c.pct(m.SelfMs)))}
+		return &Finding{ID: "hot-module", Title: "Sampled module concentration: " + m.Name, Severity: sampledSeverity(c, m.SelfMs, m.Pct), Category: "script",
 			ImpactMs: m.SelfMs, ImpactPct: c.pct(m.SelfMs), Evidence: ev,
-			Suggestion: "Reduce use of this module on hot paths: memoize results and avoid re-running it for unchanged inputs, virtualize long lists it renders, lazy-load it, or replace it with a lighter alternative."}
+			Suggestion: "Confirm this file's absolute wall-time cost before changing it. Use the measured functions and trigger intervals to avoid redundant work rather than treating a large sample share as proof of high impact."}
 	}
 	return nil
 }
@@ -594,15 +594,12 @@ func ruleNetwork(c *ruleCtx) *Finding {
 }
 
 func ruleCoverage(c *ruleCtx, st *recStats) *Finding {
-	scriptMs := 0.0
-	for _, s := range st.script {
-		scriptMs += s.ms
-	}
-	if scriptMs < 100 || st.selfTotalMs >= 0.5*scriptMs {
+	coverage := c.rep.SampleCoverage
+	if coverage.ScriptMs < 100 || coverage.Ratio >= 0.5 {
 		return nil
 	}
-	ev := []string{fmt.Sprintf("%sms of sampled time vs %sms of script records", f1(st.selfTotalMs), f1(scriptMs))}
+	ev := []string{fmt.Sprintf("%sms sampled vs %sms measured script; coverage ratio %.3f, %d samples", f1(coverage.SampledMs), f1(coverage.ScriptMs), coverage.Ratio, coverage.SampleCount)}
 	return &Finding{ID: "low-sample-coverage", Title: "Sampling profiler covers little of the script time", Severity: SevInfo, Category: "script",
 		Evidence:   ev,
-		Suggestion: "Function-level results (hotspots, modules, hot-function) may be unrepresentative. Record again with the JavaScript & Events instrument and a higher sampling rate, or a longer capture."}
+		Suggestion: "Sampled function and module rankings may be unrepresentative. Repeat the same interaction with JavaScript sampling enabled and a longer capture; compare sample weights with measured script time."}
 }

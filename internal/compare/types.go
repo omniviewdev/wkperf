@@ -54,16 +54,23 @@ type MetricDiff struct {
 
 // FuncDiff compares one function's self time.
 type FuncDiff struct {
-	Name      string  `json:"name"`
-	URL       string  `json:"url"`
-	Line      int     `json:"line"`
-	BaseSelf  float64 `json:"baseSelfMs"`
-	CandSelf  float64 `json:"candSelfMs"`
-	BaseTotal float64 `json:"baseTotalMs"`
-	CandTotal float64 `json:"candTotalMs"`
-	Delta     float64 `json:"deltaSelfMs"`
-	Pct       float64 `json:"pct"`
-	Verdict   Verdict `json:"verdict"`
+	ID                string                  `json:"id,omitempty"`
+	Name              string                  `json:"name"`
+	URL               string                  `json:"url"`
+	Line              int                     `json:"line"`
+	Column            int                     `json:"column"`
+	SourceID          string                  `json:"sourceID,omitempty"`
+	Original          *metrics.SourceLocation `json:"original,omitempty"`
+	CommonStack       []metrics.FunctionFrame `json:"commonStack,omitempty"`
+	CommonStackID     string                  `json:"commonStackID,omitempty"`
+	CommonStackSource string                  `json:"commonStackSource,omitempty"`
+	BaseSelf          float64                 `json:"baseSelfMs"`
+	CandSelf          float64                 `json:"candSelfMs"`
+	BaseTotal         float64                 `json:"baseTotalMs"`
+	CandTotal         float64                 `json:"candTotalMs"`
+	Delta             float64                 `json:"deltaSelfMs"`
+	Pct               float64                 `json:"pct"`
+	Verdict           Verdict                 `json:"verdict"`
 }
 
 // Counts is the tally used for the headline.

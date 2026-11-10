@@ -49,6 +49,7 @@ type funcRow struct {
 	Name, Loc, Class, Glyph, Pct string
 	Base, Cand, Delta            string
 	Bars                         template.HTML
+	ID, Stack                    string
 }
 
 type chartView struct {
@@ -321,12 +322,14 @@ func funcRows(fs []compare.FuncDiff) []funcRow {
 		if f.Verdict == "" {
 			c, g = "flat", "·"
 		}
-		loc := f.URL
-		if f.URL != "" && f.Line > 0 {
-			loc = fmt.Sprintf("%s:%d", f.URL, f.Line)
+		loc := f.Location()
+		name := f.Name
+		if name == "" {
+			name = "(anonymous)"
 		}
 		out = append(out, funcRow{
-			Name: f.Name, Loc: loc, Class: c, Glyph: g, Pct: fmtPct(f.Pct),
+			Name: name, Loc: loc, Class: c, Glyph: g, Pct: fmtPct(f.Pct),
+			ID: f.ID, Stack: f.StackLabel(),
 			Base: fmt.Sprintf("%.2f", f.BaseSelf), Cand: fmt.Sprintf("%.2f", f.CandSelf),
 			Delta: fmt.Sprintf("%+.2f", f.Delta), Bars: funcBars(f.BaseSelf, f.CandSelf, mx),
 		})
