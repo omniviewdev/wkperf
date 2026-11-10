@@ -10,6 +10,7 @@ import (
 	"github.com/omniviewdev/wkperf/internal/insights"
 	"github.com/omniviewdev/wkperf/internal/metrics"
 	"github.com/omniviewdev/wkperf/internal/model"
+	"github.com/omniviewdev/wkperf/internal/profile"
 )
 
 // Scoring model
@@ -47,11 +48,11 @@ var interactionEvents = map[string]bool{
 func Standards() []Standard {
 	return []Standard{
 		{ID: "frame-p95", Name: "Frame time p95", Source: "frame budget (60Hz)", Unit: metrics.UnitMs, Good: 16.7, Poor: 33.4, Weight: 3,
-			Note: "95th percentile of rendering-frame durations; 16.7ms is one 60Hz frame, 33.4ms is two."},
+			Note: "95th percentile of active rendering-frame durations, excluding idle gaps and paused spans; 16.7ms is one 60Hz frame."},
 		{ID: "jank-ratio", Name: "Jank ratio", Source: "frame budget (60Hz)", Unit: metrics.UnitRatio, Good: 0.05, Poor: 0.25, Weight: 3,
-			Note: "Share of rendering frames longer than 16.7ms. Thresholds are wkperf choices, not a published standard."},
+			Note: "Share of active rendering frames longer than 16.7ms; idle-gap frames and paused spans are excluded. Thresholds are wkperf choices."},
 		{ID: "fps", Name: "Average FPS", Source: "frame budget (60Hz)", Unit: metrics.UnitFPS, Good: 55, Poor: 30, HigherBetter: true, Weight: 3,
-			Note: "1000 / mean frame time over rendered frames; idle periods without frames are not counted."},
+			Note: "1000 / mean active frame duration, not display refresh rate. Idle-gap frames are excluded; an all-idle capture has no FPS grade."},
 		{ID: "tbt", Name: "Total Blocking Time", Source: "Lighthouse", Unit: metrics.UnitMs, Good: 200, Poor: 600, Weight: 2,
 			Note: "Adapted: Lighthouse measures TBT between FCP and TTI of a page load. Here it is the sum of (duration-50ms) over script records longer than 50ms, normalized to ms per 10 seconds of recording so captures of different lengths compare."},
 		{ID: "inp", Name: "Interaction latency (INP approx.)", Source: "Core Web Vitals", Unit: metrics.UnitMs, Good: 200, Poor: 500, Weight: 2,
@@ -69,7 +70,7 @@ func Standards() []Standard {
 		{ID: "memory-growth", Name: "Memory growth", Source: "wkperf heuristic", Unit: metrics.UnitMB, Good: 1, Poor: 10, Weight: 1,
 			Note: "MB per minute, slope of a linear regression over total memory samples; needs at least 5 samples. A heuristic for leaks in long sessions."},
 		{ID: "forced-layout-rate", Name: "Forced layouts per second", Source: "wkperf heuristic", Unit: metrics.UnitCount, Good: 0.5, Poor: 5, Weight: 1,
-			Note: "Layout records of type forced-layout per second of recording; thrashing forces synchronous layout from script."},
+			Note: "Explicit forced-layout records plus layout records starting inside script spans, per active second. Rendering that merely follows script is not forced layout."},
 	}
 }
 
@@ -90,7 +91,7 @@ func Evaluate(rec *model.Recording, rep *insights.Report) *Scorecard {
 		dur = rep.DurationSec
 	}
 	if dur <= 0 && rec != nil {
-		dur = rec.EndTime - rec.StartTime
+		dur = profile.ActiveDuration(rec, rec.StartTime, rec.EndTime)
 	}
 	m := map[string]measure{}
 	lookup := func(id, key string) {
@@ -105,10 +106,10 @@ func Evaluate(rec *model.Recording, rep *insights.Report) *Scorecard {
 	lookup("fps", "frames.fps")
 	lookup("jank-ratio", "frames.jank_ratio")
 	lookup("main-busy", "script.busy_ratio")
-	if sum != nil && dur > 0 {
+	if sum != nil && dur > 0 && instrumentAvailable(rec, model.TypeScript) {
 		if x, ok := sum.Lookup("gc.total_ms"); ok {
 			m["gc-share"] = measure{v: x.Value / 1000 / dur, detail: fmt.Sprintf("%.0fms GC", x.Value)}
-		} else if rec != nil && len(rec.Records) > 0 {
+		} else {
 			m["gc-share"] = measure{v: 0, detail: "no GC recorded"}
 		}
 	}
@@ -129,16 +130,19 @@ func deriveFromRecords(rec *model.Recording, dur float64, m map[string]measure) 
 	var inp []float64
 	names := map[string]bool{}
 	layouts := 0
-	forced := 0
+	forced := len(profile.ForcedLayoutRecords(rec))
 	fcp, lcp := math.Inf(1), math.Inf(1)
 	for i := range rec.Records {
 		r := &rec.Records[i]
+		if !profile.Observed(rec, *r) {
+			continue
+		}
 		switch r.Type {
 		case model.TypeScript:
-			if isGC(r) {
+			if profile.IsGC(*r) {
 				continue
 			}
-			d := r.Duration() * 1000
+			d := profile.ActiveDuration(rec, r.StartTime, r.EndTime) * 1000
 			if d > longTaskMs {
 				long++
 				tbt += d - longTaskMs
@@ -154,8 +158,6 @@ func deriveFromRecords(rec *model.Recording, dur float64, m map[string]measure) 
 			layouts++
 			t := (r.StartTime - rec.StartTime) * 1000
 			switch r.EventType {
-			case "forced-layout":
-				forced++
 			case "first-contentful-paint":
 				fcp = math.Min(fcp, t)
 			case "largest-contentful-paint":
@@ -180,22 +182,14 @@ func deriveFromRecords(rec *model.Recording, dur float64, m map[string]measure) 
 		}
 	}
 	if dur > 0 {
-		m["tbt"] = measure{v: tbt / dur * tbtWindowSec, detail: fmt.Sprintf("%d long tasks, worst %.0fms", long, worst)}
-		m["long-task-rate"] = measure{v: float64(long) / dur * secondsPerMin, detail: fmt.Sprintf("%d long tasks in %.1fs", long, dur)}
-		if layouts > 0 {
-			m["forced-layout-rate"] = measure{v: float64(forced) / dur, detail: fmt.Sprintf("%d forced layouts", forced)}
+		if instrumentAvailable(rec, model.TypeScript) {
+			m["tbt"] = measure{v: tbt / dur * tbtWindowSec, detail: fmt.Sprintf("%d long tasks, worst %.0fms", long, worst)}
+			m["long-task-rate"] = measure{v: float64(long) / dur * secondsPerMin, detail: fmt.Sprintf("%d long tasks in %.1fs", long, dur)}
+		}
+		if layouts > 0 || instrumentAvailable(rec, model.TypeLayout) {
+			m["forced-layout-rate"] = measure{v: float64(forced) / dur, detail: fmt.Sprintf("%d synchronous layouts (explicit or starting inside script)", forced)}
 		}
 	}
-}
-
-func isGC(r *model.Record) bool {
-	if r.EventType == "garbage-collected" {
-		return true
-	}
-	var d struct {
-		Type string `json:"__type"`
-	}
-	return len(r.Details) > 0 && json.Unmarshal(r.Details, &d) == nil && d.Type == "GarbageCollection"
 }
 
 func detailName(r *model.Record) string {
@@ -204,6 +198,30 @@ func detailName(r *model.Record) string {
 		return s
 	}
 	return ""
+}
+
+func instrumentAvailable(rec *model.Recording, kind string) bool {
+	if rec == nil {
+		return false
+	}
+	for _, r := range rec.Records {
+		if r.Type == kind && profile.Observed(rec, r) {
+			return true
+		}
+	}
+	for _, instrument := range rec.InstrumentTypes {
+		name := strings.ToLower(instrument)
+		if name == kind {
+			return true
+		}
+		if kind == model.TypeScript && (strings.Contains(name, "script") || strings.Contains(name, "javascript")) {
+			return true
+		}
+		if kind == model.TypeLayout && (strings.Contains(name, "layout") || strings.Contains(name, "rendering")) {
+			return true
+		}
+	}
+	return false
 }
 
 func sortedKeys(m map[string]bool) []string {

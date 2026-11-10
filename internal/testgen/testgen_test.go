@@ -71,7 +71,7 @@ func TestSampleWeights(t *testing.T) {
 	rec := Generate(5, p)
 	counts := map[string]int{}
 	for _, st := range rec.Samples[0].StackTraces {
-		top := st.StackFrames[len(st.StackFrames)-1]
+		top := st.StackFrames[0]
 		counts[top.Name]++
 	}
 	var total float64

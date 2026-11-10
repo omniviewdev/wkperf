@@ -13,10 +13,12 @@ import (
 // FuncWeight describes one function in the sampling profile. Weight is the
 // relative share of profiler samples whose top frame is this function.
 type FuncWeight struct {
-	Name   string
-	URL    string
-	Line   int
-	Weight float64
+	Name     string
+	URL      string
+	Line     int
+	Column   int
+	SourceID string
+	Weight   float64
 }
 
 // Params control the shape of the generated recording.
@@ -243,8 +245,8 @@ func genSamples(rng *rand.Rand, p Params) model.TargetSamples {
 		ts.StackTraces = append(ts.StackTraces, model.StackTrace{
 			Timestamp: float64(i) * sampleIntervalSec,
 			StackFrames: []model.StackFrame{
+				{Name: fn.Name, URL: fn.URL, Line: fn.Line, Column: fn.Column, SourceID: fn.SourceID},
 				root,
-				{Name: fn.Name, URL: fn.URL, Line: fn.Line},
 			},
 		})
 		ts.Durations = append(ts.Durations, sampleIntervalSec)

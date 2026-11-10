@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
+	"strings"
 )
 
 // Record type identifiers as emitted in Record.Type.
@@ -22,11 +24,12 @@ const (
 	TypeScreenshots    = "timeline-record-type-screenshots"
 )
 
-// Recording is the top-level export object.
+// Recording is the recording payload, either flat or inside a versioned export.
 type Recording struct {
 	DisplayName          string           `json:"displayName"`
 	StartTime            float64          `json:"startTime"`
 	EndTime              float64          `json:"endTime"`
+	Discontinuities      []Discontinuity  `json:"discontinuities,omitempty"`
 	InstrumentTypes      []string         `json:"instrumentTypes"`
 	Records              []Record         `json:"records"`
 	Markers              []Marker         `json:"markers"`
@@ -36,6 +39,13 @@ type Recording struct {
 	// Legacy (pre-`samples`) fields; Load folds them into Samples.
 	SampleStackTraces []StackTrace `json:"sampleStackTraces,omitempty"`
 	SampleDurations   []float64    `json:"sampleDurations,omitempty"`
+}
+
+// Discontinuity is a stopped/resumed capture interval, not observed page activity.
+// WebKit's TimelineRecording.capturingStarted exports these absolute timestamps.
+type Discontinuity struct {
+	StartTime float64 `json:"startTime"`
+	EndTime   float64 `json:"endTime"`
 }
 
 // Record is a union of every record kind; unused fields are zero.
@@ -106,35 +116,107 @@ type TargetSamples struct {
 	Durations   []float64    `json:"durations"`
 }
 
-// StackTrace: StackFrames[0] is the BOTTOM of the stack, last is the TOP
-// (the currently executing function => self time).
+// StackTrace follows WebKit's actual CallingContextTree implementation:
+// StackFrames[0] is the executing leaf; the last frame is the root caller.
+// The ScriptProfiler protocol's historical prose describes the reverse order.
 type StackTrace struct {
 	Timestamp   float64      `json:"timestamp"`
 	StackFrames []StackFrame `json:"stackFrames"`
 }
 
 type StackFrame struct {
-	SourceID string `json:"sourceID"`
-	Name     string `json:"name"`
-	Line     int    `json:"line"`
-	Column   int    `json:"column"`
-	URL      string `json:"url"`
+	SourceID string          `json:"sourceID"`
+	Name     string          `json:"name"`
+	Line     int             `json:"line"`
+	Column   int             `json:"column"`
+	URL      string          `json:"url"`
+	Original *SourceLocation `json:"original,omitempty"`
+}
+
+// SourceLocation stores a resolved source-map location without replacing the
+// generated identity. Like ScriptProfiler frames, line and column are 1-based.
+type SourceLocation struct {
+	Name   string `json:"name,omitempty"`
+	URL    string `json:"url"`
+	Line   int    `json:"line"`
+	Column int    `json:"column"`
+}
+
+// UnmarshalJSON accepts the upstream string sourceID and numeric IDs found in
+// older or third-party exports, retaining their exact decimal representation.
+func (f *StackFrame) UnmarshalJSON(data []byte) error {
+	type plain StackFrame
+	var v struct {
+		*plain
+		SourceID json.RawMessage `json:"sourceID"`
+	}
+	v.plain = (*plain)(f)
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	if len(v.SourceID) == 0 || string(v.SourceID) == "null" {
+		return nil
+	}
+	if err := json.Unmarshal(v.SourceID, &f.SourceID); err == nil {
+		return nil
+	}
+	var n json.Number
+	if err := json.Unmarshal(v.SourceID, &n); err != nil {
+		return fmt.Errorf("sourceID must be a string or number: %w", err)
+	}
+	f.SourceID = n.String()
+	return nil
 }
 
 // Parse decodes a recording from r.
 func Parse(r io.Reader) (*Recording, error) {
+	dec := json.NewDecoder(r)
+	var root json.RawMessage
+	if err := dec.Decode(&root); err != nil {
+		return nil, fmt.Errorf("decode recording: expected an object containing records or samples, or version/recording/overview: %w", err)
+	}
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); err != io.EOF {
+		return nil, fmt.Errorf("decode recording: expected exactly one JSON object")
+	}
+	var envelope struct {
+		Recording json.RawMessage `json:"recording"`
+	}
+	if err := json.Unmarshal(root, &envelope); err != nil {
+		return nil, fmt.Errorf("decode recording: expected an object with records or samples, or version/recording/overview: %w", err)
+	}
+	payload := root
+	if len(envelope.Recording) > 0 {
+		payload = envelope.Recording
+		if string(payload) == "null" {
+			return nil, fmt.Errorf("invalid recording payload; actual top-level keys: %s; expected recording object with records or samples", objectKeys(root))
+		}
+	}
 	var rec Recording
-	if err := json.NewDecoder(r).Decode(&rec); err != nil {
-		return nil, fmt.Errorf("decode recording: %w", err)
+	if err := json.Unmarshal(payload, &rec); err != nil {
+		return nil, fmt.Errorf("decode recording payload (actual keys: %s; expected records, samples, or sampleStackTraces): %w", objectKeys(payload), err)
 	}
 	if rec.Records == nil && rec.Samples == nil && rec.SampleStackTraces == nil {
-		return nil, fmt.Errorf("not a WebKit timeline recording: no records or samples")
+		return nil, fmt.Errorf("not a WebKit timeline recording: actual keys: %s; expected records, samples, or sampleStackTraces (wrapped exports use version, recording, overview)", objectKeys(payload))
 	}
 	if len(rec.Samples) == 0 && len(rec.SampleStackTraces) > 0 {
 		rec.Samples = []TargetSamples{{StackTraces: rec.SampleStackTraces, Durations: rec.SampleDurations}}
 	}
 	rec.SampleStackTraces, rec.SampleDurations = nil, nil
 	return &rec, nil
+}
+
+func objectKeys(data []byte) string {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil {
+		return "(not an object)"
+	}
+	keys := make([]string, 0, len(object))
+	for key := range object {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return "[" + strings.Join(keys, ", ") + "]"
 }
 
 // Load reads and decodes the recording at path.

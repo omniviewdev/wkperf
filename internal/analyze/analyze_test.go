@@ -89,7 +89,7 @@ func TestScriptLayoutGC(t *testing.T) {
 		!approx(val(t, s, "script.event-dispatched.max_ms"), 300) || !approx(val(t, s, "script.event-dispatched.mean_ms"), 200) {
 		t.Error("event-dispatched aggregate")
 	}
-	if !approx(val(t, s, "script.total_ms"), 400) || !approx(val(t, s, "script.busy_ratio"), 0.2) {
+	if !approx(val(t, s, "script.total_ms"), 370) || !approx(val(t, s, "script.busy_ratio"), 0.185) {
 		t.Error("script total / busy ratio (GC and timer-installed must not count)")
 	}
 	if val(t, s, "script.timer-installed.count") != 1 {
@@ -101,7 +101,7 @@ func TestScriptLayoutGC(t *testing.T) {
 	if val(t, s, "gc.count") != 1 || !approx(val(t, s, "gc.total_ms"), 20) {
 		t.Error("gc")
 	}
-	if !approx(val(t, s, "layout.total_ms"), 40) || !approx(val(t, s, "layout.paint.total_ms"), 30) {
+	if !approx(val(t, s, "layout.total_ms"), 30) || !approx(val(t, s, "layout.paint.total_ms"), 30) {
 		t.Error("layout")
 	}
 	if _, ok := s.Lookup("cpu.mean_pct"); ok {
@@ -148,8 +148,8 @@ func TestFunctionsRecursion(t *testing.T) {
 	f := func(n string) model.StackFrame { return model.StackFrame{Name: n, URL: "u", Line: 1} }
 	rec := &model.Recording{Samples: []model.TargetSamples{{
 		StackTraces: []model.StackTrace{
-			{StackFrames: []model.StackFrame{f("a"), f("b"), f("b"), f("b")}},
-			{StackFrames: []model.StackFrame{f("a"), {Name: "", URL: "u", Line: 1}}},
+			{StackFrames: []model.StackFrame{f("b"), f("b"), f("b"), f("a")}},
+			{StackFrames: []model.StackFrame{{Name: "", URL: "u", Line: 1}, f("a")}},
 			{StackFrames: []model.StackFrame{f("a")}},
 		},
 		Durations: []float64{0.010, 0.020}, // third sample defaults to 1ms
@@ -167,11 +167,11 @@ func TestFunctionsRecursion(t *testing.T) {
 	if !approx(a.TotalMs, 31) || !approx(a.SelfMs, 1) {
 		t.Errorf("a = %+v", a)
 	}
-	anon := by["(anonymous)"]
+	anon := by[""]
 	if !approx(anon.SelfMs, 20) {
 		t.Errorf("anon = %+v", anon)
 	}
-	if s.Functions[0].Name != "(anonymous)" || s.Functions[1].Name != "b" {
+	if s.Functions[0].Name != "" || s.Functions[1].Name != "b" {
 		t.Errorf("not sorted by self desc: %+v", s.Functions)
 	}
 }
@@ -317,7 +317,7 @@ func TestExtensiveFlags(t *testing.T) {
 		want := strings.HasSuffix(m.Key, ".count") || strings.HasSuffix(m.Key, ".total_ms") ||
 			strings.HasPrefix(m.Key, "frames.jank_") && m.Key != "frames.jank_ratio" ||
 			m.Key == "network.requests" || m.Key == "network.transfer_bytes" || m.Key == "pressure.events" ||
-			m.Key == "overview.records"
+			m.Key == "overview.records" || m.Key == "frames.idle_wakeups" || m.Key == "frames.idle_gap_ms"
 		if m.Extensive != want {
 			t.Errorf("%s: Extensive=%v want %v", m.Key, m.Extensive, want)
 		}

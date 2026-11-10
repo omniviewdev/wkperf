@@ -2,6 +2,8 @@
 // contract between analyze (producer) and compare (consumer).
 package metrics
 
+import "github.com/omniviewdev/wkperf/internal/model"
+
 type Unit string
 
 const (
@@ -38,21 +40,86 @@ type Metric struct {
 	Extensive bool `json:"extensive,omitempty"`
 }
 
-// FuncStat: per-function sampling-profiler aggregate. Identity = Name+URL+Line.
-// Self = samples where function is top frame. Total = samples where function
-// appears anywhere in the stack (counted once per sample).
+// FuncStat aggregates weighted samples. Generated URL, line, column and name
+// define identity; sourceID distinguishes URL-less functions. Recursion counts
+// once per sample for inclusive time, not once per recursive occurrence.
 type FuncStat struct {
-	Name        string  `json:"name"`
-	URL         string  `json:"url"`
-	Line        int     `json:"line"`
-	SelfMs      float64 `json:"selfMs"`
-	TotalMs     float64 `json:"totalMs"`
-	SelfSamples int     `json:"selfSamples"`
+	ID            string          `json:"id"`
+	Name          string          `json:"name"`
+	URL           string          `json:"url"`
+	Line          int             `json:"line"`
+	Column        int             `json:"column"`
+	SourceID      string          `json:"sourceID,omitempty"`
+	Original      *SourceLocation `json:"original,omitempty"`
+	SelfMs        float64         `json:"selfMs"`
+	TotalMs       float64         `json:"totalMs"`
+	SelfSamples   int             `json:"selfSamples"`
+	Callers       []CallEdge      `json:"callers,omitempty"`
+	Callees       []CallEdge      `json:"callees,omitempty"`
+	CommonStack   []FunctionFrame `json:"commonStack"`
+	CommonStackID string          `json:"commonStackID"`
 }
 
 // Key is the identity used to match functions across recordings.
 func (f FuncStat) Key() string {
-	return f.Name + "\x00" + f.URL + "\x00" + itoa(f.Line)
+	return f.Frame().Key()
+}
+
+// SourceLocation retains the original source-map name and 1-based coordinates.
+type SourceLocation = model.SourceLocation
+
+// FunctionFrame is a location-only function reference, without recursive stats.
+type FunctionFrame struct {
+	ID       string          `json:"id"`
+	Name     string          `json:"name"`
+	URL      string          `json:"url"`
+	Line     int             `json:"line"`
+	Column   int             `json:"column"`
+	SourceID string          `json:"sourceID,omitempty"`
+	Original *SourceLocation `json:"original,omitempty"`
+}
+
+func (f FuncStat) Frame() FunctionFrame {
+	return FunctionFrame{ID: f.ID, Name: f.Name, URL: f.URL, Line: f.Line, Column: f.Column, SourceID: f.SourceID, Original: f.Original}
+}
+
+// Key always uses generated coordinates, even when a source map is available.
+func (f FunctionFrame) Key() string {
+	source := "url:" + f.URL
+	if f.URL == "" {
+		source = "sourceID:" + f.SourceID
+	}
+	return f.Name + "\x00" + source + "\x00" + itoa(f.Line) + "\x00" + itoa(f.Column)
+}
+
+func (f FuncStat) Location() string { return f.Frame().Location() }
+
+// Location displays generated and resolved coordinates without hiding either.
+func (f FunctionFrame) Location() string {
+	source := f.URL
+	if source == "" {
+		source = "sourceID:" + f.SourceID
+	}
+	location := source + ":" + itoa(f.Line) + ":" + itoa(f.Column)
+	if f.Original != nil {
+		location += " → " + f.Original.URL + ":" + itoa(f.Original.Line) + ":" + itoa(f.Original.Column)
+	}
+	return location
+}
+
+// CallEdge counts each adjacent caller/callee relationship once per sample.
+type CallEdge struct {
+	Function FunctionFrame `json:"function"`
+	WeightMs float64       `json:"weightMs"`
+	Samples  int           `json:"samples"`
+}
+
+// StackStat aggregates one full canonical root-to-leaf sampled stack.
+type StackStat struct {
+	ID       string          `json:"id"`
+	Frames   []FunctionFrame `json:"frames"`
+	WeightMs float64         `json:"weightMs"`
+	Samples  int             `json:"samples"`
 }
 
 // Point is a (seconds-from-recording-start, value) sample for charts.
@@ -63,17 +130,30 @@ type Point struct {
 
 // Summary is the full analysis of one recording.
 type Summary struct {
-	Source      string     `json:"source"` // file path
-	Name        string     `json:"name"`   // recording displayName
-	DurationSec float64    `json:"durationSec"`
-	Metrics     []Metric   `json:"metrics"`
-	Functions   []FuncStat `json:"functions"`
-	Fixture     Fixture    `json:"fixture"`
+	Source             string       `json:"source"` // file path
+	Name               string       `json:"name"`   // recording displayName
+	DurationSec        float64      `json:"durationSec"`
+	Metrics            []Metric     `json:"metrics"`
+	Functions          []FuncStat   `json:"functions"`
+	Fixture            Fixture      `json:"fixture"`
+	InclusiveFunctions []FuncStat   `json:"inclusiveFunctions,omitempty"`
+	CommonStacks       []StackStat  `json:"commonStacks,omitempty"`
+	WallDurationSec    float64      `json:"wallDurationSec"`
+	PausedDurationSec  float64      `json:"pausedDurationSec"`
+	IdleWakeups        []IdleWakeup `json:"idleWakeups,omitempty"`
 
 	// Series for HTML charts (not compared statistically).
 	FrameMs  []float64 `json:"frameMs,omitempty"`  // rendering frame durations in ms, chronological
 	CPU      []Point   `json:"cpu,omitempty"`      // total cpu usage %
 	MemoryMB []Point   `json:"memoryMB,omitempty"` // total memory MB
+}
+
+// IdleWakeup describes a low-occupancy rendering interval, not a slow frame.
+type IdleWakeup struct {
+	StartSec        float64 `json:"startSec"`
+	DurationMs      float64 `json:"durationMs"`
+	WorkMs          float64 `json:"workMs"`
+	DominantTrigger string  `json:"dominantTrigger"`
 }
 
 // Lookup returns the metric with key, if present.

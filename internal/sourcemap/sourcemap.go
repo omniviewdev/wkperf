@@ -1,0 +1,541 @@
+// Package sourcemap resolves standard v3 source maps without fetching URLs.
+// Generated WebKit locations remain intact; Original stores 1-based sources.
+package sourcemap
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"io/fs"
+	"net/url"
+	"os"
+	"path"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"github.com/omniviewdev/wkperf/internal/model"
+)
+
+type segment struct{ generated, source, line, column, name int }
+type section struct {
+	line, column int
+	mapping      *Map
+}
+
+// Map is a decoded source-map v3 document. Sources and names retain map order.
+type Map struct {
+	Version    int      `json:"version"`
+	File       string   `json:"file,omitempty"`
+	SourceRoot string   `json:"sourceRoot,omitempty"`
+	Sources    []string `json:"sources,omitempty"`
+	Names      []string `json:"names,omitempty"`
+	Mappings   string   `json:"mappings"`
+	lines      [][]segment
+	sections   []section
+}
+
+// Parse validates base64 VLQ mappings, including unmapped segments and optional
+// name deltas. Indexed v3 maps with embedded sections are supported as well.
+func Parse(r io.Reader) (*Map, error) {
+	var raw json.RawMessage
+	dec := json.NewDecoder(r)
+	if err := dec.Decode(&raw); err != nil {
+		return nil, fmt.Errorf("decode source map: %w", err)
+	}
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); err != io.EOF {
+		return nil, fmt.Errorf("source map must contain exactly one JSON object")
+	}
+	return parse(raw)
+}
+
+func parse(raw json.RawMessage) (*Map, error) {
+	var m Map
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, fmt.Errorf("decode source map: %w", err)
+	}
+	if m.Version != 3 {
+		return nil, fmt.Errorf("unsupported source map version %d; expected 3", m.Version)
+	}
+	var indexed struct {
+		Sections []struct {
+			Offset struct {
+				Line   int `json:"line"`
+				Column int `json:"column"`
+			} `json:"offset"`
+			Map json.RawMessage `json:"map"`
+			URL string          `json:"url"`
+		} `json:"sections"`
+	}
+	if err := json.Unmarshal(raw, &indexed); err != nil {
+		return nil, err
+	}
+	for _, s := range indexed.Sections {
+		if s.URL != "" {
+			return nil, fmt.Errorf("external source-map section URLs are not fetched; supply an embedded section map")
+		}
+		if s.Offset.Line < 0 || s.Offset.Column < 0 {
+			return nil, fmt.Errorf("negative source-map section offset")
+		}
+		if len(m.sections) > 0 {
+			prev := m.sections[len(m.sections)-1]
+			if s.Offset.Line < prev.line || (s.Offset.Line == prev.line && s.Offset.Column <= prev.column) {
+				return nil, fmt.Errorf("source-map sections must have increasing offsets")
+			}
+		}
+		sub, err := parse(s.Map)
+		if err != nil {
+			return nil, err
+		}
+		m.sections = append(m.sections, section{s.Offset.Line, s.Offset.Column, sub})
+	}
+	if len(m.sections) > 0 {
+		if m.Mappings != "" {
+			return nil, fmt.Errorf("indexed source map cannot also contain mappings")
+		}
+		return &m, nil
+	}
+	var source, originalLine, originalColumn, name int
+	for lineIndex, encodedLine := range strings.Split(m.Mappings, ";") {
+		var line []segment
+		generated := 0
+		if encodedLine != "" {
+			for _, encoded := range strings.Split(encodedLine, ",") {
+				values, err := decodeVLQ(encoded)
+				if err != nil {
+					return nil, fmt.Errorf("source map line %d: %w", lineIndex+1, err)
+				}
+				if len(values) != 1 && len(values) != 4 && len(values) != 5 {
+					return nil, fmt.Errorf("source map line %d: segment has %d fields; expected 1, 4 or 5", lineIndex+1, len(values))
+				}
+				generated += values[0]
+				if generated < 0 || values[0] < 0 {
+					return nil, fmt.Errorf("source map line %d: decreasing generated column", lineIndex+1)
+				}
+				s := segment{generated: generated, source: -1, name: -1}
+				if len(values) > 1 {
+					source += values[1]
+					originalLine += values[2]
+					originalColumn += values[3]
+					if source < 0 || source >= len(m.Sources) || originalLine < 0 || originalColumn < 0 {
+						return nil, fmt.Errorf("source map line %d: source index or original location out of range", lineIndex+1)
+					}
+					s.source, s.line, s.column = source, originalLine, originalColumn
+					if len(values) == 5 {
+						name += values[4]
+						if name < 0 || name >= len(m.Names) {
+							return nil, fmt.Errorf("source map line %d: name index out of range", lineIndex+1)
+						}
+						s.name = name
+					}
+				}
+				line = append(line, s)
+			}
+		}
+		m.lines = append(m.lines, line)
+	}
+	return &m, nil
+}
+
+func decodeVLQ(encoded string) ([]int, error) {
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	var values []int
+	for i := 0; i < len(encoded); {
+		var value uint64
+		var shift uint
+		for {
+			if i == len(encoded) {
+				return nil, fmt.Errorf("unterminated base64 VLQ")
+			}
+			digit := strings.IndexByte(alphabet, encoded[i])
+			i++
+			if digit < 0 {
+				return nil, fmt.Errorf("invalid base64 VLQ character")
+			}
+			if shift >= 63 || uint64(digit&31) > (^uint64(0)>>shift) {
+				return nil, fmt.Errorf("base64 VLQ integer overflow")
+			}
+			value |= uint64(digit&31) << shift
+			if digit&32 == 0 {
+				break
+			}
+			shift += 5
+		}
+		magnitude := value >> 1
+		if magnitude > uint64(^uint(0)>>1) {
+			return nil, fmt.Errorf("base64 VLQ integer overflow")
+		}
+		n := int(magnitude)
+		if value&1 != 0 {
+			n = -n
+		}
+		values = append(values, n)
+	}
+	return values, nil
+}
+
+// Lookup uses greatest-lower-bound lookup on one generated line. Arguments and
+// returned source locations are 1-based, matching WebKit ScriptProfiler frames.
+func (m *Map) Lookup(line, column int) (model.SourceLocation, bool) {
+	if m == nil || line < 1 || column < 1 {
+		return model.SourceLocation{}, false
+	}
+	line--
+	column--
+	if len(m.sections) > 0 {
+		i := sort.Search(len(m.sections), func(i int) bool { s := m.sections[i]; return s.line > line || (s.line == line && s.column > column) }) - 1
+		if i < 0 {
+			return model.SourceLocation{}, false
+		}
+		s := m.sections[i]
+		if line == s.line {
+			column -= s.column
+		}
+		return s.mapping.Lookup(line-s.line+1, column+1)
+	}
+	if line >= len(m.lines) {
+		return model.SourceLocation{}, false
+	}
+	segments := m.lines[line]
+	i := sort.Search(len(segments), func(i int) bool { return segments[i].generated > column }) - 1
+	if i < 0 || segments[i].source < 0 {
+		return model.SourceLocation{}, false
+	}
+	s := segments[i]
+	location := model.SourceLocation{URL: sourceURL(m.SourceRoot, m.Sources[s.source]), Line: s.line + 1, Column: s.column + 1}
+	if s.name >= 0 {
+		location.Name = m.Names[s.name]
+	}
+	return location, true
+}
+
+func sourceURL(root, source string) string {
+	if u, err := url.Parse(source); err == nil && u.IsAbs() {
+		return source
+	}
+	if root == "" {
+		return source
+	}
+	if u, err := url.Parse(root); err == nil && u.IsAbs() {
+		if !strings.HasSuffix(u.Path, "/") {
+			u.Path += "/"
+		}
+		if ref, err := url.Parse(source); err == nil {
+			return u.ResolveReference(ref).String()
+		}
+	}
+	return path.Join(root, source)
+}
+
+// Diagnostics reports measured resolution coverage and a heuristic minification
+// hint. Minified is not a claim that every short name came from a minifier.
+type Diagnostics struct {
+	MappedFrames   int      `json:"mappedFrames"`
+	UnmappedFrames int      `json:"unmappedFrames"`
+	MissingMaps    []string `json:"missingMaps,omitempty"`
+	Warnings       []string `json:"warnings,omitempty"`
+	Minified       bool     `json:"minified"`
+}
+
+type candidate struct {
+	path     string
+	explicit bool
+}
+type loadedMap struct {
+	path    string
+	mapping *Map
+}
+
+// DetectMinification recognizes distinct short-named functions on the same
+// first/second generated line, or a short name with a very large column.
+func DetectMinification(rec *model.Recording) bool {
+	if rec == nil {
+		return false
+	}
+	type key struct {
+		url  string
+		line int
+	}
+	columns := map[key]map[int]bool{}
+	maxColumn := map[key]int{}
+	for _, target := range rec.Samples {
+		for _, stack := range target.StackTraces {
+			for _, f := range stack.StackFrames {
+				if f.URL == "" || f.Line < 1 || f.Line > 2 || f.Column < 1 || len(f.Name) > 3 {
+					continue
+				}
+				if f.Column >= 1000 {
+					return true
+				}
+				k := key{f.URL, f.Line}
+				if columns[k] == nil {
+					columns[k] = map[int]bool{}
+				}
+				columns[k][f.Column] = true
+				maxColumn[k] = max(maxColumn[k], f.Column)
+				if len(columns[k]) >= 2 && maxColumn[k] >= 80 {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// Resolve matches repeatable map files/directories and local bundle sidecars.
+// A recording-adjacent bundle basename map also works for remote bundle URLs.
+// It never fetches remote maps or overwrites generated frame identity.
+func Resolve(rec *model.Recording, paths []string, recordingPath string) (Diagnostics, error) {
+	d := Diagnostics{Minified: DetectMinification(rec)}
+	if rec == nil {
+		return d, nil
+	}
+	candidates := map[string]candidate{}
+	add := func(name string, explicit bool) {
+		absolute, err := filepath.Abs(name)
+		if err == nil {
+			name = absolute
+		}
+		if old, ok := candidates[name]; !ok || explicit {
+			candidates[name] = candidate{name, explicit || old.explicit}
+		}
+	}
+	discover := func(name string) {
+		if absolute, err := filepath.Abs(name); err == nil {
+			name = absolute
+		}
+		if _, known := candidates[name]; known {
+			return
+		}
+		if info, err := os.Stat(name); err == nil && !info.IsDir() {
+			add(name, false)
+		}
+	}
+	for _, name := range paths {
+		info, err := os.Stat(name)
+		if err != nil {
+			return d, fmt.Errorf("source map %s: %w", name, err)
+		}
+		if !info.IsDir() {
+			add(name, true)
+			continue
+		}
+		if err := filepath.WalkDir(name, func(p string, entry fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if !entry.IsDir() && strings.HasSuffix(strings.ToLower(entry.Name()), ".map") {
+				add(p, true)
+			}
+			return nil
+		}); err != nil {
+			return d, fmt.Errorf("source map directory %s: %w", name, err)
+		}
+	}
+	seenBundles := map[string]bool{}
+	for _, target := range rec.Samples {
+		for _, stack := range target.StackTraces {
+			for _, f := range stack.StackFrames {
+				if seenBundles[f.URL] {
+					continue
+				}
+				seenBundles[f.URL] = true
+				if bundle := localBundle(f.URL, recordingPath); bundle != "" {
+					discover(bundle + ".map")
+				}
+				if recordingPath != "" && f.URL != "" {
+					basename := path.Base(bundlePath(f.URL))
+					if basename != "." && basename != "/" {
+						discover(filepath.Join(filepath.Dir(recordingPath), basename+".map"))
+					}
+				}
+			}
+		}
+	}
+	ordered := make([]string, 0, len(candidates))
+	for name := range candidates {
+		ordered = append(ordered, name)
+	}
+	sort.Strings(ordered)
+	maps := make([]loadedMap, 0, len(ordered))
+	for _, name := range ordered {
+		file, err := os.Open(name)
+		if err != nil {
+			return d, fmt.Errorf("source map %s: %w", name, err)
+		}
+		mapping, parseErr := Parse(file)
+		closeErr := file.Close()
+		if parseErr == nil {
+			parseErr = closeErr
+		}
+		if parseErr != nil {
+			if candidates[name].explicit {
+				return d, fmt.Errorf("source map %s: %w", name, parseErr)
+			}
+			d.Warnings = append(d.Warnings, fmt.Sprintf("Adjacent source map %s could not be read: %v", name, parseErr))
+			continue
+		}
+		maps = append(maps, loadedMap{name, mapping})
+	}
+	missing := map[string]bool{}
+	warnings := map[string]bool{}
+	type match struct {
+		index     int
+		ambiguous bool
+	}
+	matches := map[string]match{}
+	type locationKey struct {
+		bundle       string
+		line, column int
+	}
+	locations := map[locationKey]*model.SourceLocation{}
+	for ti := range rec.Samples {
+		for si := range rec.Samples[ti].StackTraces {
+			for fi := range rec.Samples[ti].StackTraces[si].StackFrames {
+				f := &rec.Samples[ti].StackTraces[si].StackFrames[fi]
+				if f.Original != nil {
+					d.MappedFrames++
+					continue
+				}
+				result, known := matches[f.URL]
+				if !known {
+					result.index = -1
+					score := 0
+					for i, m := range maps {
+						s := matchScore(f.URL, m)
+						if s > score {
+							result = match{index: i}
+							score = s
+						} else if s > 0 && s == score {
+							result.ambiguous = true
+						}
+					}
+					matches[f.URL] = result
+				}
+				if result.index >= 0 && !result.ambiguous {
+					key := locationKey{f.URL, f.Line, f.Column}
+					original, known := locations[key]
+					if !known {
+						if resolved, ok := maps[result.index].mapping.Lookup(f.Line, f.Column); ok {
+							if resolved.URL != "" {
+								if u, err := url.Parse(resolved.URL); err == nil && !u.IsAbs() && !filepath.IsAbs(resolved.URL) {
+									resolved.URL = filepath.Clean(filepath.Join(filepath.Dir(maps[result.index].path), filepath.FromSlash(resolved.URL)))
+								}
+							}
+							original = &resolved
+						}
+						locations[key] = original
+					}
+					if original != nil {
+						f.Original = original
+						d.MappedFrames++
+						continue
+					}
+				}
+				if result.ambiguous {
+					warnings["Ambiguous source maps for "+f.URL+"; preserve generated location rather than guess."] = true
+				}
+				d.UnmappedFrames++
+				if f.URL != "" {
+					missing[f.URL] = true
+				}
+			}
+		}
+	}
+	for bundle := range missing {
+		d.MissingMaps = append(d.MissingMaps, bundle)
+	}
+	sort.Strings(d.MissingMaps)
+	if d.Minified && len(d.MissingMaps) > 0 {
+		warnings["Likely minified JavaScript lacks source-map coverage; use --sourcemap FILE or DIR to resolve original names and locations."] = true
+	}
+	for warning := range warnings {
+		d.Warnings = append(d.Warnings, warning)
+	}
+	sort.Strings(d.Warnings)
+	return d, nil
+}
+
+func localBundle(raw, recordingPath string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	var name string
+	switch u.Scheme {
+	case "":
+		name = u.Path
+	case "file":
+		if u.Host != "" && u.Host != "localhost" {
+			return ""
+		}
+		name = u.Path
+	default:
+		return ""
+	}
+	if !filepath.IsAbs(name) {
+		if recordingPath == "" {
+			return ""
+		}
+		name = filepath.Join(filepath.Dir(recordingPath), filepath.FromSlash(name))
+	}
+	if info, err := os.Stat(name); err != nil || info.IsDir() {
+		return ""
+	}
+	return name
+}
+
+func bundlePath(raw string) string {
+	if u, err := url.Parse(raw); err == nil {
+		return strings.TrimPrefix(path.Clean(u.Path), "./")
+	}
+	return strings.TrimPrefix(filepath.ToSlash(filepath.Clean(raw)), "./")
+}
+
+func matchScore(generated string, m loadedMap) int {
+	if generated == "" {
+		return 0
+	}
+	generatedPath := bundlePath(generated)
+	filePath := bundlePath(m.mapping.File)
+	adjacentPath := bundlePath(strings.TrimSuffix(m.path, ".map"))
+	if generated == m.mapping.File || generatedPath == adjacentPath {
+		return 100
+	}
+	if filePath != "" && filePath != "." && generatedPath == filePath {
+		return 90
+	}
+	if strings.Contains(filePath, "/") && strings.HasSuffix(generatedPath, "/"+strings.TrimPrefix(filePath, "/")) {
+		return 80
+	}
+	if suffix := matchingPathSuffix(generatedPath, adjacentPath); suffix > 1 {
+		return 20 + min(suffix, 59)
+	}
+	if filePath != "" && filePath != "." && path.Base(generatedPath) == path.Base(filePath) {
+		return 10
+	}
+	if path.Base(generatedPath) == path.Base(adjacentPath) {
+		return 10
+	}
+	return 0
+}
+
+func matchingPathSuffix(a, b string) int {
+	matches := 0
+	for a != "" && b != "" {
+		i, j := strings.LastIndexByte(a, '/'), strings.LastIndexByte(b, '/')
+		if a[i+1:] != b[j+1:] {
+			break
+		}
+		matches++
+		if i < 0 || j < 0 {
+			break
+		}
+		a, b = a[:i], b[:j]
+	}
+	return matches
+}
