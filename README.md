@@ -1,4 +1,24 @@
-# wkperf
+<p align="center">
+  <img src="docs/assets/logo.svg" width="96" height="96" alt="wkperf stopwatch and performance trace logo">
+</p>
+
+<h1 align="center">wkperf</h1>
+
+<p align="center">Find the slow frames. Fix the hot paths. Prove the improvement.</p>
+
+<p align="center">
+  <a href="https://github.com/omniviewdev/wkperf/actions/workflows/ci.yaml"><img src="https://img.shields.io/github/actions/workflow/status/omniviewdev/wkperf/ci.yaml?branch=main&amp;style=flat-square&amp;label=CI" alt="CI status"></a>
+  <a href="https://github.com/omniviewdev/wkperf/tags"><img src="https://img.shields.io/github/v/tag/omniviewdev/wkperf?style=flat-square&amp;label=version&amp;color=40bda5" alt="Latest version"></a>
+  <a href="https://go.dev/dl/"><img src="https://img.shields.io/badge/Go-1.26.1%2B-00ADD8?style=flat-square&amp;logo=go&amp;logoColor=white" alt="Go 1.26.1 or newer"></a>
+  <a href="docs/REFERENCE.md"><img src="https://img.shields.io/badge/reports-terminal%20%7C%20HTML%20%7C%20JSON-6875d9?style=flat-square" alt="Terminal, HTML and JSON reports"></a>
+</p>
+
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#try-it-in-30-seconds">Quick start</a> ·
+  <a href="#report-preview">Report preview</a> ·
+  <a href="docs/REFERENCE.md">Reference</a>
+</p>
 
 **Did that change actually make the UI faster?** `wkperf` answers that from WebKit Web Inspector timeline recordings.
 
@@ -12,13 +32,40 @@ Output is a terminal report, a single self-contained HTML file you can share, or
 
 ## Install
 
-Install with Go:
+### Install with Go
+
+Install [Go 1.26.1 or newer](https://go.dev/dl/), then run:
 
 ```bash
 go install github.com/omniviewdev/wkperf@latest
+wkperf version
 ```
 
-Needs Go 1.26+. Check it worked with `wkperf version`.
+No GitHub account, API key, or private-repository configuration is required. AI features are optional.
+
+If your shell says `wkperf: command not found`, add Go's binary directory to your `PATH`:
+
+```bash
+# macOS / Linux; add this line to ~/.zshrc or ~/.bashrc to keep it.
+export PATH="$(go env GOPATH)/bin:$PATH"
+wkperf version
+```
+
+If you set `GOBIN`, add that directory instead. On Windows, add `%USERPROFILE%\\go\\bin` to your user `Path`.
+
+For a reproducible install, replace `@latest` with a tag, such as `@v0.3.0`.
+
+<details>
+<summary>Build from source</summary>
+
+```bash
+git clone https://github.com/omniviewdev/wkperf.git
+cd wkperf
+GOWORK=off go build -o wkperf .
+./wkperf version
+```
+
+</details>
 
 ## Try it in 30 seconds
 
@@ -44,6 +91,21 @@ FRAMES
 ```
 
 Add `--format html --out report.html --open` for the shareable version with charts.
+
+## Report preview
+
+![Actual wkperf HTML audit report showing scene scores, time breakdown, and prioritized findings](docs/assets/audit-report.png)
+
+*Captured from the actual HTML report using bundled synthetic scenes—not an application benchmark.*
+
+Recreate it:
+
+```bash
+wkperf sample --out demo
+wkperf audit demo/scenes --format html --out audit.html --open
+```
+
+Reports are standalone HTML files. Share the file directly; recipients do not need wkperf or a server.
 
 ## The real workflow
 
