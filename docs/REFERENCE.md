@@ -241,18 +241,25 @@ wkperf flame --diff before.json after.json --format html --out diff.html
 
 | Flag | Meaning |
 | --- | --- |
-| `--format html\|svg\|folded\|speedscope\|json` | interactive HTML by default; static SVG, collapsed stacks weighted in ms, Speedscope sampled profile, or tree JSON |
-| `--focus FUNC` | focus a selected function subtree |
+| `--format html\|svg\|folded\|speedscope\|json` | interactive HTML by default; static SVG, integer-microsecond collapsed stacks, Speedscope sampled profile, or compact flat JSON |
+| `--focus FUNC` | merge all contexts of one function; an exact `n_` selector retains one calling context |
 | `--invert` | invert the call view |
 | `--min-ms N` | suppress nodes below a sampled-time threshold |
 | `--from SEC`, `--to SEC` | restrict samples to recording-relative bounds |
 | `--around-long-task N` | select the Nth longest active long task, starting at 1; `0` disables; GC and count-only records are excluded |
 | `--sourcemap PATH` | repeatable source-map files or directories |
+| `--normalize auto\|none\|per-second\|share` | differential display normalization; auto uses per-second when active durations differ by more than 10% |
 | `--diff A B` | show changes between two profiles with a differential color scale |
 
 HTML is self-contained: zoom/focus by clicking frames, search with a regular expression, switch call direction, and inspect generated/original source locations and self/inclusive time in tooltips. SVG works without JavaScript. Analysis and audit HTML embed the same graph implementation. No external scripts, fonts, or CDN are required.
 
-HTML defaults to `wkperf-flame.html`; `--out -` writes it to stdout. Other formats default to stdout. Multiple inputs remain separate charts/profiles rather than silently merging scenes. Folded multi-input output adds a recording-name root; differential folded output has baseline and candidate millisecond columns. Speedscope diff output retains separate baseline/candidate profiles. `--invert` and `--min-ms` affect the visual view; canonical sampled exports preserve root-to-leaf weights.
+HTML defaults to `wkperf-flame.html`; `--out -` writes it to stdout. Other formats default to stdout. Multiple inputs remain separate charts/profiles. Folded counts are rounded integer microseconds, including raw baseline/candidate columns for differential output. Spaces and backslashes remain literal; `%`, semicolons, and ASCII controls are percent-encoded to keep stack boundaries unambiguous. Speedscope diff output retains separate raw profiles. Visual inversion and minimum-size filtering never truncate canonical exported stacks.
+
+Function focus includes every matching calling context without counting a recursive sample twice. Generated and original names, locations, stable IDs, and `/regex/` selectors use exact selection rules; ambiguous distinct functions return candidates instead of guessing. Interactive focus follows the same semantics, with regex highlighting kept separate. Deep graphs place roots at the top; tooltips and static labels retain readable contrast.
+
+Differential JSON retains raw totals, active durations, per-function/context before/after weights, resolved mode, unit, and comparability warnings. Displayed deltas use milliseconds, milliseconds per active second, or percentage points of selected sampled weight. Folded and Speedscope exports retain raw weights even when a visual graph is normalized.
+
+`wkperf-flame/v2` has one document-level `frames` table shared across charts. Profile trees use flat preorder `nodes`, zero-based parent/frame indices, a root index, and sample references to terminal path IDs. The synthetic root uses `-1` parent/frame indices. Timed sample `t` values are recording-relative seconds; `w` is exact statistical weight in milliseconds. Untimed samples have no invented timestamp. This replaces v1's repeated nested tree/frame representation.
 
 ## Queries for agents
 
@@ -326,7 +333,7 @@ Use the `schema` discriminator before decoding a result. `wkperf schema` prints 
 | Query/MCP | `wkperf.query.v1`: `operation`, `status`, `sources`, `command`, `rows`, `total_count`, `limit`, `truncated` |
 | Comparison | `wkperf/v1`: baseline/candidate groups, metric/function deltas, verdicts, comparability warnings |
 | Audit | `wkperf-audit/v2` (unreleased): scene scorecards, priorities, overall scorecard, per-file errors |
-| Flame | `wkperf-flame/v1`: `mode` (`profile` or `diff`), `charts`, and visual `view` settings |
+| Flame | `wkperf-flame/v2` (unreleased): shared frames, flat profile/delta nodes, exact sample/path references, normalization metadata |
 | Summary | `wkperf-summary/v1`: scalar summary output |
 | Error-only result | `wkperf-error/v1`: machine-readable command errors |
 

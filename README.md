@@ -261,6 +261,8 @@ Long tasks now share non-overlapping task boundaries across metrics, findings, a
 
 Source maps resolve locations without borrowing parameter names for function labels. Copied sidecars keep honest relative source paths when originals are unavailable, and directory scans skip unrelated unsupported maps with warnings. MCP reports the installed tool version, rejects non-file inputs, and recovers after oversized requests.
 
+Flame JSON uses compact `wkperf-flame/v2` frame and node tables. Folded stacks use standard integer microseconds and load without custom escaping rules. Function focus merges all calling contexts; normalized differential views retain raw before/after measurements and warn about mismatched captures.
+
 For tool-based agents, `wkperf mcp` exposes the query engine through MCP over stdio. It writes protocol messages—not logging—to stdout. See the [reference](docs/REFERENCE.md) for formats, query operations, source maps, and JSON schemas.
 
 ## What it will and won't tell you
