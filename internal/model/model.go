@@ -231,8 +231,15 @@ func objectKeys(data []byte) string {
 	return "[" + strings.Join(keys, ", ") + "]"
 }
 
-// Load reads and decodes the recording at path.
+// Load reads and decodes the regular recording file at path.
 func Load(path string) (*Recording, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s: not a regular file", path)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err

@@ -1,9 +1,15 @@
 package model
 
 import (
+	"context"
 	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseFlatWrappedAndLegacy(t *testing.T) {
@@ -54,5 +60,80 @@ func TestInternalSampleEvidenceIsNotExported(t *testing.T) {
 	parsed, err := Parse(strings.NewReader(string(data)))
 	if err != nil || parsed.UntimedExcluded || parsed.SampleEvidence != nil {
 		t.Fatalf("internal evidence survived JSON round trip: %+v, %v", parsed, err)
+	}
+}
+
+func TestLoadRegularRecording(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "recording.json")
+	if err := os.WriteFile(path, []byte(`{"displayName":"local recording","startTime":0,"endTime":1,"records":[]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range []string{path, path + ".link"} {
+		t.Run(filepath.Base(file), func(t *testing.T) {
+			if file != path {
+				if err := os.Symlink(path, file); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+			}
+			rec, err := Load(file)
+			if err != nil || rec.DisplayName != "local recording" {
+				t.Fatalf("regular recording did not load: %+v, %v", rec, err)
+			}
+		})
+	}
+	if _, err := Load(path + ".missing"); !os.IsNotExist(err) {
+		t.Fatalf("missing recording error changed: %v", err)
+	}
+}
+
+func TestLoadRejectsNonRegularFiles(t *testing.T) {
+	dir := t.TempDir()
+	for _, path := range []string{dir, os.DevNull, filepath.Join(dir, "directory.link")} {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			if strings.HasSuffix(path, ".link") {
+				if err := os.Symlink(dir, path); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+			}
+			if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "not a regular file") || !strings.Contains(err.Error(), path) {
+				t.Fatalf("missing non-regular input error: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsFIFO(t *testing.T) {
+	const helperEnv = "WKPERF_TEST_RECORDING_FIFO"
+	if path := os.Getenv(helperEnv); path != "" {
+		if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+			t.Fatalf("missing FIFO input error: %v", err)
+		}
+		return
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("named pipes use different semantics on Windows")
+	}
+	mkfifo, err := exec.LookPath("mkfifo")
+	if err != nil {
+		t.Skip("mkfifo unavailable")
+	}
+	path := filepath.Join(t.TempDir(), "recording.fifo")
+	if output, err := exec.Command(mkfifo, path).CombinedOutput(); err != nil {
+		t.Fatalf("create FIFO: %v: %s", err, output)
+	}
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, binary, "-test.run=^TestLoadRejectsFIFO$")
+	command.Env = append(os.Environ(), helperEnv+"="+path)
+	output, err := command.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("Load blocked opening a FIFO: %v", ctx.Err())
+	}
+	if err != nil {
+		t.Fatalf("FIFO load failed: %v: %s", err, output)
 	}
 }

@@ -67,16 +67,28 @@ func (s *Server) Serve(ctx context.Context, input io.Reader, output io.Writer) e
 	if version == "" {
 		version = "dev"
 	}
-	scanner := bufio.NewScanner(input)
-	scanner.Buffer(make([]byte, 4096), MaxMessageBytes)
+	reader := messageReader{reader: bufio.NewReader(input)}
 	encoder := json.NewEncoder(output)
 	encoder.SetEscapeHTML(false)
 	initialized, ready := false, false
-	for scanner.Scan() {
+	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		line := bytes.TrimSpace(scanner.Bytes())
+		line, oversized, err := reader.read()
+		if err == io.EOF {
+			return ctx.Err()
+		}
+		if err != nil {
+			return fmt.Errorf("read MCP message: %w", err)
+		}
+		if oversized {
+			if err := writeError(encoder, nil, -32600, "Request exceeds 4 MiB"); err != nil {
+				return err
+			}
+			continue
+		}
+		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
 			continue
 		}
@@ -214,10 +226,52 @@ func (s *Server) Serve(ctx context.Context, input io.Reader, output io.Writer) e
 			return err
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("read MCP message (maximum %d bytes): %w", MaxMessageBytes, err)
+}
+
+// messageReader borrows the reader's buffer for short lines and reuses bounded
+// storage for longer lines. Oversized lines are discarded through their newline.
+type messageReader struct {
+	reader *bufio.Reader
+	buffer []byte
+}
+
+func (r *messageReader) read() ([]byte, bool, error) {
+	r.buffer = r.buffer[:0]
+	oversized := false
+	for {
+		chunk, err := r.reader.ReadSlice('\n')
+		if err != nil && err != bufio.ErrBufferFull && err != io.EOF {
+			return nil, false, err
+		}
+		if err == nil {
+			chunk = chunk[:len(chunk)-1]
+		}
+		if !oversized {
+			if len(chunk) > MaxMessageBytes-len(r.buffer) {
+				oversized = true
+			} else if len(r.buffer) == 0 && err != bufio.ErrBufferFull {
+				if len(chunk) == 0 && err == io.EOF {
+					return nil, false, io.EOF
+				}
+				return chunk, false, nil
+			} else {
+				if needed := len(r.buffer) + len(chunk); needed > cap(r.buffer) {
+					capacity := min(MaxMessageBytes, max(2*cap(r.buffer), needed))
+					buffer := make([]byte, len(r.buffer), capacity)
+					copy(buffer, r.buffer)
+					r.buffer = buffer
+				}
+				r.buffer = append(r.buffer, chunk...)
+			}
+		}
+		if err == bufio.ErrBufferFull {
+			continue
+		}
+		if oversized {
+			return nil, true, nil
+		}
+		return r.buffer, false, nil
 	}
-	return ctx.Err()
 }
 
 func validID(id json.RawMessage) bool {
@@ -227,16 +281,28 @@ func validID(id json.RawMessage) bool {
 	if len(id) == 0 {
 		return true
 	}
-	var value any
-	if json.Unmarshal(id, &value) != nil {
+	if id[0] == '"' {
+		return json.Valid(id)
+	}
+	digits := id
+	if digits[0] == '-' {
+		digits = digits[1:]
+	}
+	if len(digits) == 0 {
 		return false
 	}
-	switch value.(type) {
-	case nil, string, float64:
-		return true
-	default:
+	if digits[0] == '0' {
+		return len(digits) == 1
+	}
+	if digits[0] < '1' || digits[0] > '9' {
 		return false
 	}
+	for _, digit := range digits[1:] {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func writeError(encoder *json.Encoder, id json.RawMessage, code int, message string) error {

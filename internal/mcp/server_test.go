@@ -111,14 +111,10 @@ func TestProtocolErrorsAndNotificationSilence(t *testing.T) {
 	}
 }
 
-func TestProtocolCancellationAndOversize(t *testing.T) {
+func TestProtocolCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := (&Server{}).Serve(ctx, strings.NewReader(""), &bytes.Buffer{}); err != context.Canceled {
 		t.Fatalf("lost cancellation: %v", err)
-	}
-	var output bytes.Buffer
-	if err := (&Server{}).Serve(context.Background(), strings.NewReader(strings.Repeat("x", MaxMessageBytes+1)+"\n"), &output); err == nil {
-		t.Fatal("accepted unbounded message")
 	}
 }

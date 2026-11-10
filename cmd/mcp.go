@@ -14,7 +14,7 @@ func newMCPCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cmd.SilenceUsage = true
-			return (&mcp.Server{Version: Version}).Serve(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout())
+			return (&mcp.Server{Version: resolvedVersion()}).Serve(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout())
 		},
 	}
 }

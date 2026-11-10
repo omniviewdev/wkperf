@@ -14,17 +14,20 @@ var (
 	Date    = ""
 )
 
-// versionString resolves the version, falling back to build info so that
-// `go install ...@vX` reports the module version.
-func versionString() string {
-	v := Version
-	if v == "" {
-		v = "dev"
-		if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
-			v = bi.Main.Version
-		}
+// resolvedVersion falls back to build info so that `go install ...@vX` reports
+// the module version even when no link-time version was supplied.
+func resolvedVersion() string {
+	if Version != "" {
+		return Version
 	}
-	s := "wkperf " + v
+	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		return bi.Main.Version
+	}
+	return "dev"
+}
+
+func versionString() string {
+	s := "wkperf " + resolvedVersion()
 	if Commit != "" {
 		s += " (" + Commit + ")"
 	}
