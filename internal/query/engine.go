@@ -186,7 +186,7 @@ func (e *Engine) Run(ctx context.Context, request Request) (*Result, error) {
 				}
 				result.Rows = filtered
 				if len(result.Rows) == 0 {
-					err = fmt.Errorf("unknown stack ID %q", req.Selector)
+					err = fmt.Errorf("unknown stack ID %q: stacks requires a node_id from paths or stacks output; use paths FUNCTION to search by function name", req.Selector)
 				}
 			}
 		case "hot-path":

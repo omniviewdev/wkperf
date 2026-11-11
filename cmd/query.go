@@ -19,7 +19,7 @@ func newQueryCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "query FILE OP [ARGS...]",
 		Short: "Query weighted functions, call paths, windows, and scalar measurements",
-		Long:  "Query a local recording. Operations: " + strings.Join(query.Operations, ", ") + ". Use window FROM TO [OP [ARGS...]] for a recording-relative interval. Select functions by name, url:line:column, /regex/, or stable function/node ID. Ambiguous names return candidates, never guesses.",
+		Long:  "Query a local recording. Operations: " + strings.Join(query.Operations, ", ") + ". Use window FROM TO [OP [ARGS...]] for a recording-relative interval. Function operations accept names, url:line:column, /regex/, or stable function/node IDs. The stacks operation instead accepts an exact node_id from paths or stacks output; omit its selector to list stacks. Use paths FUNCTION to find stacks by function name. Ambiguous function names return candidates, never guesses.",
 		Args:  cobra.MinimumNArgs(2),
 		PreRunE: func(cmd *cobra.Command, _ []string) error {
 			if err := bindFlags(cmd, windowKeys...); err != nil {

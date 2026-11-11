@@ -8,8 +8,77 @@ import (
 )
 
 type renderBlock struct {
-	text  string
-	shown int
+	text       string
+	markdown   string
+	terminal   bool
+	shown      int
+	cutoffs    []renderCutoff
+	heading    string
+	hasContent bool
+	detail     bool
+	marker     string
+}
+
+type renderCutoff struct {
+	start int
+	end   int
+}
+
+const localTruncationMarker = "\n" + MarkdownTruncationMarker + "\n"
+
+func tableDelimiter(line string) bool {
+	line = strings.TrimSpace(line)
+	return strings.HasPrefix(line, "|") && strings.Contains(line, "-") && strings.Trim(line, "|-: \t") == ""
+}
+
+func newRenderBlock(text string, terminal, color bool) renderBlock {
+	block := renderBlock{text: text, markdown: text, terminal: terminal}
+	if terminal {
+		block.text = terminalText(text, color)
+	}
+	return block
+}
+
+// Classify Markdown before conversion, but keep cut points in rendered bytes.
+func (block *renderBlock) prepare() {
+	if block.markdown == "" {
+		return
+	}
+	text := block.markdown
+	block.markdown = ""
+	contentEnd, renderedStart := 0, 0
+	for start := 0; start < len(text); {
+		end := len(text)
+		if n := strings.IndexByte(text[start:], '\n'); n >= 0 {
+			end = start + n + 1
+		}
+		renderedEnd := end
+		if block.terminal {
+			renderedEnd = len(block.text)
+			if n := strings.IndexByte(block.text[renderedStart:], '\n'); n >= 0 {
+				renderedEnd = renderedStart + n + 1
+			}
+		}
+		line := strings.TrimSpace(text[start:end])
+		heading := strings.HasPrefix(line, "#")
+		if heading && block.heading == "" {
+			block.heading = strings.TrimSuffix(block.text[renderedStart:renderedEnd], "\n")
+		}
+		next, _, _ := strings.Cut(text[end:], "\n")
+		scaffolding := line == "" || heading || line == "---" || tableDelimiter(line) ||
+			(strings.HasPrefix(line, "|") && tableDelimiter(next))
+		if !scaffolding {
+			if contentEnd < renderedStart {
+				block.cutoffs = append(block.cutoffs, renderCutoff{contentEnd, renderedEnd})
+			}
+			contentEnd = renderedEnd
+			block.hasContent = true
+		}
+		start, renderedStart = end, renderedEnd
+	}
+	if contentEnd < len(block.text) {
+		block.cutoffs = append(block.cutoffs, renderCutoff{contentEnd, len(block.text)})
+	}
 }
 
 type renderDocument struct {
@@ -76,7 +145,7 @@ func documentBlocks(documents []MarkdownDocument, brief, terminal, color bool) [
 			source = document.Report.Name
 		}
 		doc := renderDocument{
-			header: renderBlock{text: convert(header)}, source: source,
+			header: newRenderBlock(header, terminal, color), source: source,
 			identityToken: convert(code(document.Report.Source)), terminal: terminal,
 		}
 		findings := v.findings()
@@ -85,11 +154,18 @@ func documentBlocks(documents []MarkdownDocument, brief, terminal, color bool) [
 			findings = findings[1:]
 		}
 		for _, text := range findings {
-			doc.findings = append(doc.findings, renderBlock{text: convert(text)})
+			doc.findings = append(doc.findings, newRenderBlock(text, terminal, color))
 		}
 		add := func(text string) {
-			if text != "" {
-				doc.details = append(doc.details, renderBlock{text: convert(text)})
+			for text != "" {
+				end := len(text)
+				if n := strings.Index(text[1:], "\n## "); n >= 0 {
+					end = n + 1
+				}
+				block := newRenderBlock(text[:end], terminal, color)
+				block.detail = true
+				doc.details = append(doc.details, block)
+				text = text[end:]
 			}
 		}
 		add(v.context())
@@ -130,33 +206,79 @@ func completeLength(documents []renderDocument, preamble string) int {
 // takeLines fills one block greedily, preserving complete Markdown lines.
 // A short remainder can still be used by a later, smaller block.
 func takeLines(block *renderBlock, available int) int {
-	if available <= 0 || block.shown == len(block.text) {
+	if block.shown == len(block.text) {
 		return 0
 	}
+	block.prepare()
+	if block.detail && !block.hasContent {
+		return 0
+	}
+	reserved := len(block.marker)
 	rest := block.text[block.shown:]
-	n := len(rest)
-	if n > available {
-		end := strings.LastIndexByte(rest[:available], '\n')
-		if end < 0 {
-			return 0
-		}
-		n = end + 1
+	if len(rest) <= available+reserved {
+		block.shown = len(block.text)
+		block.marker = ""
+		return len(rest) - reserved
 	}
-	if block.shown == 0 && n < len(rest) {
-		content := false
-		for _, line := range strings.Split(rest[:n], "\n") {
-			line = strings.TrimSpace(line)
-			if line != "" && !strings.HasPrefix(line, "#") && line != "---" {
-				content = true
-				break
-			}
+	if block.detail && block.marker == "" {
+		return 0
+	}
+	if reserved > 0 {
+		available += reserved - len(localTruncationMarker)
+	}
+	if available <= 0 {
+		return 0
+	}
+	end := strings.LastIndexByte(rest[:min(len(rest), available)], '\n')
+	if end < 0 {
+		return 0
+	}
+	end += block.shown + 1
+	for _, cutoff := range block.cutoffs {
+		if end <= cutoff.start {
+			break
 		}
-		if !content {
-			return 0
+		if end < cutoff.end {
+			end = cutoff.start
+			break
 		}
 	}
-	block.shown += n
-	return n
+	if end <= block.shown {
+		return 0
+	}
+	n := end - block.shown
+	block.shown = end
+	if reserved > 0 {
+		block.marker = localTruncationMarker
+	}
+	return n + len(block.marker) - reserved
+}
+
+func reserveBlockMarkers(blocks []renderBlock, available int) int {
+	used := 0
+	for i := range blocks {
+		block := &blocks[i]
+		if available-used < len(localTruncationMarker) {
+			break
+		}
+		block.prepare()
+		if !block.hasContent || block.shown == len(block.text) || block.marker != "" {
+			continue
+		}
+		size := len(localTruncationMarker)
+		if block.heading != "" {
+			size += len(block.heading) + 2
+		}
+		if size > available-used {
+			continue
+		}
+		block.marker = localTruncationMarker
+		if block.heading != "" {
+			block.marker = "\n" + block.heading + "\n" + block.marker
+		}
+		used += size
+	}
+	return used
 }
 
 func takeBlocks(blocks []renderBlock, available int) int {
@@ -243,7 +365,7 @@ func packDocuments(documents []renderDocument, preamble string, cap int) string 
 		return MarkdownTruncationMarker[:min(cap, len(MarkdownTruncationMarker))]
 	}
 	remaining := cap - reserve
-	errors := renderBlock{text: preamble}
+	errors := newRenderBlock(preamble, false, false)
 	remaining -= takeLines(&errors, remaining)
 	if preamble != "" && errors.shown < len(preamble) {
 		headingEnd := strings.Index(preamble, "\n\n")
@@ -296,6 +418,14 @@ func packDocuments(documents []renderDocument, preamble string, cap int) string 
 			remaining -= takeBlocks(documents[i].findings, remaining)
 		}
 	}
+	// Local notices must fit before any detail consumes its recording's share.
+	active = len(documents)
+	for i := range documents {
+		if documents[i].identified() {
+			remaining -= reserveBlockMarkers(documents[i].details, remaining/max(active, 1))
+		}
+		active--
+	}
 	active = len(documents)
 	for i := range documents {
 		if documents[i].identified() {
@@ -305,6 +435,7 @@ func packDocuments(documents []renderDocument, preamble string, cap int) string 
 	}
 	for i := range documents {
 		if documents[i].identified() {
+			remaining -= reserveBlockMarkers(documents[i].details, remaining)
 			remaining -= takeBlocks(documents[i].details, remaining)
 		}
 	}
@@ -319,6 +450,7 @@ func packDocuments(documents []renderDocument, preamble string, cap int) string 
 		}
 		for _, block := range document.details {
 			b.WriteString(block.text[:block.shown])
+			b.WriteString(block.marker)
 		}
 	}
 	blocks, recordings := countOmitted(documents, errors)

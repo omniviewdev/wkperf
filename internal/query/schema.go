@@ -93,6 +93,9 @@ func RequestSchema(operation string) map[string]any {
 	if operation == "callers" || operation == "callees" || operation == "paths" || operation == "subtree" || operation == "find" {
 		out["required"] = []string{"file", "selector"}
 	}
+	if operation == "stacks" {
+		properties["selector"].(map[string]any)["description"] = "Optional exact canonical node_id from paths or stacks output. Omit to list stacks; use paths to search by function name. Report-local S labels are not canonical IDs."
+	}
 	if operation == "window" {
 		operations := make([]string, 0, len(Operations)-1)
 		for _, op := range Operations {
