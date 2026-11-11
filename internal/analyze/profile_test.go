@@ -115,7 +115,6 @@ func TestSummaryDeterministicAcrossPairedSampleShuffle(t *testing.T) {
 	}
 }
 
-
 func TestEachHotspotHasStableIDAndFrequentContainingStack(t *testing.T) {
 	rec := testgen.GetAnimations()
 	target := &rec.Samples[0]
