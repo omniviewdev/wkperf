@@ -53,9 +53,9 @@ wkperf version
 
 If you set `GOBIN`, add that directory instead. On Windows, add `%USERPROFILE%\go\bin` to your user `Path`.
 
-For a reproducible install, replace `@latest` with a tag, such as `@v0.4.0`.
+For a reproducible install, replace `@latest` with a tag, such as `@v0.5.0`.
 
-> This checkout also documents unreleased fixes and updated JSON contracts. They are not included in v0.4.0; build the checkout under test to try them before the next tagged release.
+> v0.5.0 updates the machine-readable JSON contracts. Agents and integrations upgrading from v0.4.0 should check the schema discriminator and run `wkperf schema`.
 
 <details>
 <summary>Build from source</summary>
@@ -258,7 +258,7 @@ wkperf compare baseline/ --vs candidate/ --format md --fail-on-regression
 
 Ambiguous function names produce candidate IDs instead of silently choosing a function. Use an ID or `url:line:col` to select precisely. Findings include suggested time windows and commands to reproduce their supporting measurements.
 
-The unreleased fixes use `wkperf-insights/v3`, `wkperf-audit/v2`, `wkperf.query.v2`, and comparison `wkperf/v2`; these contracts differ from v0.4.0. Run `wkperf schema` for the checked-out binary's complete contract. Untimed samples remain in whole-recording rankings but are explicitly excluded from temporal attribution. Bad files do not discard valid analyze/audit results: failures appear in `errors` and stderr, and the command exits nonzero.
+v0.5.0 uses `wkperf-insights/v3`, `wkperf-audit/v2`, `wkperf.query.v2`, and comparison `wkperf/v2`; these contracts differ from v0.4.0. Run `wkperf schema` for the installed binary's complete contract. Untimed samples remain in whole-recording rankings but are explicitly excluded from temporal attribution. Bad files do not discard valid analyze/audit results: failures appear in `errors` and stderr, and the command exits nonzero.
 
 Use `wkperf analyze capture.json --brief --max-bytes 12000` for a bounded terminal report, or add `--format md` for Markdown. Sources, errors, and finding summaries take priority over detail. JSON stores selected frames and exact stacks once, with references, totals, and retrieval commands instead of repeated stack dumps. Use `--out -` to write a single-format analysis report to stdout.
 

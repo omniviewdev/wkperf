@@ -166,7 +166,7 @@ wkperf version
 | `--max-bytes` | `0` (unlimited) | cap Markdown or terminal bytes, including the final truncation marker; positive limits below 64 are rejected |
 | `--open`, `--no-color` | | as in `compare` |
 
-Each recording is followed by its scorecard (see Scorecard). The unreleased fixes use `wkperf-insights/v3`; v0.4.0 emits v2. Each report carries a `scorecard` field unless `--no-scorecard`. Consumers must check the `schema` discriminator, including nullable stack times and untimed-sample metadata. HTML includes time breakdowns, self and inclusive hotspots, trigger attribution, idle wakeups, and findings with confidence and verification guidance.
+Each recording is followed by its scorecard (see Scorecard). v0.5.0 uses `wkperf-insights/v3`; v0.4.0 emits v2. Each report carries a `scorecard` field unless `--no-scorecard`. Consumers must check the `schema` discriminator, including nullable stack times and untimed-sample metadata. HTML includes time breakdowns, self and inclusive hotspots, trigger attribution, idle wakeups, and findings with confidence and verification guidance.
 
 Bounded text cannot be combined with a live `--ai` completion; emit the bounded local report or a prompt separately. The limit applies to the complete text artifact, including scorecards and truncation markers. JSON keeps exact selected evidence and explicit retrieval metadata rather than inheriting text limits.
 
@@ -222,7 +222,7 @@ Trigger tables separate event names and timer/rAF/microtask dispatches. Each row
 | `--open`, `--no-color` | | as in `compare` |
 | `--ai`, `--emit-prompt`, `--ai-*`, `--app-*` | | see AI workflow (audit prompt) |
 
-The unreleased audit envelope is `{"schema": "wkperf-audit/v2", "report": {...}}`; v0.4.0 emits v1. Its embedded analysis follows the updated analysis contract.
+The v0.5.0 audit envelope is `{"schema": "wkperf-audit/v2", "report": {...}}`; v0.4.0 emits v1. Its embedded analysis follows the updated analysis contract.
 
 
 ## Flame graphs
@@ -348,11 +348,11 @@ Numeric schema properties carry `x-unit`: a physical unit, dimensionless scale, 
 
 | Output | Contract |
 | --- | --- |
-| Analysis | `wkperf-insights/v3` (unreleased): reports, untimed accounting, per-file errors, optional AI response |
-| Query/MCP | `wkperf.query.v2` (unreleased): sparse operation-specific rows, shared functions, sampled totals, pagination, byte/stack truncation |
-| Comparison | `wkperf/v2` (unreleased): baseline/candidate groups, metric/function deltas, verdicts, comparability warnings, camelCase counts |
-| Audit | `wkperf-audit/v2` (unreleased): scene scorecards, priorities, overall scorecard, per-file errors |
-| Flame | `wkperf-flame/v2` (unreleased): shared frames, flat profile/delta nodes, exact sample/path references, normalization metadata |
+| Analysis | `wkperf-insights/v3` (v0.5.0): reports, untimed accounting, per-file errors, optional AI response |
+| Query/MCP | `wkperf.query.v2` (v0.5.0): sparse operation-specific rows, shared functions, sampled totals, pagination, byte/stack truncation |
+| Comparison | `wkperf/v2` (v0.5.0): baseline/candidate groups, metric/function deltas, verdicts, comparability warnings, camelCase counts |
+| Audit | `wkperf-audit/v2` (v0.5.0): scene scorecards, priorities, overall scorecard, per-file errors |
+| Flame | `wkperf-flame/v2` (v0.5.0): shared frames, flat profile/delta nodes, exact sample/path references, normalization metadata |
 | Summary | `wkperf-summary/v1`: scalar summary output |
 | Error-only result | `wkperf-error/v1`: machine-readable command errors |
 
