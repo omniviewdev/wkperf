@@ -33,19 +33,21 @@ func mergeSpans(in []span) []span {
 func isStyleEvent(t string) bool { return t == "recalculate-styles" }
 
 // computeBreakdown partitions active recording time without treating sparse
-// rendering-frame cadence as work. Idle-gap frames contribute only their
-// measured work; their unused time remains Idle.
+// rendering cadence, input stalls, or collector intervals as main-thread work.
 func computeBreakdown(rec *model.Recording) []Slice {
-	work := profile.Measure(rec, rec.StartTime, rec.EndTime)
+	return breakdownWithWork(rec, profile.Measure(rec, rec.StartTime, rec.EndTime))
+}
+
+func breakdownWithWork(rec *model.Recording, work profile.Occupancy) []Slice {
 	wallMs := profile.ActiveDuration(rec, rec.StartTime, rec.EndTime) * 1000
-	const unattributed = "Frame time not attributed to work"
+	const unattributed = "Active-frame time without instrumented main-thread work"
 	values := map[string]float64{
 		"Script": work.ScriptMs, "Style": work.StyleMs, "Layout": work.LayoutMs,
-		"Paint": work.PaintMs, "Composite": work.CompositeMs, "GC": work.GCMs,
+		"Paint": work.PaintMs, "Composite": work.CompositeMs,
 	}
 	var activeFrames []span
 	for _, f := range profile.Frames(rec, rec.StartTime, rec.EndTime) {
-		if !f.IdleGap {
+		if f.Class == profile.FrameActive {
 			activeFrames = append(activeFrames, span{f.Start, f.End})
 		}
 	}
@@ -61,8 +63,8 @@ func computeBreakdown(rec *model.Recording) []Slice {
 		idle = 0
 	}
 	values["Idle"] = idle
-	out := make([]Slice, 0, 8)
-	for _, name := range []string{"Script", "Style", "Layout", "Paint", "Composite", "GC", unattributed, "Idle"} {
+	out := make([]Slice, 0, 7)
+	for _, name := range []string{"Script", "Style", "Layout", "Paint", "Composite", unattributed, "Idle"} {
 		pct := 0.0
 		if wallMs > 0 {
 			pct = values[name] / wallMs * 100

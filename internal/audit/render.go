@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/omniviewdev/wkperf/internal/flame"
 	"github.com/omniviewdev/wkperf/internal/insights"
 	"github.com/omniviewdev/wkperf/internal/metrics"
 	"github.com/omniviewdev/wkperf/internal/scorecard"
@@ -113,18 +114,19 @@ func (h HotFunction) Location() string {
 }
 
 func (h HotFunction) StackLabel() string {
-	var b strings.Builder
-	for i, frame := range h.CommonStack {
-		if i > 0 {
-			b.WriteString(" → ")
-		}
-		name := frame.Name
-		if name == "" {
-			name = "(anonymous)"
-		}
-		b.WriteString(name + " @ " + frame.Location())
+	if len(h.CommonStack) == 0 {
+		return ""
 	}
-	return b.String()
+	id := h.CommonStackID
+	if id == "" {
+		id = insights.MetricStackID(h.CommonStack)
+	}
+	leaf := h.CommonStack[len(h.CommonStack)-1]
+	name := leaf.Name
+	if name == "" {
+		name = "(anonymous)"
+	}
+	return fmt.Sprintf("stack %s (%d frames; leaf %s @ %s)", id, len(h.CommonStack), name, leaf.Location())
 }
 
 func funcLabel(h HotFunction) string {
@@ -140,30 +142,31 @@ func funcLabel(h HotFunction) string {
 
 func priorityDetails(pr Priority) []string {
 	var lines []string
+	lines = append(lines, insights.FacetLabels(pr.NativeReads, pr.Depth, pr.RelatedFindings)...)
 	if pr.Command != "" {
 		lines = append(lines, "Reproduce: "+pr.Command)
 	}
 	for _, stack := range pr.Stacks {
-		lines = append(lines, fmt.Sprintf("Exact stack: %.3f sampled self ms; %d samples; %.3f–%.3f s; reproduce: %s", stack.SelfMs, stack.Samples, stack.FirstSec, stack.LastSec, stack.Command))
-		var path strings.Builder
-		for i, frame := range stack.Frames {
-			if i > 0 {
-				path.WriteString(" → ")
-			}
-			function := metrics.FunctionFrame{Name: frame.Name, URL: frame.URL, Line: frame.Line, Column: frame.Column, SourceID: frame.SourceID}
-			if frame.Original != nil {
-				function.Original = &metrics.SourceLocation{Name: frame.Original.Name, URL: frame.Original.URL, Line: frame.Original.Line, Column: frame.Original.Column}
-			}
-			name := frame.Name
-			if name == "" {
-				name = "(anonymous)"
-			}
-			path.WriteString(name + " @ " + function.Location())
+		timing := "timestamps unavailable"
+		if stack.FirstSec != nil && stack.LastSec != nil {
+			timing = fmt.Sprintf("%.3f–%.3f s", *stack.FirstSec, *stack.LastSec)
 		}
-		lines = append(lines, path.String())
+		id := stack.StackID
+		if id == "" {
+			id = flame.StackID(stack.Frames)
+		}
+		leaf := ""
+		if len(stack.Frames) > 0 {
+			frame := stack.Frames[len(stack.Frames)-1]
+			leaf = flame.FrameLabel(frame)
+		}
+		lines = append(lines, fmt.Sprintf("Exact stack reference: %s (%d frames; leaf %s); %.3f sampled self ms; %d samples (%d untimed); %s; reproduce: %s", id, len(stack.Frames), leaf, stack.SelfMs, stack.Samples, stack.UntimedSamples, timing, stack.Command))
 		for _, stat := range stack.Stats {
 			lines = append(lines, fmt.Sprintf("%s = %.3f %s [%s]; reproduce: %s", stat.Key, stat.Value, stat.Unit, stat.Basis, stat.Command))
 		}
+	}
+	if pr.StacksTotal > 0 {
+		lines = append(lines, fmt.Sprintf("Stack evidence: %d of %d shown.", len(pr.Stacks), pr.StacksTotal))
 	}
 	if pr.EvidenceScene != "" {
 		lines = append(lines, "Evidence scene: "+pr.EvidenceScene)
@@ -175,7 +178,7 @@ func priorityDetails(pr Priority) []string {
 		lines = append(lines, fmt.Sprintf("Numeric evidence: %s = %.3f %s [%s] %s; reproduce: %s", e.MetricKey, e.Value, e.Unit, e.Basis, e.Description, e.Command))
 	}
 	if pr.Confidence != "" {
-		lines = append(lines, "Confidence: "+pr.Confidence+"; "+strings.Join(pr.ConfidenceReasons, "; "))
+		lines = append(lines, fmt.Sprintf("Confidence: %s; evidence basis: %s; replication: seen in %d of %d runs (%d parsed); %s", pr.Confidence, pr.EvidenceBasis, pr.Replication.RunsWithFinding, pr.Replication.Runs, pr.Replication.ParsedRuns, strings.Join(pr.ConfidenceReasons, "; ")))
 	}
 	for _, v := range pr.Verify {
 		lines = append(lines, fmt.Sprintf("Verify: %s %s; target %.3f %s; %s; reproduce: %s", v.MetricKey, v.Direction, v.Target, v.Unit, v.Description, v.Command))
@@ -246,6 +249,15 @@ func (r *Report) TotalRuns() int {
 	return n
 }
 
+// TotalAttemptedRuns includes requested recordings that failed to yield a run.
+func (r *Report) TotalAttemptedRuns() int {
+	n := 0
+	for _, s := range r.Scenes {
+		n += s.AttemptedRuns
+	}
+	return n
+}
+
 // TotalSec is the recorded time summed over scenes (median duration x runs).
 func (r *Report) TotalSec() float64 {
 	t := 0.0
@@ -255,12 +267,25 @@ func (r *Report) TotalSec() float64 {
 	return t
 }
 
-func overallScore(r *Report) (string, float64) {
+func overallScore(r *Report) (grade, label string, coverage float64) {
 	if r.Overall == nil {
-		return "-", 0
+		return "n/a", "partial score 0/100", 0
 	}
-	return r.Overall.Grade, r.Overall.Score
+	prefix := "score"
+	if r.Overall.Partial {
+		prefix = "partial score"
+	}
+	return r.Overall.Grade, fmt.Sprintf("%s %.0f/100", prefix, r.Overall.Score), r.Overall.Coverage
 }
+
+func cardScoreCell(c *scorecard.Scorecard) string {
+	if c.Partial {
+		return fmt.Sprintf("%.0f (partial)", c.Score)
+	}
+	return fmt.Sprintf("%.0f", c.Score)
+}
+
+const partialGradeNote = "Grade unavailable: every run and scene must support a grade; missing frame data or insufficient standard coverage cannot certify performance."
 
 // WorstRows returns the "worst scene per standard" rows in registry order.
 func (r *Report) WorstRows() []WorstRow {
@@ -298,6 +323,7 @@ func plural(n int, one, many string) string {
 
 // RenderTerm writes a terminal report. color enables ANSI escapes.
 func RenderTerm(w io.Writer, r *Report, color bool) error {
+	r = SelectEvidence(r)
 	p := painter{color}
 	var b strings.Builder
 	ln := func(f string, a ...any) { fmt.Fprintf(&b, f+"\n", a...) }
@@ -305,24 +331,29 @@ func RenderTerm(w io.Writer, r *Report, color bool) error {
 		b.WriteString("\n" + p.bold(t) + "\n" + p.dim(strings.Repeat("─", termWidth)) + "\n")
 	}
 
-	g, score := overallScore(r)
+	g, score, coverage := overallScore(r)
 	ln("%s", p.bold("wkperf audit"))
 	ln("%s", p.dim(fmt.Sprintf("%d %s · %d %s · %.1fs recorded", len(r.Scenes), plural(len(r.Scenes), "scene", "scenes"),
 		r.TotalRuns(), plural(r.TotalRuns(), "run", "runs"), r.TotalSec())))
-	ln("Overall (typical scene): grade %s · score %.0f/100", p.grade(g), score)
+	ln("Evidence: %d parsed of %d attempted runs; %d missing input(s).", r.TotalRuns(), r.TotalAttemptedRuns(), r.TotalAttemptedRuns()-r.TotalRuns())
+	ln("Overall (typical scene): grade %s · %s · coverage %.1f%%", p.grade(g), score, coverage*100)
+	if r.Overall == nil || r.Overall.Partial {
+		ln("%s", p.dim(partialGradeNote))
+	}
 	if len(r.Scenes) == 0 {
 		ln("%s", p.dim("no scenes"))
 	}
 
 	sec("Scene leaderboard (worst first)")
 	if len(r.Scenes) > 0 {
-		ln("  %s", p.dim(fmt.Sprintf("%-24s %-5s %5s %12s %9s %10s  %s", "scene", "grade", "score", "frame p95", "jank", "TBT", "top finding")))
+		ln("  %s", p.dim(fmt.Sprintf("%-24s %-5s %13s %9s %12s %9s %10s  %s", "scene", "grade", "score", "coverage", "frame p95", "jank", "TBT", "top finding")))
 	}
 	for _, s := range r.Scenes {
-		ln("  %s %s %5.0f %12s %9s %10s  %s",
-			padR(s.Name, 24), padGrade(p, s.Card.Grade, 5), s.Card.Score,
+		ln("  %s %s %13s %8.1f%% %12s %9s %10s  %s",
+			padR(s.Name, 24), padGrade(p, s.Card.Grade, 5), cardScoreCell(s.Card), s.Card.Coverage*100,
 			CardCell(s.Card, "frame-p95"), CardCell(s.Card, "jank-ratio"), CardCell(s.Card, "tbt"),
 			trunc(orDash(s.TopFinding), 40))
+		ln("    runs: %d parsed of %d attempted; %d missing input(s)", s.Runs, s.AttemptedRuns, s.MissingRuns)
 	}
 
 	sec("Where the time goes (duration-weighted)")
@@ -444,16 +475,20 @@ func sevBadge(p painter, sev string) string {
 
 // RenderMarkdown writes the report as markdown suitable for an AI agent.
 func RenderMarkdown(w io.Writer, r *Report) error {
+	r = SelectEvidence(r)
 	var b strings.Builder
 	ln := func(f string, a ...any) { fmt.Fprintf(&b, f+"\n", a...) }
 
-	g, score := overallScore(r)
+	g, score, coverage := overallScore(r)
 	ln("# wkperf audit")
 	ln("")
 	ln("- Scenes: %d", len(r.Scenes))
-	ln("- Runs: %d", r.TotalRuns())
+	ln("- Runs: %d parsed of %d attempted; %d missing input(s)", r.TotalRuns(), r.TotalAttemptedRuns(), r.TotalAttemptedRuns()-r.TotalRuns())
 	ln("- Recorded time: %.1fs", r.TotalSec())
-	ln("- Overall (typical scene): grade **%s**, score %.0f/100", g, score)
+	ln("- Overall (typical scene): grade **%s**, %s, coverage %.1f%%", g, score, coverage*100)
+	if r.Overall == nil || r.Overall.Partial {
+		ln("- %s", partialGradeNote)
+	}
 
 	ln("")
 	ln("## Scene leaderboard (worst first)")
@@ -461,10 +496,10 @@ func RenderMarkdown(w io.Writer, r *Report) error {
 	if len(r.Scenes) == 0 {
 		ln("_No scenes._")
 	} else {
-		ln("| Scene | Runs | Grade | Score | Frame p95 | Jank | TBT | Top finding |")
-		ln("|---|---:|:---:|---:|---:|---:|---:|---|")
+		ln("| Scene | Parsed runs | Attempted runs | Missing runs | Grade | Score | Coverage | Frame p95 | Jank | TBT | Top finding |")
+		ln("|---|---:|---:|---:|:---:|---:|---:|---:|---:|---:|---|")
 		for _, s := range r.Scenes {
-			ln("| %s | %d | %s | %.0f | %s | %s | %s | %s |", mdEscape(s.Name), s.Runs, s.Card.Grade, s.Card.Score,
+			ln("| %s | %d | %d | %d | %s | %s | %.1f%% | %s | %s | %s | %s |", mdEscape(s.Name), s.Runs, s.AttemptedRuns, s.MissingRuns, s.Card.Grade, cardScoreCell(s.Card), s.Card.Coverage*100,
 				CardCell(s.Card, "frame-p95"), CardCell(s.Card, "jank-ratio"), CardCell(s.Card, "tbt"), mdEscape(orDash(s.TopFinding)))
 		}
 	}

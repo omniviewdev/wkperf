@@ -15,6 +15,8 @@ func sampleReport(name string) *insights.Report {
 		Source:      "/tmp/" + name + ".json",
 		Name:        name,
 		DurationSec: 12.5,
+		JankMs:      16.7,
+		LongTaskMs:  50,
 		Breakdown: []insights.Slice{
 			{Name: "Script", Ms: 4000, Pct: 32},
 			{Name: "Layout", Ms: 1500.5, Pct: 12},
@@ -26,7 +28,7 @@ func sampleReport(name string) *insights.Report {
 		},
 		Modules: []insights.ModuleStat{{Name: "react-dom", SelfMs: 700, Pct: 20}},
 		SlowFrames: []insights.SlowFrame{
-			{T: 3.2, Ms: 88.4, ScriptMs: 60, LayoutMs: 20, TopEvent: "event-dispatched click", TopFunc: "onClick"},
+			{T: 3.2, Ms: 88.4, WorkMs: 80, ScriptMs: 60, LayoutMs: 20, TopEvent: "event-dispatched click", TopFunc: "onClick"},
 		},
 		LongTasks: []insights.LongTask{
 			{T: 3.2, Ms: 75, EventType: "event-dispatched", Detail: "click", TopFunc: "onClick"},
@@ -89,7 +91,7 @@ func TestAnalyzePromptContent(t *testing.T) {
 		"Omniview", "WKWebView", "React", "cold start",
 		"Script 4000ms (32%)", "Layout 1500.5ms (12%)",
 		"renderList", "https://app/src/List.tsx:42", "(anonymous)", "sourceID::0:0",
-		"react-dom", "t=3.2s 88.4ms", "event=event-dispatched click", "topFunc=onClick",
+		"react-dom", "t=3.2s observed interval 88.4ms", "event=event-dispatched click", "topFunc=onClick",
 		"[high] Forced synchronous layout", "id=forced-layout", "layout.forced_count=42",
 		"Batch DOM reads before writes.",
 	} {

@@ -58,7 +58,7 @@ func TestDifferentialFoldedAndSpeedscopeWeights(t *testing.T) {
 	if err := Render(&out, "folded", []Chart{chart}, Options{}); err != nil {
 		t.Fatal(err)
 	}
-	for _, line := range []string{"added@app.js:1:1 0 6\n", "removed@app.js:1:1 4 0\n"} {
+	for _, line := range []string{"added@app.js:1:1 0 6000\n", "removed@app.js:1:1 4000 0\n"} {
 		if !strings.Contains(out.String(), line) {
 			t.Errorf("differential folded lacks %q: %s", line, out.String())
 		}
@@ -109,7 +109,7 @@ func TestFoldedMultipleRecordingLabelsEscapeSeparators(t *testing.T) {
 	if err := Render(&out, "folded", charts, Options{}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(out.String(), `one\;\ run\n;`) || strings.Contains(out.String(), "one; run") {
+	if !strings.HasPrefix(out.String(), `one%3B run%0A;`) || strings.Contains(out.String(), "one; run") {
 		t.Fatalf("recording label broke folded syntax: %s", out.String())
 	}
 }

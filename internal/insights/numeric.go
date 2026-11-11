@@ -4,6 +4,7 @@ import (
 	"net/url"
 	"strconv"
 
+	"github.com/omniviewdev/wkperf/internal/flame"
 	"github.com/omniviewdev/wkperf/internal/metrics"
 )
 
@@ -27,16 +28,35 @@ func NumericCommand(r *Report, key string) string {
 
 func queryFlags(r *Report) string {
 	flags := ""
-	if r.WindowEndSec > r.WindowStartSec {
+	if !r.WholeRecording && r.WindowEndSec > r.WindowStartSec {
 		flags += " --from " + seconds(r.WindowStartSec) + " --to " + seconds(r.WindowEndSec)
 	}
-	for _, path := range r.Sourcemaps {
+	for _, path := range r.SourceMapPaths {
 		flags += " --sourcemap " + shellQuote(path)
+	}
+	for _, pattern := range r.Ownership.AppURLs {
+		flags += " --app-url " + shellQuote(pattern)
+	}
+	for _, pattern := range r.Ownership.LibraryURLs {
+		flags += " --library-url " + shellQuote(pattern)
 	}
 	return flags
 }
 
-func functionMetricPrefix(f metrics.FuncStat) string { return "functions." + url.PathEscape(f.Key()) }
+func functionMetricPrefix(f metrics.FuncStat) string {
+	return "functions." + functionFrameID(f.Frame())
+}
+
+func functionFrameID(f metrics.FunctionFrame) string {
+	if f.ID != "" {
+		return f.ID
+	}
+	return flame.FunctionID(flame.Frame{Name: f.Name, URL: f.URL, Line: f.Line, Column: f.Column, SourceID: f.SourceID})
+}
+
+func moduleMetricPrefix(grouping, name string) string {
+	return "modules." + grouping + "." + url.PathEscape(name)
+}
 func triggerMetricPrefix(t TriggerStat) string {
 	return "triggers." + t.Kind + "." + url.PathEscape(t.Name)
 }
@@ -51,6 +71,18 @@ func NumericValues(r *Report) map[string]NumericValue {
 		values[key] = NumericValue{Value: value, Unit: unit, Description: description}
 	}
 	add("recording.duration_sec", r.DurationSec, "s", "Active recording duration")
+	add("gc.total_ms", r.GCMs, metrics.UnitMs, "Collector-interval union; not necessarily main-thread time")
+	add("gc.overlap_with_work_ms", r.GCOverlapWithWorkMs, metrics.UnitMs, "Collector intervals overlapping instrumented main-thread work")
+	threshold := r.JankMs
+	if threshold <= 0 {
+		threshold = 16.7
+	}
+	add("findings.jank.threshold_ms", threshold, metrics.UnitMs, "Configured finding threshold; fixed scorecard standards remain 16.7ms")
+	if r.Summary != nil {
+		if count, ok := r.Summary.Lookup("frames.count"); ok && count.Value > 0 {
+			add("findings.jank.ratio", float64(max(r.SlowFramesTotal, len(r.SlowFrames)))/count.Value, metrics.UnitRatio, "Active-frame interval ratio above configured finding threshold")
+		}
+	}
 	for _, s := range r.Breakdown {
 		prefix := "breakdown." + url.PathEscape(s.Name)
 		add(prefix+".ms", s.Ms, metrics.UnitMs, s.Name+" wall time")
@@ -59,6 +91,13 @@ func NumericValues(r *Report) map[string]NumericValue {
 	coverage := r.SampleCoverage
 	add("samples.count", float64(coverage.SampleCount), metrics.UnitCount, "Weighted sample count")
 	add("samples.sampled_ms", coverage.SampledMs, metrics.UnitMs, "Sampled self-time weight")
+	add("samples.untimed_count", float64(coverage.UntimedSampleCount), metrics.UnitCount, "Profiler samples without timestamps")
+	add("samples.untimed_ms", coverage.UntimedMs, metrics.UnitMs, "Sample weight without timestamps")
+	excludedMs := 0.0
+	if coverage.UntimedExcluded {
+		excludedMs = coverage.UntimedMs
+	}
+	add("samples.untimed_excluded_ms", excludedMs, metrics.UnitMs, "Untimed sample weight excluded from this window")
 	add("samples.script_ms", coverage.ScriptMs, metrics.UnitMs, "Exclusive measured script time")
 	if coverage.Available {
 		add("samples.coverage_ratio", coverage.Ratio, metrics.UnitRatio, "Sample weight / measured script time")
@@ -72,12 +111,12 @@ func NumericValues(r *Report) map[string]NumericValue {
 			add(base+".total_ms", f.TotalMs, metrics.UnitMs, "Sampled inclusive-time weight")
 			add(base+".self_samples", float64(f.SelfSamples), metrics.UnitCount, "Self sample count")
 			for _, edge := range f.Callers {
-				key := base + ".callers." + url.PathEscape(edge.Function.Key())
+				key := base + ".callers." + functionFrameID(edge.Function)
 				add(key+".weight_ms", edge.WeightMs, metrics.UnitMs, "Immediate caller edge sample weight")
 				add(key+".samples", float64(edge.Samples), metrics.UnitCount, "Immediate caller edge sample count")
 			}
 			for _, edge := range f.Callees {
-				key := base + ".callees." + url.PathEscape(edge.Function.Key())
+				key := base + ".callees." + functionFrameID(edge.Function)
 				add(key+".weight_ms", edge.WeightMs, metrics.UnitMs, "Immediate callee edge sample weight")
 				add(key+".samples", float64(edge.Samples), metrics.UnitCount, "Immediate callee edge sample count")
 			}
@@ -87,9 +126,10 @@ func NumericValues(r *Report) map[string]NumericValue {
 		addFunctions("", r.Summary.Functions)
 		for _, grouping := range []string{"file", "parent-directory"} {
 			for _, m := range computeModules(r.Summary.Functions, grouping) {
-				prefix := "modules." + grouping + "." + url.PathEscape(m.Name)
+				prefix := moduleMetricPrefix(grouping, m.Name)
 				add(prefix+".self_ms", m.SelfMs, metrics.UnitMs, "Grouped sampled self time")
 				add(prefix+".pct", m.Pct, metrics.UnitPct, "Share of total sampled self time")
+				add(prefix+".self_samples", float64(m.SelfSamples), metrics.UnitCount, "Grouped self sample count")
 			}
 		}
 	} else {
@@ -119,10 +159,18 @@ func NumericValues(r *Report) map[string]NumericValue {
 		base := "slowFrames." + strconv.Itoa(i)
 		add(base+".t", f.T, "s", "Frame time from analyzed recording start")
 		add(base+".ms", f.Ms, metrics.UnitMs, "Active frame duration")
+		add(base+".work_ms", f.WorkMs, metrics.UnitMs, "Exclusive instrumented main-thread work")
 		add(base+".script_ms", f.ScriptMs, metrics.UnitMs, "Exclusive script overlap")
 		add(base+".layout_ms", f.LayoutMs, metrics.UnitMs, "Exclusive layout/style overlap")
 		add(base+".paint_ms", f.PaintMs, metrics.UnitMs, "Exclusive paint/composite overlap")
-		add(base+".gc_ms", f.GCMs, metrics.UnitMs, "Exclusive GC overlap")
+		add(base+".gc_ms", f.GCMs, metrics.UnitMs, "Collector interval overlay; not necessarily main-thread time")
+		add(base+".gc_overlap_with_work_ms", f.GCOverlapWithWorkMs, metrics.UnitMs, "Collector interval overlapping instrumented main-thread work")
+	}
+	for i, stall := range r.InputStalls {
+		base := "inputStalls." + strconv.Itoa(i)
+		add(base+".t", stall.T, "s", "Input-stall time from analyzed recording start")
+		add(base+".ms", stall.Ms, metrics.UnitMs, "Observed input-stall interval; not measured main-thread blocking time")
+		add(base+".work_ms", stall.WorkMs, metrics.UnitMs, "Exclusive instrumented main-thread work during input stall")
 	}
 	for i, t := range r.LongTasks {
 		base := "longTasks." + strconv.Itoa(i)
@@ -155,7 +203,7 @@ func TriggerFunctionCommand(r *Report, trigger TriggerStat, function metrics.Fun
 }
 
 func EdgeCommand(r *Report, function metrics.FuncStat, edge metrics.CallEdge, relation, field string) string {
-	return NumericCommand(r, functionMetricPrefix(function)+"."+relation+"."+url.PathEscape(edge.Function.Key())+"."+field)
+	return NumericCommand(r, functionMetricPrefix(function)+"."+relation+"."+functionFrameID(edge.Function)+"."+field)
 }
 
 func StackCommand(r *Report, index int, field string) string {

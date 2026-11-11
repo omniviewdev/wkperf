@@ -16,16 +16,16 @@ import (
 func TestSharedSyntheticScenarios(t *testing.T) {
 	t.Run("getAnimations", func(t *testing.T) {
 		r := build(testgen.GetAnimations())
-		if f := finding(r, "suspected-layout-read"); f == nil || len(f.Evidence) != 1 || len(f.Evidence[0].Frames) != 4 {
+		if f := finding(r, "forced-style-or-layout-read"); f == nil || len(f.Evidence) != 1 || len(f.Evidence[0].Frames) != 4 {
 			t.Fatalf("missing native chain: %+v", r.Findings)
 		}
-		if len(r.AppAttribution) != 1 || r.AppAttribution[0].App.Name != "measureRows" {
-			t.Fatalf("closest app ancestor lost: %+v", r.AppAttribution)
+		if len(r.ContextAttribution) != 1 || r.ContextAttribution[0].Frame.Name != "measureRows" {
+			t.Fatalf("closest app ancestor lost: %+v", r.ContextAttribution)
 		}
-		near(t, r.AppAttribution[0].NativeMs, 6)
-		near(t, r.AppAttribution[0].FrameworkMs, 2)
-		near(t, r.AppAttribution[0].SelfMs, 3)
-		near(t, r.AppAttribution[0].TotalMs, 11)
+		near(t, r.ContextAttribution[0].NativeMs, 6)
+		near(t, r.ContextAttribution[0].FrameworkMs, 2)
+		near(t, r.ContextAttribution[0].SelfMs, 3)
+		near(t, r.ContextAttribution[0].TotalMs, 11)
 	})
 	t.Run("react", func(t *testing.T) {
 		r := build(testgen.React())
@@ -39,7 +39,7 @@ func TestSharedSyntheticScenarios(t *testing.T) {
 	})
 	t.Run("periodic", func(t *testing.T) {
 		r := build(testgen.Periodic())
-		if len(r.PeriodicRoots) != 1 || r.PeriodicRoots[0].FireCount != 5 {
+		if len(r.PeriodicRoots) != 1 || r.PeriodicRoots[0].FireCount != 6 {
 			t.Fatalf("fire dedup: %+v", r.PeriodicRoots)
 		}
 		near(t, r.PeriodicRoots[0].PeriodMs, 1000)
@@ -71,12 +71,12 @@ func TestNumericFiguresHaveUniqueExactReproductionCommands(t *testing.T) {
 			t.Fatalf("invalid stat: %+v", s)
 		}
 		seen[s.Key] = true
-		if !strings.Contains(s.Command, "rootcause '"+s.Key+"'") || !strings.Contains(s.Command, "--from 0 --to 10") || !strings.Contains(s.Command, `'capture'"'"'; echo unsafe.json'`) || !strings.Contains(s.Command, `--sourcemap 'source map'"'"'s.js.map'`) {
+		if !strings.Contains(s.Command, "rootcause '"+s.Key+"'") || strings.Contains(s.Command, "--from") || strings.Contains(s.Command, "--to ") || !strings.Contains(s.Command, `'capture'"'"'; echo unsafe.json'`) || !strings.Contains(s.Command, `--sourcemap 'source map'"'"'s.js.map'`) {
 			t.Fatalf("not exact or shell-safe: %+v", s)
 		}
 	}
 	paths := flame.Build(testgen.GetAnimations()).Paths()
-	for _, a := range r.AppAttribution {
+	for _, a := range r.ContextAttribution {
 		for _, s := range a.Stacks {
 			found := false
 			for _, p := range paths {
@@ -117,21 +117,21 @@ func TestCapturePauseUsesSharedActiveTimeAndExcludesSamplerPoints(t *testing.T) 
 	if len(report.LongTasks) != 1 {
 		t.Fatalf("active long task missing: %+v", report.LongTasks)
 	}
-	near(t, report.LongTasks[0].DurationMs, 140)
+	near(t, report.LongTasks[0].DurationMs, 120)
 	if len(report.SlowFrames) != 0 {
 		t.Fatal("pause-spanning frame used as latency evidence")
 	}
 	if len(report.GCOverlaps) != 1 {
-		t.Fatal("active GC pause absent")
+		t.Fatal("active collector interval absent")
 	}
 	near(t, report.GCOverlaps[0].DurationMs, 10)
 }
 
 func TestEventBurstsHaveWindowAndExactSampleEvidence(t *testing.T) {
 	r := recording()
-	for i := range 4 {
+	for i := range 5 {
 		at := .1 + float64(i)*.01
-		event(r, "microtask-fired", at, at+.004)
+		event(r, "microtask-dispatched", at, at+.004)
 		sample(r, at+.001, 2, app("burstRoot"), app("flush"))
 	}
 	report := build(r)
@@ -142,8 +142,8 @@ func TestEventBurstsHaveWindowAndExactSampleEvidence(t *testing.T) {
 	if w.Kind != "event-burst" || w.TopStack == nil || len(w.HotPath.Frames) != 2 {
 		t.Fatalf("burst triage missing stack/path: %+v", w)
 	}
-	near(t, w.TopStack.SelfMs, 8)
-	if !strings.Contains(w.Command, "--from 0.1 --to 0.134") {
+	near(t, w.TopStack.SelfMs, 10)
+	if !strings.Contains(w.Command, "--from 0.1 --to 0.144") {
 		t.Fatalf("wrong burst window: %s", w.Command)
 	}
 	var count float64
@@ -152,25 +152,25 @@ func TestEventBurstsHaveWindowAndExactSampleEvidence(t *testing.T) {
 			count = s.Value
 		}
 	}
-	near(t, count, 4)
+	near(t, count, 5)
 }
 
 func TestNestedNativeReadsCountEachSampleOnlyOnce(t *testing.T) {
 	r := recording()
 	sample(r, .1, 7, app("measure"), model.StackFrame{Name: "getAnimations"}, model.StackFrame{Name: "getBoundingClientRect"}, model.StackFrame{Name: "engineWork"})
-	f := finding(build(r), "suspected-layout-read")
+	f := finding(build(r), "forced-style-or-layout-read")
 	if f == nil || len(f.Evidence) != 1 || len(f.Evidence[0].Frames) != 4 {
 		t.Fatalf("nested native read evidence: %+v", f)
 	}
-	near(t, stat(f.Stats, "layout_reads.self_ms"), 7)
-	near(t, stat(f.Stats, "layout_reads.samples"), 1)
+	near(t, stat(f.Stats, "native_reads.self_ms"), 7)
+	near(t, stat(f.Stats, "native_reads.samples"), 1)
 }
 
 func TestKnownReactOwnersAndGCDoNotDoubleChargeApp(t *testing.T) {
 	r := recording()
 	names := []string{"performSyncWorkOnRoot", "performWorkOnRoot", "renderRootSync", "workLoopSync", "performUnitOfWork", "renderWithHooks", "flushSyncWorkAcrossRoots", "processRootScheduleInMicrotask", "commitOnFiber", "recursivelyTraverseEffects", "performWorkUntilDeadline"}
 	for i, name := range names {
-		sample(r, .1+float64(i)*.01, 1, app("update"), app(name))
+		sample(r, .1+float64(i)*.01, 1, app("update"), framework(name))
 	}
 	sample(r, .5, 2, app("update"), model.StackFrame{Name: "unknownNative"})
 	sample(r, .6, 3, app("update"), model.StackFrame{Name: "GC"})
@@ -179,13 +179,13 @@ func TestKnownReactOwnersAndGCDoNotDoubleChargeApp(t *testing.T) {
 	for _, o := range report.Owners {
 		owners[o.Category] = o.SelfMs
 	}
-	near(t, owners["framework-library"], float64(len(names)))
+	near(t, owners["framework"], float64(len(names)))
 	near(t, owners["native"], 2)
 	near(t, owners["gc"], 3)
-	if len(report.AppAttribution) != 1 {
-		t.Fatalf("unexpected app charges: %+v", report.AppAttribution)
+	if len(report.ContextAttribution) != 1 {
+		t.Fatalf("unexpected app charges: %+v", report.ContextAttribution)
 	}
-	near(t, report.AppAttribution[0].TotalMs, float64(len(names))+2)
+	near(t, report.ContextAttribution[0].TotalMs, float64(len(names))+2)
 }
 
 func TestPrewindowedMappedTreeRetainsSelectedBounds(t *testing.T) {
@@ -195,7 +195,7 @@ func TestPrewindowedMappedTreeRetainsSelectedBounds(t *testing.T) {
 	near(t, report.FromSec, 1)
 	near(t, report.ToSec, 1.08)
 	near(t, stat(report.Stats, "window.duration_ms"), 80)
-	if !strings.Contains(report.Commands.HotPath, "--min-share 0 --from 1 --to 1.08") {
+	if !strings.Contains(report.Commands.HotPath, "--from 1 --to 1.08") {
 		t.Fatalf("wrong selected path command: %s", report.Commands.HotPath)
 	}
 }
@@ -221,7 +221,10 @@ func TestEveryLongTaskAndActiveSlowFrameKeepsStackBeyondTopLimit(t *testing.T) {
 			if !strings.Contains(w.Command, "--from") || !strings.Contains(w.Command, "--to") {
 				t.Fatalf("window lacks exact query: %+v", w)
 			}
-			if w.HotPath != nil && len(w.HotPath.Frames) > 0 {
+			if w.HotPath != nil {
+				if len(w.HotPath.Frames) != 0 || w.HotPath.StopReason != "sample-support" {
+					t.Fatalf("single-sample window path presented as supported: %+v", w.HotPath)
+				}
 				detailed++
 			}
 		}
@@ -324,7 +327,7 @@ func TestReproductionPreservesUntrustedLiteralArgumentBoundaries(t *testing.T) {
 		}
 	}
 	args := check(report.Commands.Paths)
-	if args[3] != "paths" || args[4] != name {
+	if args[3] != "paths" || args[4] != report.ContextAttribution[0].Frame.ID {
 		t.Fatalf("selector argument split: %#v", args)
 	}
 }

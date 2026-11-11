@@ -2,8 +2,11 @@
 package schema
 
 import (
+	"encoding/json"
+
 	"github.com/omniviewdev/wkperf/internal/audit"
 	"github.com/omniviewdev/wkperf/internal/compare"
+	"github.com/omniviewdev/wkperf/internal/diagnostic"
 	"github.com/omniviewdev/wkperf/internal/insights"
 	"github.com/omniviewdev/wkperf/internal/metrics"
 	"github.com/omniviewdev/wkperf/internal/scorecard"
@@ -11,18 +14,19 @@ import (
 )
 
 const (
-	InsightsVersion   = "wkperf-insights/v2"
-	AuditVersion      = "wkperf-audit/v1"
-	ComparisonVersion = "wkperf/v1"
+	InsightsVersion   = "wkperf-insights/v3"
+	AuditVersion      = "wkperf-audit/v2"
+	ComparisonVersion = "wkperf/v2"
 	SummaryVersion    = "wkperf-summary/v1"
 	ErrorVersion      = "wkperf-error/v1"
 )
 
 // Error is one failed input or command. File is empty for command-level failures.
 type Error struct {
-	File    string `json:"file"`
-	Message string `json:"message"`
-	Code    string `json:"code"`
+	File       string          `json:"file"`
+	Message    string          `json:"message"`
+	Code       diagnostic.Code `json:"code"`
+	Candidates []string        `json:"candidates,omitempty"`
 }
 
 // SourceMapMetadata records mapping coverage without changing generated identities.
@@ -36,6 +40,15 @@ type Analysis struct {
 	*insights.Report
 	Scorecard *scorecard.Scorecard   `json:"scorecard,omitempty"`
 	SourceMap *sourcemap.Diagnostics `json:"sourceMap,omitempty"`
+}
+
+// MarshalJSON keeps envelope metadata beside the report's interned wire fields.
+func (a Analysis) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		*insights.WireReport
+		Scorecard *scorecard.Scorecard   `json:"scorecard,omitempty"`
+		SourceMap *sourcemap.Diagnostics `json:"sourceMap,omitempty"`
+	}{WireReport: insights.ToWire(a.Report), Scorecard: a.Scorecard, SourceMap: a.SourceMap})
 }
 
 type InsightsDocument struct {

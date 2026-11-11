@@ -18,14 +18,6 @@ const (
 	mb = 1 << 20
 )
 
-// countOnlyEvents are instantaneous script events: only their count is meaningful.
-var countOnlyEvents = map[string]bool{
-	"timer-installed":           true,
-	"timer-removed":             true,
-	"animation-frame-requested": true,
-	"animation-frame-canceled":  true,
-}
-
 // Percentile returns the p-th percentile (0..100) of vals using linear
 // interpolation between closest ranks: rank = p/100*(n-1). The input is not
 // modified. It returns 0 for an empty slice.
@@ -145,7 +137,10 @@ func (o Options) window(rec *model.Recording) window {
 	if o.ToSec > 0 {
 		hi = math.Min(hi, rec.StartTime+o.ToSec)
 	}
-	active := lo != rec.StartTime || hi != rec.EndTime
+	active := !profile.CoversRecording(rec, lo-rec.StartTime, hi-rec.StartTime)
+	if !active {
+		lo, hi = rec.StartTime, rec.EndTime
+	}
 	return window{lo: lo, hi: hi, active: active, bounded: active || rec.EndTime > rec.StartTime || len(rec.Discontinuities) > 0, intervals: profile.ActiveIntervals(rec, lo, hi)}
 }
 
@@ -247,14 +242,27 @@ func summarize(rec *model.Recording, source string, o Options, tree *flame.Tree)
 	)
 
 	frameData := profile.Frames(rec, win.lo, win.hi)
-	idleGapMs := 0.0
+	idleGapMs, activeFrameMs, observedFrameMs := 0.0, 0.0, 0.0
+	stallCount, stallMs, stallMaxMs := 0, 0.0, 0.0
+	jankWorkExcessMs, jankIntervalExcessMs := 0.0, 0.0
 	for _, f := range frameData {
-		if f.IdleGap {
+		observedFrameMs += f.DurationMs
+		switch f.Class {
+		case profile.FrameIdleGap:
 			s.IdleWakeups = append(s.IdleWakeups, metrics.IdleWakeup{StartSec: f.Start - origin, DurationMs: f.DurationMs, WorkMs: f.Occupancy.WorkMs, DominantTrigger: f.DominantTrigger})
 			idleGapMs += f.DurationMs
-			continue
+		case profile.FrameInputStall:
+			stallCount++
+			stallMs += f.DurationMs
+			stallMaxMs = math.Max(stallMaxMs, f.DurationMs)
+		case profile.FrameActive:
+			frames = append(frames, timedPoint{f.Start, f.DurationMs})
+			activeFrameMs += f.DurationMs
+			if f.DurationMs > profile.FrameBudgetMs {
+				jankWorkExcessMs += math.Max(0, f.Occupancy.WorkMs-profile.FrameBudgetMs)
+				jankIntervalExcessMs += f.DurationMs - profile.FrameBudgetMs
+			}
 		}
-		frames = append(frames, timedPoint{f.Start, f.DurationMs})
 	}
 	for i := range rec.Records {
 		r := &rec.Records[i]
@@ -283,13 +291,13 @@ func summarize(rec *model.Recording, source string, o Options, tree *flame.Tree)
 		clipped := win.duration(start, end)
 		switch r.Type {
 		case model.TypeScript:
+			haveScript = true
 			if profile.IsGC(*r) {
 				gcCount++
 				continue
 			}
-			haveScript = true
 			scriptCount[r.EventType]++
-			if !countOnlyEvents[r.EventType] {
+			if !profile.CountOnly(r.EventType) {
 				ms := clipped * 1000
 				scriptMs[r.EventType] = append(scriptMs[r.EventType], ms)
 			}
@@ -359,9 +367,17 @@ func summarize(rec *model.Recording, source string, o Options, tree *flame.Tree)
 	sort.Float64s(netMs)
 	sort.Float64s(netTransfers)
 	netBytes = sum(netTransfers)
-	work := profile.Measure(rec, win.lo, win.hi)
+	work, costs := profile.MeasureRecords(rec, win.lo, win.hi)
 	scriptTimeMs := work.ScriptMs
 	layoutTimeMs := work.StyleMs + work.LayoutMs + work.PaintMs + work.CompositeMs
+	scriptExclusive, layoutExclusive := map[string]float64{}, map[string]float64{}
+	for _, cost := range costs {
+		if cost.Record.Type == model.TypeScript {
+			scriptExclusive[cost.Record.EventType] += cost.ExclusiveMs
+		} else if cost.Record.Type == model.TypeLayout {
+			layoutExclusive[cost.Record.EventType] += cost.ExclusiveMs
+		}
+	}
 
 	b := &builder{}
 	b.add("overview.duration_s", "overview", "Recording duration", "s", metrics.Neutral, duration)
@@ -369,11 +385,18 @@ func summarize(rec *model.Recording, source string, o Options, tree *flame.Tree)
 	b.add("overview.wall_duration_s", "overview", "Capture wall duration", "s", metrics.Neutral, s.WallDurationSec)
 	b.add("overview.paused_s", "overview", "Paused capture duration", "s", metrics.Neutral, s.PausedDurationSec)
 	if len(frameData) > 0 {
+		b.addExt("frames.observed_count", "frames", "Observed rendering intervals", metrics.UnitCount, metrics.Neutral, float64(len(frameData)))
+		b.addExt("frames.observed_ms", "frames", "Observed rendering interval time", metrics.UnitMs, metrics.Neutral, observedFrameMs)
+		b.addExt("frames.count", "frames", "Active frames", metrics.UnitCount, metrics.Neutral, float64(len(frames)))
+		b.addExt("frames.active_ms", "frames", "Active-frame observation time", metrics.UnitMs, metrics.Neutral, activeFrameMs)
 		b.addExt("frames.idle_wakeups", "frames", "Idle wakeups", metrics.UnitCount, metrics.LowerBetter, float64(len(s.IdleWakeups)))
 		b.addExt("frames.idle_gap_ms", "frames", "Idle rendering intervals", metrics.UnitMs, metrics.Neutral, idleGapMs)
-		if len(frames) == 0 {
-			b.addExt("frames.count", "frames", "Active frames", metrics.UnitCount, metrics.Neutral, 0)
-		}
+		b.addExt("frames.input_stalls", "frames", "Input stalls", metrics.UnitCount, metrics.LowerBetter, float64(stallCount))
+		b.addExt("frames.input_stall_ms", "frames", "Input-stall observed interval time", metrics.UnitMs, metrics.LowerBetter, stallMs)
+		b.add("frames.input_stall_max_ms", "frames", "Longest input-stall interval", metrics.UnitMs, metrics.LowerBetter, stallMaxMs)
+		b.add("frames.budget_ms", "frames", "Fixed frame standards budget", metrics.UnitMs, metrics.Neutral, profile.FrameBudgetMs)
+		b.addExt("frames.jank_work_excess_ms", "frames", "Active-frame work beyond 16.7ms", metrics.UnitMs, metrics.LowerBetter, jankWorkExcessMs)
+		b.addExt("frames.jank_interval_excess_ms", "frames", "Active-frame observed intervals beyond 16.7ms", metrics.UnitMs, metrics.Neutral, jankIntervalExcessMs)
 	}
 
 	if len(frames) > 0 {
@@ -385,7 +408,6 @@ func summarize(rec *model.Recording, source string, o Options, tree *flame.Tree)
 		sorted := append([]float64(nil), ms...)
 		sort.Float64s(sorted)
 		meanMs := mean(sorted)
-		b.addExt("frames.count", "frames", "Frames", metrics.UnitCount, metrics.Neutral, float64(len(ms)))
 		b.add("frames.mean_ms", "frames", "Frame time mean", metrics.UnitMs, metrics.LowerBetter, meanMs)
 		b.add("frames.p50_ms", "frames", "Frame time p50", metrics.UnitMs, metrics.LowerBetter, percentileSorted(sorted, 50))
 		b.add("frames.p95_ms", "frames", "Frame time p95", metrics.UnitMs, metrics.LowerBetter, percentileSorted(sorted, 95))
@@ -394,13 +416,13 @@ func summarize(rec *model.Recording, source string, o Options, tree *flame.Tree)
 		b.add("frames.fps", "frames", "Average FPS", metrics.UnitFPS, metrics.HigherBetter, 1000/meanMs)
 		j16, j33, j50 := 0, 0, 0
 		for _, v := range ms {
-			if v > 16.7 {
+			if v > profile.FrameBudgetMs {
 				j16++
 			}
-			if v > 33.4 {
+			if v > 2*profile.FrameBudgetMs {
 				j33++
 			}
-			if v > 50 {
+			if v > profile.LongTaskBudgetMs {
 				j50++
 			}
 		}
@@ -413,29 +435,59 @@ func summarize(rec *model.Recording, source string, o Options, tree *flame.Tree)
 	var eventSet []string
 	if haveScript {
 		b.addExt("script.total_ms", "script", "Script total", metrics.UnitMs, metrics.LowerBetter, scriptTimeMs)
+		var taskCount, longCount int
+		var taskMs, longMs, blockingMs float64
+		for _, task := range profile.Tasks(rec) {
+			for i := sort.Search(len(win.intervals), func(i int) bool { return win.intervals[i].End > task.StartTime }); i < len(win.intervals) && win.intervals[i].Start < task.EndTime; i++ {
+				active := win.intervals[i]
+				lo, hi := math.Max(active.Start, task.StartTime), math.Min(active.End, task.EndTime)
+				if hi <= lo {
+					continue
+				}
+				ms := (hi - lo) * 1000
+				taskCount++
+				taskMs += ms
+				if ms > profile.LongTaskBudgetMs {
+					longCount++
+					longMs += ms
+					blockingMs += ms - profile.LongTaskBudgetMs
+				}
+			}
+		}
+		b.addExt("script.tasks.count", "script", "Maximal script tasks", metrics.UnitCount, metrics.LowerBetter, float64(taskCount))
+		b.addExt("script.tasks.total_ms", "script", "Maximal script task union time", metrics.UnitMs, metrics.LowerBetter, taskMs)
+		b.add("script.long_tasks.threshold_ms", "script", "Fixed long-task standards threshold", metrics.UnitMs, metrics.Neutral, profile.LongTaskBudgetMs)
+		b.addExt("script.long_tasks.count", "script", "Tasks > 50ms", metrics.UnitCount, metrics.LowerBetter, float64(longCount))
+		b.addExt("script.long_tasks.total_ms", "script", "Long-task union time", metrics.UnitMs, metrics.LowerBetter, longMs)
+		b.addExt("script.long_tasks.tbt_ms", "script", "Task blocking time beyond 50ms", metrics.UnitMs, metrics.LowerBetter, blockingMs)
 		if duration > 0 {
+			b.add("script.long_tasks.tbt_per_10s", "script", "Task blocking time per 10s", metrics.UnitMs, metrics.LowerBetter, blockingMs/duration*10)
+			b.add("script.long_tasks.rate_per_min", "script", "Long-task rate per minute", metrics.UnitCount, metrics.LowerBetter, float64(longCount)/duration*60)
 			b.add("script.busy_ratio", "script", "Script busy ratio", metrics.UnitRatio, metrics.LowerBetter, scriptTimeMs/1000/duration)
 		}
 		for _, et := range sortedKeys(scriptCount) {
 			eventSet = append(eventSet, et)
-			if countOnlyEvents[et] {
+			if profile.CountOnly(et) {
 				b.addExt("script."+et+".count", "script", et+" count", metrics.UnitCount, metrics.LowerBetter, float64(scriptCount[et]))
 				continue
 			}
-			b.timeStats("script."+et, "script", et, scriptMs[et], false)
+			b.timeStats("script."+et, "script", et+" (inclusive record time)", scriptMs[et], false)
+			b.addExt("script."+et+".exclusive_ms", "script", et+" exclusive main-thread work", metrics.UnitMs, metrics.LowerBetter, scriptExclusive[et])
 		}
 	}
 
 	if haveLayout {
 		b.addExt("layout.total_ms", "layout", "Layout total", metrics.UnitMs, metrics.LowerBetter, layoutTimeMs)
 		for _, et := range sortedKeys(layoutCount) {
-			b.timeStats("layout."+et, "layout", et, layoutMs[et], false)
+			b.timeStats("layout."+et, "layout", et+" (inclusive record time)", layoutMs[et], false)
+			b.addExt("layout."+et+".exclusive_ms", "layout", et+" exclusive main-thread work", metrics.UnitMs, metrics.LowerBetter, layoutExclusive[et])
 		}
 	}
 
 	if gcCount > 0 {
-		b.addExt("gc.count", "gc", "GC count", metrics.UnitCount, metrics.LowerBetter, float64(gcCount))
-		b.addExt("gc.total_ms", "gc", "GC total", metrics.UnitMs, metrics.LowerBetter, work.GCMs)
+		b.addExt("gc.count", "gc", "GC collections", metrics.UnitCount, metrics.LowerBetter, float64(gcCount))
+		b.addExt("gc.total_ms", "gc", "GC collector interval union (not main-thread pause time)", metrics.UnitMs, metrics.Neutral, work.GCMs)
+		b.addExt("gc.overlap_with_work_ms", "gc", "GC collector interval overlap with instrumented main-thread work", metrics.UnitMs, metrics.Neutral, work.GCOverlapWithWorkMs)
 	}
 
 	if len(cpuTotal) > 0 {
@@ -487,7 +539,7 @@ func summarize(rec *model.Recording, source string, o Options, tree *flame.Tree)
 		}
 	}
 	applyTree(s, tree)
-	nSamples := len(tree.Samples)
+	nSamples := tree.SampleCount()
 
 	instruments := append([]string(nil), rec.InstrumentTypes...)
 	sort.Strings(instruments)

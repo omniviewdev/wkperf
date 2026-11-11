@@ -71,8 +71,10 @@ Rules:
 - Rank recommendations by expected impact and by effort (e.g. high impact / low effort first).
 - Give concrete, code-level changes rather than generic advice. Consider: React memoization (React.memo, useMemo, useCallback, stable props), list virtualization, avoiding layout thrash (batching DOM reads before writes, no forced synchronous layout), throttling/debouncing handlers, requestAnimationFrame batching, reducing allocations and garbage-collection pressure, moving work to Web Workers, CSS containment (contain, content-visibility), and lazy loading / code splitting.
 - If comparability warnings are listed, or results are marked noisy, low-confidence or single-run, say so explicitly and do not over-claim. A metric that moved within noise is not a finding.
+- Finding confidence rates measured, sampled or hypothesis support with explicit replication. Comparison confidence rates separation of run ranges; it uses a different vocabulary. Neither is proof of causation.
 - For each recommendation, say how to verify it with wkperf: which metric key (or function) should move, in which direction, and roughly by how much; capture again with the same scenario and compare.
 - If the data was truncated, say which conclusions may be affected.
+- GC collector intervals are overlays, not measured main-thread pauses. Input-stall intervals are observed latency, not measured blocking work. Do not infer either cause from interval length.
 
 Output Markdown with exactly these top-level sections, in this order:
 ## Summary
@@ -120,6 +122,7 @@ func BuildComparePrompt(res *compare.Result, base, cand *insights.Report, c Cont
 
 	if res != nil {
 		secs = append(secs, compareSections(res, c)...)
+		secs = append(secs, compareStackSections(res, base, cand, c)...)
 	}
 	// Candidate before baseline: baseline detail is dropped first.
 	if cand != nil {
@@ -267,6 +270,7 @@ const (
 )
 
 func reportSections(label string, r *insights.Report, c Context, idx, offset int) []section {
+	r = insights.SelectEvidence(r)
 	val := func(v int) int { return (v-offset)*10 - idx }
 	head := fmt.Sprintf("## %s: %s", label, clip(oneLine(firstNonEmpty(r.Name, r.Source)), 120))
 	if r.Source != "" && r.Name != "" {
@@ -281,6 +285,7 @@ func reportSections(label string, r *insights.Report, c Context, idx, offset int
 	// sections are never orphaned.
 	out = append(out, section{title: tag + " header", value: val(vFindings) + 1, body: head})
 	out = append(out, rootCauseSections(tag, r.RootCause, c, val(vFindings)+2)...)
+	out = append(out, stackAppendixSection(tag, r, val(vFindings)+1))
 
 	if len(r.Breakdown) > 0 {
 		bd := "### Wall-time breakdown\n"
@@ -291,6 +296,7 @@ func reportSections(label string, r *insights.Report, c Context, idx, offset int
 		bd += strings.Join(parts, ", ") + "\n"
 		out = append(out, section{title: tag + " breakdown", value: val(vBreakdown), body: bd})
 	}
+	out = append(out, measurementSections(tag, r, c, val(vBreakdown))...)
 
 	if len(r.Findings) > 0 {
 		var b strings.Builder
@@ -320,7 +326,7 @@ func reportSections(label string, r *insights.Report, c Context, idx, offset int
 			fmt.Fprintf(&b, "%d. %s — self %sms, total %sms, %s\n",
 				i+1, funcName(h.Name), num(h.SelfMs), num(h.TotalMs), functionLocation(h.Frame()))
 			fmt.Fprintf(&b, "   self reproduce: %s\n   inclusive reproduce: %s\n", insights.FunctionCommand(r, h, "self_ms"), insights.FunctionCommand(r, h, "total_ms"))
-			writeProfileFunction(&b, r, h, c.TopN)
+			writeProfileFunction(&b, r, h)
 		}
 		out = append(out, section{title: tag + " hotspots", value: val(vHotspots), body: b.String()})
 	}
@@ -330,7 +336,7 @@ func reportSections(label string, r *insights.Report, c Context, idx, offset int
 		for i, h := range limitSlice(r.InclusiveHotspots, c.TopN) {
 			fmt.Fprintf(&b, "%d. %s — inclusive %sms, self %sms, %s\n", i+1, funcName(h.Name), num(h.TotalMs), num(h.SelfMs), functionLocation(h.Frame()))
 			fmt.Fprintf(&b, "   inclusive reproduce: %s\n   self reproduce: %s\n", insights.FunctionCommand(r, h, "total_ms"), insights.FunctionCommand(r, h, "self_ms"))
-			writeProfileFunction(&b, r, h, c.TopN)
+			writeProfileFunction(&b, r, h)
 			for _, edge := range limitSlice(h.Callers, 3) {
 				fmt.Fprintf(&b, "   caller: %s @ %s (%sms, %d samples); weight reproduce: %s; samples reproduce: %s\n", funcName(edge.Function.Name), functionLocation(edge.Function), num(edge.WeightMs), edge.Samples, insights.EdgeCommand(r, h, edge, "callers", "weight_ms"), insights.EdgeCommand(r, h, edge, "callers", "samples"))
 			}
@@ -376,10 +382,10 @@ func reportSections(label string, r *insights.Report, c Context, idx, offset int
 
 	if len(r.SlowFrames) > 0 {
 		var b strings.Builder
-		b.WriteString("### Slowest frames\n")
+		fmt.Fprintf(&b, "### Slowest work-bound frames (finding threshold %sms; fixed frame standards use 16.7ms)\n", num(r.JankMs))
 		for i, f := range limitSlice(r.SlowFrames, c.TopN) {
-			fmt.Fprintf(&b, "%d. t=%ss %sms (script %s, layout+style %s, paint+composite %s, gc %s)",
-				i+1, num(f.T), num(f.Ms), num(f.ScriptMs), num(f.LayoutMs), num(f.PaintMs), num(f.GCMs))
+			fmt.Fprintf(&b, "%d. t=%ss observed interval %sms; main-thread work %sms (script %s, layout+style %s, paint+composite %s); GC collector interval overlay %sms, overlap with work %sms",
+				i+1, num(f.T), num(f.Ms), num(f.WorkMs), num(f.ScriptMs), num(f.LayoutMs), num(f.PaintMs), num(f.GCMs), num(f.GCOverlapWithWorkMs))
 			if f.TopEvent != "" {
 				fmt.Fprintf(&b, " event=%s", clip(oneLine(f.TopEvent), 80))
 			}
@@ -393,7 +399,7 @@ func reportSections(label string, r *insights.Report, c Context, idx, offset int
 
 	if len(r.LongTasks) > 0 {
 		var b strings.Builder
-		b.WriteString("### Long tasks (>50ms)\n")
+		fmt.Fprintf(&b, "### Long tasks (maximal overlapping script intervals, >%sms)\nNested events do not count as separate tasks.\n", num(r.LongTaskMs))
 		for i, t := range limitSlice(r.LongTasks, c.TopN) {
 			fmt.Fprintf(&b, "%d. t=%ss %sms %s", i+1, num(t.T), num(t.Ms), clip(oneLine(t.EventType), 60))
 			if t.Detail != "" {
@@ -403,10 +409,39 @@ func reportSections(label string, r *insights.Report, c Context, idx, offset int
 				fmt.Fprintf(&b, " topFunc=%s", clip(oneLine(t.TopFunc), 80))
 			}
 			b.WriteByte('\n')
+			if len(t.Children) > 0 {
+				fmt.Fprintf(&b, "   nested events: %d/%d shown · %s\n", len(t.Children), t.ChildrenTotal, clip(strings.Join(t.Children, ", "), 200))
+			}
 		}
 		out = append(out, section{title: tag + " long tasks", value: val(vLongTasks), body: b.String()})
 	}
 	return out
+}
+
+func measurementSections(label string, r *insights.Report, c Context, value int) []section {
+	var sections []section
+	if r.GCMs > 0 {
+		var b strings.Builder
+		b.WriteString("### GC collections (collector interval overlay, not a measured pause)\nCollector intervals can run concurrently; they are not an exclusive main-thread work slice.\n")
+		fmt.Fprintf(&b, "Collector interval=%sms; overlap with work=%sms.\nReproduce: %s; %s\n", num(r.GCMs), num(r.GCOverlapWithWorkMs), insights.NumericCommand(r, "gc.total_ms"), insights.NumericCommand(r, "gc.overlap_with_work_ms"))
+		sections = append(sections, section{title: label + " GC overlay", value: value, body: b.String()})
+	}
+	if len(r.InputStalls) > 0 {
+		var b strings.Builder
+		fmt.Fprintf(&b, "### Input stalls (%d/%d shown)\nInput arrived without a timely rendering update. Observed interval length is not measured main-thread blocking time. Stalls are excluded from work-bound frame statistics and jank.\n", min(len(r.InputStalls), c.TopN), r.InputStallsTotal)
+		for i, stall := range limitSlice(r.InputStalls, c.TopN) {
+			fmt.Fprintf(&b, "- t=%ss observed interval=%sms; main-thread work=%sms; event=%s", num(stall.T), num(stall.Ms), num(stall.WorkMs), clip(oneLine(stall.TopEvent), 100))
+			if stall.TopFunc != "" {
+				fmt.Fprintf(&b, "; topFunc=%s", clip(oneLine(stall.TopFunc), 80))
+			}
+			if stall.SampleStatus != "" {
+				fmt.Fprintf(&b, "; %s", clip(oneLine(stall.SampleStatus), 200))
+			}
+			fmt.Fprintf(&b, "; reproduce interval: %s; work: %s\n", insights.NumericCommand(r, "inputStalls."+strconv.Itoa(i)+".ms"), insights.NumericCommand(r, "inputStalls."+strconv.Itoa(i)+".work_ms"))
+		}
+		sections = append(sections, section{title: label + " input stalls", value: value + 1, body: b.String()})
+	}
+	return sections
 }
 
 // ---- comparison rendering ----
@@ -520,7 +555,7 @@ func funcList(title string, l []compare.FuncDiff, n int) string {
 		if f.ID != "" {
 			fmt.Fprintf(&b, "   id=%s\n", f.ID)
 		}
-		writeMetricStack(&b, f.CommonStack, n)
+		writeMetricStack(&b, f.CommonStack)
 		if command := f.StackCommand(); command != "" {
 			fmt.Fprintf(&b, "   full stack reproduce: %s\n", command)
 		}

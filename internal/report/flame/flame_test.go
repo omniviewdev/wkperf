@@ -54,7 +54,7 @@ func TestJSONAndSpeedscopeExports(t *testing.T) {
 		t.Fatal(err)
 	}
 	var doc Document
-	if err := json.Unmarshal(out.Bytes(), &doc); err != nil || doc.Schema != Schema || doc.Mode != "profile" || len(doc.Charts) != 1 || doc.Charts[0].Tree.Root.TotalMs != 12 {
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil || doc.Schema != Schema || doc.Mode != "profile" || len(doc.Charts) != 1 || doc.Charts[0].Tree.Nodes[doc.Charts[0].Tree.Root].TotalMs != 12 {
 		t.Fatalf("invalid tree document: %v %s", err, out.String())
 	}
 	out.Reset()
@@ -88,7 +88,7 @@ func TestJSONAndSpeedscopeExports(t *testing.T) {
 	if err := Render(&out, "folded", charts, Options{}); err != nil {
 		t.Fatal(err)
 	}
-	for _, line := range []string{"start@app.js:1:2 5", "start@app.js:1:2;originalWork@src/work.ts:7:8", "start@app.js:1:2;native@native:"} {
+	for _, line := range []string{"start@app.js:1:2 5000", "start@app.js:1:2;originalWork@src/work.ts:7:8", "start@app.js:1:2;native@native:"} {
 		if !strings.Contains(out.String(), line) {
 			t.Errorf("folded output lacks %q: %s", line, out.String())
 		}

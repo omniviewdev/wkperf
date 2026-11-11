@@ -8,6 +8,7 @@ import "github.com/omniviewdev/wkperf/internal/flame"
 type Options struct {
 	Source       string
 	Sourcemaps   []string
+	Ownership    flame.OwnershipRules
 	OffsetSec    float64 // Current recording start relative to the original source.
 	FromSec      float64
 	ToSec        float64
@@ -42,22 +43,38 @@ type Commands struct {
 // Stack is one exact root-to-leaf stack, never an aggregation of unrelated paths.
 // Frame locations retain generated and mapped identities from the recording.
 type Stack struct {
-	Frames   []flame.Frame `json:"frames"`
-	SelfMs   float64       `json:"selfMs"`
-	Samples  int           `json:"samples"`
-	FirstSec float64       `json:"firstSec"`
-	LastSec  float64       `json:"lastSec"`
-	Stats    []Stat        `json:"stats"`
-	Command  string        `json:"command"`
+	StackID        string        `json:"stackId"`
+	Frames         []flame.Frame `json:"-"`
+	SelfMs         float64       `json:"selfMs"`
+	Samples        int           `json:"samples"`
+	UntimedSamples int           `json:"untimedSamples"`
+	FirstSec       *float64      `json:"firstSec"`
+	LastSec        *float64      `json:"lastSec"`
+	Stats          []Stat        `json:"stats"`
+	Command        string        `json:"command"`
 }
 
-// Path follows the heaviest child at every level of the weighted prefix tree.
+// Path follows a supported dominant branch, stopping before a near tie.
 type Path struct {
-	Frames    []flame.Frame `json:"frames"`
-	SampledMs float64       `json:"sampledMs"`
-	Samples   int           `json:"samples"`
-	Stats     []Stat        `json:"stats"`
-	Command   string        `json:"command"`
+	Frames        []flame.Frame `json:"frames"`
+	SampledMs     float64       `json:"sampledMs"`
+	Nodes         []PathNode    `json:"nodes"`
+	Branches      []PathNode    `json:"branches"`
+	BranchesTotal int           `json:"branchesTotal"`
+	StopReason    string        `json:"stopReason"`
+	Samples       int           `json:"samples"`
+	Stats         []Stat        `json:"stats"`
+	Command       string        `json:"command"`
+}
+
+// PathNode keeps inclusive and exclusive estimates distinct at each calling context.
+type PathNode struct {
+	Frame   flame.Frame `json:"frame"`
+	TotalMs float64     `json:"totalMs"`
+	SelfMs  float64     `json:"selfMs"`
+	Share   float64     `json:"share"`
+	Samples int         `json:"samples"`
+	Stats   []Stat      `json:"stats"`
 }
 
 // Owner partitions sampled self time; categories never count inclusive time.
@@ -70,29 +87,77 @@ type Owner struct {
 	Command  string  `json:"command"`
 }
 
-// Attribution charges each framework/native self sample to its closest preceding
-// application frame. TotalMs includes application self and charged self only.
+// Attribution charges framework/native self samples to the nearest non-framework
+// context. Unknown bundled and injected contexts do not establish application ownership.
 type Attribution struct {
-	App         flame.Frame `json:"app"`
+	Frame       flame.Frame `json:"frame"`
 	SelfMs      float64     `json:"selfMs"`
 	FrameworkMs float64     `json:"frameworkMs"`
 	NativeMs    float64     `json:"nativeMs"`
 	TotalMs     float64     `json:"totalMs"`
 	Stacks      []Stack     `json:"stacks"`
+	StacksTotal int         `json:"stacksTotal"`
 	Stats       []Stat      `json:"stats"`
 	Command     string      `json:"command"`
 }
 
+// AttributionUnavailable retains samples with no captured non-framework context.
+type AttributionUnavailable struct {
+	SelfMs      float64 `json:"selfMs"`
+	FrameworkMs float64 `json:"frameworkMs"`
+	NativeMs    float64 `json:"nativeMs"`
+	Samples     int     `json:"samples"`
+	Reason      string  `json:"reason"`
+	Stats       []Stat  `json:"stats"`
+}
+
 // Finding separates measured stack evidence from a suspected explanation.
 type Finding struct {
-	ID          string      `json:"id"`
-	Title       string      `json:"title"`
-	Severity    string      `json:"severity"`
-	Explanation string      `json:"explanation"`
-	Stats       []Stat      `json:"stats"`
-	Evidence    []Stack     `json:"evidence"`
-	Windows     []WindowRef `json:"windows"`
-	Command     string      `json:"command"`
+	ID               string       `json:"id"`
+	Title            string       `json:"title"`
+	Severity         string       `json:"severity,omitempty"`
+	Explanation      string       `json:"explanation"`
+	Stats            []Stat       `json:"stats"`
+	Evidence         []Stack      `json:"-"`
+	EvidenceTotal    int          `json:"evidenceTotal"`
+	Windows          []WindowRef  `json:"windows"`
+	WindowsTotal     int          `json:"windowsTotal"`
+	Command          string       `json:"command"`
+	SampleIDs        []string     `json:"-"`
+	RelatedFindings  []string     `json:"relatedFindings,omitempty"`
+	NativeReads      []NativeRead `json:"nativeReads,omitempty"`
+	NativeReadsTotal int          `json:"nativeReadsTotal"`
+	Depth            *DepthFacets `json:"depth,omitempty"`
+}
+
+// NativeRead names the API's possible flush mechanism and separate timeline support.
+// Timeline overlap corroborates work; it does not prove that this API caused a flush.
+type NativeRead struct {
+	API           string  `json:"api"`
+	Flush         string  `json:"flush"`
+	Samples       int     `json:"samples"`
+	StyleSamples  int     `json:"styleSamples"`
+	LayoutSamples int     `json:"layoutSamples"`
+	SelfMs        float64 `json:"selfMs"`
+	StyleMs       float64 `json:"styleMs"`
+	LayoutMs      float64 `json:"layoutMs"`
+	Stats         []Stat  `json:"stats"`
+}
+
+// RepeatedFrame counts appearances of one exact generated function.
+type RepeatedFrame struct {
+	Frame flame.Frame `json:"frame"`
+	Count int         `json:"count"`
+}
+
+// DepthFacets consolidate one depth observation without calling ordinary React
+// fiber traversal recursion. Recursion requires a short repeated non-framework cycle.
+type DepthFacets struct {
+	MaxDepth         int            `json:"maxDepth"`
+	CommitFrames     int            `json:"commitFrames"`
+	ReactFiberLevels int            `json:"reactFiberLevels"`
+	RepeatedFrame    *RepeatedFrame `json:"repeatedFrame,omitempty"`
+	Recursion        *RepeatedFrame `json:"recursion,omitempty"`
 }
 
 // WindowRef uses recording-relative seconds, directly reusable as query flags.
@@ -100,6 +165,7 @@ type WindowRef struct {
 	FromSec float64 `json:"fromSec"`
 	ToSec   float64 `json:"toSec"`
 	Command string  `json:"command"`
+	Event   string  `json:"event,omitempty"`
 }
 
 // Fire is a deduplicated event or contiguous sample burst for a periodic root.
@@ -114,21 +180,28 @@ type Fire struct {
 }
 
 type PeriodicRoot struct {
-	Root       flame.Frame `json:"root"`
-	TargetID   string      `json:"targetID,omitempty"`
-	FireCount  int         `json:"fireCount"`
-	PeriodMs   float64     `json:"periodMs"`
-	JitterMs   float64     `json:"jitterMs"`
-	Regularity float64     `json:"regularity"`
-	MeanCostMs float64     `json:"meanCostMs"`
-	TotalMs    float64     `json:"totalMs"`
-	Fires      []Fire      `json:"fires"`
-	Evidence   []Stack     `json:"evidence"`
-	Stats      []Stat      `json:"stats"`
-	Command    string      `json:"command"`
+	Root          flame.Frame `json:"root"`
+	TargetID      string      `json:"targetID,omitempty"`
+	FireCount     int         `json:"fireCount"`
+	PeriodMs      float64     `json:"periodMs"`
+	JitterMs      float64     `json:"jitterMs"`
+	Regularity    float64     `json:"regularity"`
+	MeanCostMs    float64     `json:"meanCostMs"`
+	TotalMs       float64     `json:"totalMs"`
+	Fires         []Fire      `json:"fires"`
+	FiresTotal    int         `json:"firesTotal"`
+	Evidence      []Stack     `json:"evidence"`
+	EvidenceTotal int         `json:"evidenceTotal"`
+	Stats         []Stat      `json:"stats"`
+	Command       string      `json:"command"`
+	SampleStatus  string      `json:"sampleStatus,omitempty"`
+	Kind          string      `json:"kind"`
+	RAFFires      int         `json:"rafFires"`
+	InputFires    int         `json:"inputFires"`
+	SampleIDs     []string    `json:"-"`
 }
 
-// EventOverlap measures only temporal intersection with an instrumented GC pause.
+// EventOverlap measures temporal intersection with a collector interval, not a main-thread pause.
 type EventOverlap struct {
 	Event     string  `json:"event"`
 	FromSec   float64 `json:"fromSec"`
@@ -143,6 +216,7 @@ type GCOverlap struct {
 	ToSec       float64        `json:"toSec"`
 	DurationMs  float64        `json:"durationMs"`
 	Events      []EventOverlap `json:"events"`
+	EventsTotal int            `json:"eventsTotal"`
 	Attribution string         `json:"attribution"`
 	Stats       []Stat         `json:"stats"`
 	Command     string         `json:"command"`
@@ -182,28 +256,41 @@ type DepthStats struct {
 	MaxRepeatedFrameDepth int            `json:"maxRepeatedFrameDepth"`
 	MaxCommitDepth        int            `json:"maxCommitDepth"`
 	Outliers              []DepthOutlier `json:"outliers"`
+	OutliersTotal         int            `json:"outliersTotal"`
 	Stats                 []Stat         `json:"stats"`
 	Command               string         `json:"command"`
 }
 
 // Report places the hot path first and keeps timeline and sampled evidence distinct.
 type Report struct {
-	SchemaVersion  string         `json:"schemaVersion"`
-	Source         string         `json:"source"`
-	Sourcemaps     []string       `json:"sourcemaps"`
-	FromSec        float64        `json:"fromSec"`
-	ToSec          float64        `json:"toSec"`
-	HotPath        Path           `json:"hotPath"`
-	Owners         []Owner        `json:"owners"`
-	AppAttribution []Attribution  `json:"appAttribution"`
-	Findings       []Finding      `json:"findings"`
-	PeriodicRoots  []PeriodicRoot `json:"periodicRoots"`
-	GCOverlaps     []GCOverlap    `json:"gcOverlaps"`
-	Windows        []Window       `json:"windows"`
-	LongTasks      []Window       `json:"longTasks"`
-	SlowFrames     []Window       `json:"slowFrames"`
-	EventBursts    []Window       `json:"eventBursts"`
-	Depth          DepthStats     `json:"depth"`
-	Stats          []Stat         `json:"stats"`
-	Commands       Commands       `json:"commands"`
+	Top                     int                    `json:"-"`
+	SchemaVersion           string                 `json:"schemaVersion"`
+	Source                  string                 `json:"source"`
+	SourceMapPaths          []string               `json:"sourceMapPaths"`
+	Ownership               flame.OwnershipRules   `json:"ownership"`
+	FromSec                 float64                `json:"fromSec"`
+	ToSec                   float64                `json:"toSec"`
+	HotPath                 Path                   `json:"hotPath"`
+	Owners                  []Owner                `json:"owners"`
+	ContextAttribution      []Attribution          `json:"contextAttribution"`
+	ContextAttributionTotal int                    `json:"contextAttributionTotal"`
+	ContextUnavailable      AttributionUnavailable `json:"contextUnavailable"`
+	Findings                []Finding              `json:"findings"`
+	PeriodicRoots           []PeriodicRoot         `json:"periodicRoots"`
+	PeriodicRootsTotal      int                    `json:"periodicRootsTotal"`
+	GCOverlaps              []GCOverlap            `json:"gcOverlaps"`
+	GCOverlapsTotal         int                    `json:"gcOverlapsTotal"`
+	Windows                 []Window               `json:"windows"`
+	WindowsTotal            int                    `json:"windowsTotal"`
+	LongTasks               []Window               `json:"longTasks"`
+	LongTasksTotal          int                    `json:"longTasksTotal"`
+	SlowFrames              []Window               `json:"slowFrames"`
+	SlowFramesTotal         int                    `json:"slowFramesTotal"`
+	InputStalls             []Window               `json:"inputStalls"`
+	InputStallsTotal        int                    `json:"inputStallsTotal"`
+	EventBursts             []Window               `json:"eventBursts"`
+	EventBurstsTotal        int                    `json:"eventBurstsTotal"`
+	Depth                   DepthStats             `json:"depth"`
+	Stats                   []Stat                 `json:"stats"`
+	Commands                Commands               `json:"commands"`
 }

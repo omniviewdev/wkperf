@@ -82,10 +82,10 @@ func TestLayoutChainOwnersAndClosestAppAttribution(t *testing.T) {
 	sample(r, .5, 2, app("onResize"), framework("renderWithHooks"))
 	sample(r, .6, 1, model.StackFrame{Name: "unknownNative"})
 	report := build(r)
-	if len(report.HotPath.Frames) != 4 || report.HotPath.Frames[3].Name != "getAnimations" {
+	if len(report.HotPath.Frames) != 1 || report.HotPath.Frames[0].Name != "onResize" || report.HotPath.StopReason != "sample-support" {
 		t.Fatalf("hot path: %+v", report.HotPath)
 	}
-	f := finding(report, "suspected-layout-read")
+	f := finding(report, "forced-style-or-layout-read")
 	if f == nil || len(f.Evidence) != 1 || len(f.Evidence[0].Frames) != 4 {
 		t.Fatalf("missing exact stack evidence: %+v", f)
 	}
@@ -101,7 +101,7 @@ func TestLayoutChainOwnersAndClosestAppAttribution(t *testing.T) {
 		}
 	}
 	near(t, owners["native"], 16)
-	near(t, owners["framework-library"], 2)
+	near(t, owners["framework"], 2)
 	near(t, owners["app"], 3)
 	var total float64
 	for _, v := range owners {
@@ -109,8 +109,8 @@ func TestLayoutChainOwnersAndClosestAppAttribution(t *testing.T) {
 	}
 	near(t, total, 21)
 	attribution := map[string]rootcause.Attribution{}
-	for _, a := range report.AppAttribution {
-		attribution[a.App.Name] = a
+	for _, a := range report.ContextAttribution {
+		attribution[a.Frame.Name] = a
 	}
 	near(t, attribution["measureRows"].NativeMs, 15)
 	near(t, attribution["measureRows"].TotalMs, 15)
@@ -125,12 +125,12 @@ func TestNativeLayoutReadNamesAndAppNameNegative(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			r := recording()
 			sample(r, .1, 2, app("measure"), model.StackFrame{Name: name})
-			if finding(build(r), "suspected-layout-read") == nil {
+			if finding(build(r), "forced-style-or-layout-read") == nil {
 				t.Fatalf("native %s not detected", name)
 			}
 			r = recording()
 			sample(r, .1, 2, app(name))
-			if finding(build(r), "suspected-layout-read") != nil {
+			if finding(build(r), "forced-style-or-layout-read") != nil {
 				t.Fatal("app name mistaken for native read")
 			}
 		})
@@ -140,7 +140,9 @@ func TestNativeLayoutReadNamesAndAppNameNegative(t *testing.T) {
 func TestSynchronousReactRequiresTriggerAndSplitsDistinctSelfFrames(t *testing.T) {
 	r := recording()
 	event(r, "microtask-dispatched", .09, .14)
-	sample(r, .1, 4, app("scheduleUpdate"), framework("performSyncWorkOnRoot"), framework("renderWithHooks"))
+	event(r, "event-dispatched", .08, .15)
+	r.Records[len(r.Records)-1].Details = json.RawMessage(`"click"`)
+	sample(r, .1, 4, app("scheduleUpdate"), framework("performSyncWorkOnRoot"), framework("renderRootSync"), framework("renderWithHooks"))
 	sample(r, .106, 3, app("scheduleUpdate"), framework("performSyncWorkOnRoot"), framework("commitOnFiber"))
 	sample(r, .5, 10, app("scheduleUpdate"), framework("performSyncWorkOnRoot"), framework("renderWithHooks"))
 	f := finding(build(r), "react-sync-in-trigger")
@@ -162,6 +164,7 @@ func TestSynchronousReactRequiresTriggerAndSplitsDistinctSelfFrames(t *testing.T
 func TestPeriodicRootsDeduplicateBurstsAndRejectJitter(t *testing.T) {
 	makePeriodic := func(times []float64) *model.Recording {
 		r := recording()
+		r.EndTime = r.StartTime + 4
 		for _, at := range times {
 			event(r, "timer-fired", at, at+.004)
 			for j := range 3 {
@@ -170,20 +173,20 @@ func TestPeriodicRootsDeduplicateBurstsAndRejectJitter(t *testing.T) {
 		}
 		return r
 	}
-	report := build(makePeriodic([]float64{.1, .2, .3, .4, .5}))
+	report := build(makePeriodic([]float64{.1, .6, 1.1, 1.6, 2.1, 2.6}))
 	if len(report.PeriodicRoots) != 1 {
 		t.Fatalf("periodic roots: %+v", report.PeriodicRoots)
 	}
 	p := report.PeriodicRoots[0]
-	if p.FireCount != 5 {
+	if p.FireCount != 6 {
 		t.Fatalf("samples counted as fires: %+v", p)
 	}
-	near(t, p.PeriodMs, 100)
+	near(t, p.PeriodMs, 500)
 	near(t, p.MeanCostMs, 3)
 	if p.Regularity < .95 || len(p.Evidence) != 1 || p.Command == "" {
 		t.Fatalf("period evidence: %+v", p)
 	}
-	if len(build(makePeriodic([]float64{.1, .2, .385, .43, .9})).PeriodicRoots) != 0 {
+	if len(build(makePeriodic([]float64{.1, .6, 1.585, 2.03, 2.9, 3.4})).PeriodicRoots) != 0 {
 		t.Fatal("jitter accepted as periodic")
 	}
 	r := recording()
@@ -209,8 +212,8 @@ func TestDeepRecursionOutlierAndHealthyDepth(t *testing.T) {
 	if report.Depth.Max != 101 || report.Depth.MaxCommitDepth != 100 || len(report.Depth.Outliers) != 1 {
 		t.Fatalf("depth distribution: %+v", report.Depth)
 	}
-	if finding(report, "deep-recursion") == nil || finding(report, "deep-commit") == nil {
-		t.Fatal("missing recursion/commit findings")
+	if f := finding(report, "deep-stack"); f == nil || f.Depth == nil || f.Depth.Recursion != nil || finding(report, "deep-recursion") != nil || finding(report, "deep-commit") != nil {
+		t.Fatal("React depth facets missing or ordinary traversal called recursion")
 	}
 	if report.Depth.Outliers[0].Command == "" || len(report.Depth.Outliers[0].Stack.Frames) != 101 {
 		t.Fatal("depth evidence not exact")
@@ -233,7 +236,7 @@ func TestNoSamplesWindowTriageAndGCTemporalEvidence(t *testing.T) {
 		t.Fatalf("missing triage: %+v", report)
 	}
 	for _, w := range report.Windows {
-		if w.TopStack != nil || !strings.Contains(w.SampleStatus, "No overlapping") || !strings.Contains(w.Command, "--from") || !strings.Contains(w.Command, "--to") {
+		if w.TopStack != nil || !strings.Contains(w.SampleStatus, "No overlapping") || !strings.Contains(w.Command, " rootcause 'triage.") || !strings.Contains(w.Command, ".duration_ms'") {
 			t.Fatalf("absent sample evidence: %+v", w)
 		}
 	}
@@ -270,7 +273,9 @@ func TestClippedWindowLinksHeaviestOverlappingStack(t *testing.T) {
 
 func TestMappedFrameRetainsGeneratedIdentityAndOwner(t *testing.T) {
 	r := recording()
-	sample(r, .1, 5, app("caller"), model.StackFrame{Name: "minified", URL: "https://app.test/chunk.js", Line: 2, Column: 5})
+	for i := range 5 {
+		sample(r, .1+float64(i)*.001, 1, app("caller"), model.StackFrame{Name: "minified", URL: "https://app.test/chunk.js", Line: 2, Column: 5})
+	}
 	tree := flame.Build(r, flame.Options{Mapper: func(f model.StackFrame) *flame.Location {
 		if f.Name == "minified" {
 			return &flame.Location{Name: "libraryFn", URL: "webpack:///node_modules/library/index.js", Line: 55, Column: 6}
@@ -278,7 +283,7 @@ func TestMappedFrameRetainsGeneratedIdentityAndOwner(t *testing.T) {
 		return nil
 	}})
 	report := rootcause.Build(r, tree, rootcause.Options{Source: "capture.json"})
-	near(t, report.AppAttribution[0].FrameworkMs, 5)
+	near(t, report.ContextAttribution[0].FrameworkMs, 5)
 	frame := report.HotPath.Frames[1]
 	if frame.URL != "https://app.test/chunk.js" || frame.Original == nil || frame.Original.URL != "webpack:///node_modules/library/index.js" {
 		t.Fatalf("generated/mapped locations lost: %+v", frame)

@@ -1,12 +1,36 @@
 package flame
 
 import (
+	"math"
 	"slices"
 	"strconv"
 	"strings"
 )
 
-var foldedEscapes = strings.NewReplacer("\\", "\\\\", ";", "\\;", " ", "\\ ", "\t", "\\t", "\n", "\\n", "\r", "\\r")
+// FoldedLabel preserves spaces and backslashes, which collapsed-stack importers
+// treat literally. Percent encoding protects separators and ASCII controls;
+// encoding percent itself prevents distinct labels from colliding.
+func FoldedLabel(label string) string {
+	const hex = "0123456789ABCDEF"
+	var out strings.Builder
+	start := 0
+	for i := range len(label) {
+		b := label[i]
+		if b != '%' && b != ';' && b >= 0x20 && b != 0x7f {
+			continue
+		}
+		out.WriteString(label[start:i])
+		out.WriteByte('%')
+		out.WriteByte(hex[b>>4])
+		out.WriteByte(hex[b&15])
+		start = i + 1
+	}
+	if start == 0 {
+		return label
+	}
+	out.WriteString(label[start:])
+	return out.String()
+}
 
 func foldedPath(frames []Frame) string {
 	var out strings.Builder
@@ -14,12 +38,14 @@ func foldedPath(frames []Frame) string {
 		if i != 0 {
 			out.WriteByte(';')
 		}
-		out.WriteString(foldedEscapes.Replace(FrameLabel(frame)))
+		out.WriteString(FoldedLabel(FrameLabel(frame)))
 	}
 	return out.String()
 }
 
-func weightString(value float64) string { return strconv.FormatFloat(value, 'f', -1, 64) }
+func weightString(value float64) string {
+	return strconv.FormatFloat(math.Round(value*1000), 'f', 0, 64)
+}
 
 type foldedWeight struct {
 	weight sum
@@ -39,7 +65,8 @@ func (tree *Tree) foldedWeights() map[string]*foldedWeight {
 	return out
 }
 
-// Folded uses escaped, location-qualified labels and millisecond weights.
+// Folded emits location-qualified labels and integer microsecond weights.
+// Rounding occurs once per emitted stack, after aggregating exact sample weights.
 func (tree *Tree) Folded() string {
 	weights := tree.foldedWeights()
 	labels := make([]string, 0, len(weights))
@@ -57,7 +84,7 @@ func (tree *Tree) Folded() string {
 	return out.String()
 }
 
-// FoldedDiff emits sorted stacks with before and after millisecond weights.
+// FoldedDiff emits sorted stacks with raw before and after integer microseconds.
 func FoldedDiff(before, after *Tree) string {
 	type pair struct {
 		frames        []Frame

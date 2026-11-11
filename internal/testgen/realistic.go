@@ -101,7 +101,7 @@ func GetAnimations() *model.Recording {
 	measure := model.StackFrame{Name: "measureRows", URL: "https://app.test/src/rows.js", Line: 40, Column: 7}
 	commit := model.StackFrame{Name: "commitOnFiber", URL: "https://app.test/node_modules/react-dom/index.js", Line: 80, Column: 2}
 	native := model.StackFrame{Name: "getAnimations", SourceID: "native", Line: -1, Column: -1}
-	rec.Records = append(rec.Records, frameRecord(1, 1.08), scriptRecord("observer-callback-fired", 1, 1.08))
+	rec.Records = append(rec.Records, frameRecord(1, 1.08), scriptRecord("observer-callback", 1, 1.08))
 	rec.Samples = []model.TargetSamples{{Target: target(), StackTraces: []model.StackTrace{
 		{Timestamp: 1.01, StackFrames: []model.StackFrame{native, commit, measure, app}},
 		{Timestamp: 1.03, StackFrames: []model.StackFrame{commit, measure, app}},
@@ -110,25 +110,28 @@ func GetAnimations() *model.Recording {
 	return rec
 }
 
-// React includes render and commit samples inside a microtask, and an identical
-// outside sample that must not be attributed to that microtask.
+// React includes render and commit samples inside a click's scheduling
+// microtask, and an outside sync sample with no identifiable trigger.
 func React() *model.Recording {
 	rec := Empty()
 	rec.DisplayName = "React microtask attribution"
 	app := model.StackFrame{Name: "updateRows", URL: "https://app.test/src/rows.tsx", Line: 30, Column: 5}
 	render := model.StackFrame{Name: "renderWithHooks", URL: "https://app.test/node_modules/react-dom/client.js", Line: 200, Column: 1}
+	renderRoot := model.StackFrame{Name: "renderRootSync", URL: render.URL, Line: 150, Column: 1}
 	commit := model.StackFrame{Name: "commitRoot", URL: render.URL, Line: 400, Column: 1}
 	syncRoot := model.StackFrame{Name: "performSyncWorkOnRoot", URL: render.URL, Line: 100, Column: 1}
-	rec.Records = append(rec.Records, frameRecord(1, 1.09), scriptRecord("microtask-fired", 1, 1.08))
+	click := scriptRecord("event-dispatched", 1, 1.085)
+	click.Details = json.RawMessage(`"click"`)
+	rec.Records = append(rec.Records, frameRecord(1, 1.09), click, scriptRecord("microtask-dispatched", 1.005, 1.08))
 	rec.Samples = []model.TargetSamples{{Target: target(), StackTraces: []model.StackTrace{
-		{Timestamp: 1.01, StackFrames: []model.StackFrame{render, syncRoot, app}},
+		{Timestamp: 1.01, StackFrames: []model.StackFrame{render, renderRoot, syncRoot, app}},
 		{Timestamp: 1.04, StackFrames: []model.StackFrame{commit, syncRoot, app}},
 		{Timestamp: 2, StackFrames: []model.StackFrame{commit, syncRoot, app}},
 	}, Durations: []float64{.020, .015, .050}}}
 	return rec
 }
 
-// Periodic has five timer firings with three samples per firing. Sampling count
+// Periodic has six timer firings with three samples per firing. Sampling count
 // must not inflate the measured timer-fire count used for cadence evidence.
 func Periodic() *model.Recording {
 	rec := Empty()
@@ -136,7 +139,7 @@ func Periodic() *model.Recording {
 	root := model.StackFrame{Name: "pollStatus", URL: "https://app.test/src/poll.js", Line: 10, Column: 1}
 	leaf := model.StackFrame{Name: "refreshCache", URL: root.URL, Line: 20, Column: 1}
 	samples := model.TargetSamples{Target: target()}
-	for i := 1; i <= 5; i++ {
+	for i := 1; i <= 6; i++ {
 		start := float64(i)
 		r := scriptRecord("timer-fired", start, start+.006)
 		r.Details = json.RawMessage(`{"timerId":7}`)
@@ -161,4 +164,52 @@ func PausedMinified() *model.Recording {
 // MinifiedSourceMap resolves two same-line generated functions with names.
 func MinifiedSourceMap() string {
 	return `{"version":3,"file":"bundle.js","sourceRoot":"../src","sources":["view.ts"],"names":["render","flush"],"mappings":"AAAAA,UACIC"}`
+}
+
+// UntimedSamples has 40 missing-clock samples and 10 timed samples: 80 ms total.
+// Whole-recording aggregates include all 50; partial windows include timed only.
+func UntimedSamples() *model.Recording {
+	rec := Empty()
+	rec.DisplayName = "Untimed samples"
+	rec.StartTime, rec.EndTime = 10, 12
+	rec.Records = []model.Record{
+		scriptRecord("timer-fired", 10.2, 10.3),
+		scriptRecord("timer-fired", 11, 11.04),
+	}
+	root := model.StackFrame{Name: "appRoot", URL: "https://a.test/app.js", Line: 1, Column: 1}
+	untimed := model.StackFrame{Name: "untimedLeaf", URL: root.URL, Line: 10, Column: 1}
+	shared := model.StackFrame{Name: "sharedLeaf", URL: root.URL, Line: 20, Column: 1}
+	target := model.TargetSamples{Target: target(), StackTraces: make([]model.StackTrace, 0, 50), Durations: make([]float64, 0, 50)}
+	for i := range 50 {
+		leaf, timestamp, weight := shared, 0.0, .001
+		if i < 25 {
+			leaf = untimed
+		}
+		if i >= 40 {
+			timestamp, weight = 11+float64(i-40)*.004, .004
+		}
+		target.StackTraces = append(target.StackTraces, model.StackTrace{Timestamp: timestamp, StackFrames: []model.StackFrame{leaf, root}})
+		target.Durations = append(target.Durations, weight)
+	}
+	rec.Samples = []model.TargetSamples{target}
+	return rec
+}
+
+// DecimalEnd exercises a whole-recording end rounded down to nine decimals.
+func DecimalEnd() *model.Recording {
+	rec := UntimedSamples()
+	rec.DisplayName = "Decimal recording end"
+	start := 2.611872458306607
+	shift := start - rec.StartTime
+	rec.StartTime, rec.EndTime = start, 20.24081204162212
+	for i := range rec.Records {
+		rec.Records[i].StartTime += shift
+		rec.Records[i].EndTime += shift
+	}
+	for i := range rec.Samples[0].StackTraces {
+		if rec.Samples[0].StackTraces[i].Timestamp != 0 {
+			rec.Samples[0].StackTraces[i].Timestamp += shift
+		}
+	}
+	return rec
 }

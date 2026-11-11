@@ -1,12 +1,11 @@
 // Package flame renders shared flame trees without combining unrelated recordings.
-// JSON documents use schema wkperf-flame/v1 and mode profile or diff. Every chart
-// is one recording; differential charts retain both inputs and their context delta.
-// Durations are milliseconds. Tree samples and folded stacks remain root-to-leaf.
+// JSON documents use compact, interned schema wkperf-flame/v2. Every chart keeps
+// one recording; differential charts retain raw inputs and normalized deltas.
+// Raw durations are milliseconds. Folded weights use integer microseconds.
 // Invert and MinMS affect visual layout only, never exported sample weights.
 package flame
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -16,16 +15,19 @@ import (
 	core "github.com/omniviewdev/wkperf/internal/flame"
 )
 
-const Schema = "wkperf-flame/v1"
-
 // Chart keeps each recording separate. A differential chart supplies Before,
 // After, and Comparison instead of Tree. Labels identify original inputs.
 type Chart struct {
-	Label      string           `json:"label"`
-	Tree       *core.Tree       `json:"tree,omitempty"`
-	Before     *core.Tree       `json:"before,omitempty"`
-	After      *core.Tree       `json:"after,omitempty"`
-	Comparison *core.Comparison `json:"comparison,omitempty"`
+	Label           string           `json:"label"`
+	Tree            *core.Tree       `json:"tree,omitempty"`
+	Before          *core.Tree       `json:"before,omitempty"`
+	After           *core.Tree       `json:"after,omitempty"`
+	Comparison      *core.Comparison `json:"comparison,omitempty"`
+	UntimedSamples  int              `json:"untimedSamples"`
+	UntimedMs       float64          `json:"untimedMs"`
+	UntimedExcluded bool             `json:"untimedExcluded"`
+	Empty           bool             `json:"empty"`
+	EmptyReason     string           `json:"emptyReason,omitempty"`
 }
 
 // Options controls presentation. MinMS hides smaller visual contexts, not time.
@@ -33,16 +35,6 @@ type Options struct {
 	Title  string  `json:"title,omitempty"`
 	Invert bool    `json:"invert"`
 	MinMS  float64 `json:"minMs"`
-}
-
-// Document is the versioned JSON tree export. Mode discriminates profile charts
-// (tree) from differential charts (before, after, comparison). Parent references
-// are excluded by the shared engine, so every tree is an acyclic JSON value.
-type Document struct {
-	Schema string  `json:"schema"`
-	Mode   string  `json:"mode"`
-	Charts []Chart `json:"charts"`
-	View   Options `json:"view"`
 }
 
 // Render writes one of html, svg, folded, speedscope, or json.
@@ -60,12 +52,90 @@ func Render(w io.Writer, format string, charts []Chart, opts Options) error {
 	case "speedscope":
 		return renderSpeedscope(w, charts)
 	case "json":
-		enc := json.NewEncoder(w)
-		enc.SetIndent("", "  ")
-		return enc.Encode(Document{Schema: Schema, Mode: mode(charts), Charts: charts, View: opts})
+		return renderJSON(w, charts, opts)
 	default:
 		return fmt.Errorf("unknown flame format %q (want html|svg|folded|speedscope|json)", format)
 	}
+}
+
+func chartMetadata(chart Chart) Chart {
+	chart.UntimedSamples, chart.UntimedMs, chart.UntimedExcluded = 0, 0, false
+	chart.Empty, chart.EmptyReason = false, ""
+	add := func(tree *core.Tree) {
+		chart.UntimedSamples += tree.UntimedTotal.Count
+		chart.UntimedMs += tree.UntimedTotal.Ms
+		chart.UntimedExcluded = chart.UntimedExcluded || tree.UntimedTotal.Count > 0 && !tree.UntimedIncluded
+	}
+	if chart.Comparison != nil {
+		add(chart.Before)
+		add(chart.After)
+		chart.Empty = chart.Before.Root.TotalMs == 0 && chart.After.Root.TotalMs == 0
+		if chart.Empty {
+			chart.EmptyReason = "no weighted samples in baseline or current selected window"
+		}
+	} else {
+		add(chart.Tree)
+		chart.Empty = chart.Tree.Root.TotalMs == 0
+		if chart.Empty {
+			chart.EmptyReason = emptyReason(chart.Tree)
+			if note := exclusionNote(chart.Tree); note != "" {
+				chart.EmptyReason += "; " + note
+			}
+		}
+	}
+	return chart
+}
+
+func exclusionNote(tree *core.Tree) string {
+	if tree.UntimedIncluded || tree.UntimedTotal.Count == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d samples (%g ms) have no timestamp and are excluded from this window", tree.UntimedTotal.Count, tree.UntimedTotal.Ms)
+}
+
+func emptyReason(tree *core.Tree) string {
+	return fmt.Sprintf("no weighted samples in %.3f–%.3f s (%s ms active)", tree.StartTime, tree.EndTime, milliseconds(tree.ActiveDurationMs))
+}
+
+// WriteNotes reports valid empty selections and untimed exclusions without
+// adding nonstandard fields or comments to folded and speedscope exports.
+func WriteNotes(w io.Writer, charts []Chart) error {
+	write := func(label string, tree *core.Tree) error {
+		note := exclusionNote(tree)
+		if tree.Root.TotalMs == 0 {
+			if note != "" {
+				note += "; "
+			}
+			note += emptyReason(tree)
+		}
+		if note == "" {
+			return nil
+		}
+		if len(charts) == 1 && charts[0].Comparison == nil {
+			_, err := fmt.Fprintf(w, "wkperf: %s\n", note)
+			return err
+		}
+		_, err := fmt.Fprintf(w, "wkperf: %s: %s\n", label, note)
+		return err
+	}
+	for _, chart := range charts {
+		if chart.Comparison != nil {
+			for _, warning := range chart.Comparison.Normalization.Warnings {
+				if _, err := fmt.Fprintf(w, "wkperf: %s: [%s] %s\n", chart.Label, warning.Code, warning.Message); err != nil {
+					return err
+				}
+			}
+			if err := write(chart.Label+" · baseline", chart.Before); err != nil {
+				return err
+			}
+			if err := write(chart.Label+" · current", chart.After); err != nil {
+				return err
+			}
+		} else if err := write(chart.Label, chart.Tree); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func validate(charts []Chart, opts Options) error {
@@ -83,6 +153,9 @@ func validate(charts []Chart, opts Options) error {
 		if diff {
 			if chart.Comparison.Root == nil || chart.Before == nil || chart.After == nil || chart.Before.Root == nil || chart.After.Root == nil {
 				return fmt.Errorf("differential chart %q requires before and after trees", chart.Label)
+			}
+			if _, err := core.ParseDiffMode(string(chart.Comparison.Normalization.RequestedMode)); err != nil {
+				return fmt.Errorf("differential chart %q: %w", chart.Label, err)
 			}
 		} else if chart.Tree == nil || chart.Tree.Root == nil {
 			return fmt.Errorf("chart %q has no tree", chart.Label)
@@ -119,8 +192,6 @@ func percent(v, total float64) string {
 	return strconv.FormatFloat(100*v/total, 'f', 2, 64) + "%"
 }
 
-var foldedLabelEscapes = strings.NewReplacer("\\", "\\\\", ";", "\\;", " ", "\\ ", "\t", "\\t", "\n", "\\n", "\r", "\\r")
-
 func renderFolded(w io.Writer, charts []Chart) error {
 	for _, chart := range charts {
 		var folded string
@@ -130,7 +201,7 @@ func renderFolded(w io.Writer, charts []Chart) error {
 			folded = chart.Tree.Folded()
 		}
 		if len(charts) > 1 {
-			prefix := foldedLabelEscapes.Replace(chart.Label) + ";"
+			prefix := core.FoldedLabel(chart.Label) + ";"
 			for _, line := range strings.Split(strings.TrimSuffix(folded, "\n"), "\n") {
 				if line == "" {
 					continue
@@ -226,7 +297,8 @@ func diffNodeView(node *core.NodeDelta, inverted bool) *viewNode {
 func chartView(chart Chart, invert bool) *viewNode {
 	if chart.Comparison != nil {
 		if invert {
-			return diffNodeView(core.Diff(chart.Before.Inverted(), chart.After.Inverted()).Root, true)
+			comparison, _ := core.DiffNormalized(chart.Before.Inverted(), chart.After.Inverted(), chart.Comparison.Normalization.RequestedMode)
+			return diffNodeView(comparison.Root, true)
 		}
 		return diffView(chart.Comparison.Root)
 	}
@@ -277,40 +349,4 @@ func frameName(frame core.Frame) string {
 
 func location(frame core.Frame) string {
 	return fmt.Sprintf("%s:%d:%d", frame.URL, frame.Line, frame.Column)
-}
-
-func tooltip(node, root *viewNode, diff bool) string {
-	text := frameName(node.Frame) + "\nGenerated: " + node.Frame.Name + " · " + location(node.Frame)
-	if node.Original != nil {
-		text += fmt.Sprintf("\nOriginal: %s · %s:%d:%d", node.Original.Name, node.Original.URL, node.Original.Line, node.Original.Column)
-	}
-	text += "\nCategory: " + string(node.Category)
-	text += "\nSelf: " + milliseconds(node.SelfMS) + " ms (" + percent(node.SelfMS, root.TotalMS) + ")"
-	text += "\nTotal: " + milliseconds(node.TotalMS) + " ms (" + percent(node.TotalMS, root.TotalMS) + ")"
-	if diff {
-		text += fmt.Sprintf("\nBaseline: %s ms\nCurrent: %s ms\nDelta: %+.3f ms", milliseconds(node.BaselineMS), milliseconds(node.CurrentMS), node.DeltaMS)
-	}
-	return text
-}
-
-func fill(node *viewNode, diff bool) string {
-	if diff {
-		if node.DeltaMS > 0 {
-			return "#dc3c41"
-		}
-		if node.DeltaMS < 0 {
-			return "#239669"
-		}
-		return "#718096"
-	}
-	switch node.Category {
-	case core.CategoryFramework:
-		return "#a78bfa"
-	case core.CategoryNative:
-		return "#94a3b8"
-	case core.CategoryGC:
-		return "#fbbf24"
-	default:
-		return "#60a5fa"
-	}
 }

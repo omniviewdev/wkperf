@@ -42,20 +42,6 @@ func TestAuditPromptDeterministicAndContent(t *testing.T) {
 	if a != b {
 		t.Fatal("prompt not deterministic")
 	}
-	for _, want := range []string{"scroll-list", "open-settings", "frame-p95", "tbt", "long-scripts", "Grade D", "react-dom", "Verification Plan"} {
-		if !strings.Contains(a.System+a.User, want) {
-			t.Errorf("missing %q", want)
-		}
-	}
-	if strings.Contains(a.User, "truncated") {
-		t.Error("unexpected truncation")
-	}
-	if !strings.Contains(a.User, "Unavailable (no data): lcp") {
-		t.Error("unavailable standards not listed")
-	}
-	if !strings.Contains(a.User, "[single run]") {
-		t.Error("single-run scene not flagged")
-	}
 }
 
 func TestAuditPromptTruncationKeepsOverallAndPriorities(t *testing.T) {

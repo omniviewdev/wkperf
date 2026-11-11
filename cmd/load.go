@@ -10,8 +10,10 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/omniviewdev/wkperf/internal/analyze"
+	"github.com/omniviewdev/wkperf/internal/diagnostic"
 	"github.com/omniviewdev/wkperf/internal/metrics"
 	"github.com/omniviewdev/wkperf/internal/model"
+	"github.com/omniviewdev/wkperf/internal/profile"
 	"github.com/omniviewdev/wkperf/internal/sourcemap"
 )
 
@@ -22,7 +24,7 @@ func expandPaths(paths []string) ([]string, error) {
 	for _, p := range paths {
 		st, err := os.Stat(p)
 		if err != nil {
-			return nil, err
+			return nil, diagnostic.Wrap(diagnostic.LoadError, p, err)
 		}
 		if !st.IsDir() {
 			files = append(files, p)
@@ -41,7 +43,7 @@ func expandPaths(paths []string) ([]string, error) {
 			}
 		}
 		if n == 0 {
-			return nil, fmt.Errorf("%s: directory contains no .json files", p)
+			return nil, diagnostic.Wrap(diagnostic.InputError, p, fmt.Errorf("directory contains no .json files"))
 		}
 	}
 	return files, nil
@@ -71,6 +73,9 @@ func loadGroup(cmd *cobra.Command, paths []string, wo analyze.Options) ([]*loade
 		if err != nil {
 			return nil, nil, err
 		}
+		if _, _, err := windowBounds(rec, wo); err != nil {
+			return nil, nil, diagnostic.Wrap(diagnostic.WindowError, f, err)
+		}
 		out = append(out, &loaded{Sum: analyze.SummarizeWith(rec, f, wo), Rec: rec, SourceMap: diagnostics})
 	}
 	return out, files, nil
@@ -84,72 +89,34 @@ func summaries(ls []*loaded) []*metrics.Summary {
 	return out
 }
 
-// clipRecording returns rec restricted to the window wo, with the same
-// semantics as analyze.SummarizeWith: spans are clipped, instants and samples
-// kept by timestamp. Times stay absolute; StartTime/EndTime become the window.
-// It returns rec itself when the window covers the whole recording.
-func clipRecording(rec *model.Recording, wo analyze.Options) (*model.Recording, error) {
-	lo := rec.StartTime + math.Max(0, math.Max(wo.TrimStartSec, wo.FromSec))
-	hi := rec.EndTime - math.Max(0, wo.TrimEndSec)
+// windowBounds validates the shared recording-relative selection before any
+// metrics or grades are computed. Stopped capture time is not active evidence.
+func windowBounds(rec *model.Recording, wo analyze.Options) (lo, hi float64, err error) {
+	lo = rec.StartTime + math.Max(0, math.Max(wo.TrimStartSec, wo.FromSec))
+	hi = rec.EndTime - math.Max(0, wo.TrimEndSec)
 	if wo.ToSec > 0 {
 		hi = math.Min(hi, rec.StartTime+wo.ToSec)
 	}
-	if lo == rec.StartTime && hi == rec.EndTime {
+	if hi <= lo {
+		return lo, hi, fmt.Errorf("window is empty: %.2fs..%.2fs of a %.2fs recording", lo-rec.StartTime, hi-rec.StartTime, rec.EndTime-rec.StartTime)
+	}
+	if profile.ActiveDuration(rec, lo, hi) <= 0 {
+		return lo, hi, fmt.Errorf("window has no active capture time: %.2fs..%.2fs of a %.2fs recording", lo-rec.StartTime, hi-rec.StartTime, rec.EndTime-rec.StartTime)
+	}
+	return lo, hi, nil
+}
+
+// clipRecording returns rec restricted to the window wo, with the same
+// semantics as analyze.SummarizeWith. Untimed samples and their original span
+// metadata survive clipping but are excluded from windowed sample aggregates.
+// It returns rec itself when the window covers the whole recording.
+func clipRecording(rec *model.Recording, wo analyze.Options) (*model.Recording, error) {
+	lo, hi, err := windowBounds(rec, wo)
+	if err != nil {
+		return nil, err
+	}
+	if profile.CoversRecording(rec, lo-rec.StartTime, hi-rec.StartTime) {
 		return rec, nil
 	}
-	if hi <= lo {
-		return nil, fmt.Errorf("window is empty: %.2fs..%.2fs of a %.2fs recording", lo-rec.StartTime, hi-rec.StartTime, rec.EndTime-rec.StartTime)
-	}
-	at := func(t float64) bool { return t >= lo && t < hi }
-	out := *rec
-	out.StartTime, out.EndTime = lo, hi
-	out.Records = make([]model.Record, 0, len(rec.Records))
-	for _, r := range rec.Records {
-		span := r.StartTime != 0 || r.EndTime != 0
-		switch {
-		case !span:
-			if !at(r.Timestamp) {
-				continue
-			}
-		case r.EndTime <= r.StartTime:
-			if !at(r.StartTime) {
-				continue
-			}
-		default:
-			if r.EndTime <= lo || r.StartTime >= hi {
-				continue
-			}
-			r.StartTime = math.Max(r.StartTime, lo)
-			r.EndTime = math.Min(r.EndTime, hi)
-		}
-		out.Records = append(out.Records, r)
-	}
-	out.Markers = nil
-	for _, m := range rec.Markers {
-		if at(m.Time) {
-			out.Markers = append(out.Markers, m)
-		}
-	}
-	out.MemoryPressureEvents = nil
-	for _, m := range rec.MemoryPressureEvents {
-		if at(m.Timestamp) {
-			out.MemoryPressureEvents = append(out.MemoryPressureEvents, m)
-		}
-	}
-	out.Samples = nil
-	for _, ts := range rec.Samples {
-		n := ts
-		n.StackTraces, n.Durations = nil, nil
-		for i, st := range ts.StackTraces {
-			if !at(st.Timestamp) {
-				continue
-			}
-			n.StackTraces = append(n.StackTraces, st)
-			if i < len(ts.Durations) {
-				n.Durations = append(n.Durations, ts.Durations[i])
-			}
-		}
-		out.Samples = append(out.Samples, n)
-	}
-	return &out, nil
+	return profile.Clip(rec, lo, hi), nil
 }

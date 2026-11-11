@@ -18,6 +18,20 @@ type Interval struct {
 	End   float64 `json:"end"`
 }
 
+// CoversRecording accepts nanosecond-rounded bounds for a whole recording.
+func CoversRecording(rec *model.Recording, fromRel, toRel float64) bool {
+	return rec != nil && fromRel <= 1e-9 && toRel >= rec.EndTime-rec.StartTime-1e-9
+}
+
+// UntimedTimestamp distinguishes missing sampler clocks from a real zero origin.
+func UntimedTimestamp(rec *model.Recording, timestamp float64) bool {
+	start := rec.StartTime
+	if rec.SampleEvidence != nil {
+		start = rec.SampleEvidence.StartTime
+	}
+	return !finite(timestamp) || timestamp == 0 && start > 0
+}
+
 // ActiveIntervals subtracts the union of stopped/resumed capture intervals.
 // WebKit TimelineRecording exports discontinuities as {startTime,endTime}.
 func ActiveIntervals(rec *model.Recording, start, end float64) []Interval {
@@ -72,19 +86,18 @@ func Contains(intervals []Interval, timestamp float64) bool {
 	return i < len(intervals) && intervals[i].Start <= timestamp
 }
 
-// Occupancy partitions measured interval coverage into exclusive categories.
-// More specialized records replace enclosing script coverage. Where exported
-// overlaps lose nesting, precedence is GC, composite, paint, layout, style,
-// script. The partition never exceeds observed active wall time.
+// Occupancy partitions main-thread work by its innermost original record.
+// Collector intervals form a separate overlay, not a main-thread work category.
 type Occupancy struct {
-	ScriptMs    float64 `json:"scriptMs"`
-	StyleMs     float64 `json:"styleMs"`
-	LayoutMs    float64 `json:"layoutMs"`
-	PaintMs     float64 `json:"paintMs"`
-	CompositeMs float64 `json:"compositeMs"`
-	GCMs        float64 `json:"gcMs"`
-	WorkMs      float64 `json:"workMs"`
-	DurationMs  float64 `json:"durationMs"`
+	ScriptMs            float64 `json:"scriptMs"`
+	StyleMs             float64 `json:"styleMs"`
+	LayoutMs            float64 `json:"layoutMs"`
+	PaintMs             float64 `json:"paintMs"`
+	CompositeMs         float64 `json:"compositeMs"`
+	GCMs                float64 `json:"gcMs"`
+	GCOverlapWithWorkMs float64 `json:"gcOverlapWithWorkMs"`
+	WorkMs              float64 `json:"workMs"`
+	DurationMs          float64 `json:"durationMs"`
 }
 
 const (
@@ -93,17 +106,13 @@ const (
 	kindLayout
 	kindPaint
 	kindComposite
-	kindGC
 	kindCount
 )
 
-type endpoint struct {
-	time        float64
-	kind, delta int
-}
 type workSpan struct {
 	start, end float64
 	kind       int
+	owner      int
 }
 
 func finite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
@@ -127,10 +136,10 @@ func CountOnly(eventType string) bool {
 }
 
 func category(r model.Record) (int, bool) {
+	if IsGC(r) {
+		return 0, false
+	}
 	if r.Type == model.TypeScript {
-		if IsGC(r) {
-			return kindGC, true
-		}
 		return kindScript, !CountOnly(r.EventType)
 	}
 	if r.Type != model.TypeLayout {
@@ -148,58 +157,7 @@ func category(r model.Record) (int, bool) {
 	}
 }
 
-func exclusiveSpans(rec *model.Recording, active []Interval) []workSpan {
-	points := make([]endpoint, 0, len(rec.Records)*2)
-	for _, r := range rec.Records {
-		kind, ok := category(r)
-		if !ok || !finite(r.StartTime) || !finite(r.EndTime) || r.EndTime <= r.StartTime {
-			continue
-		}
-		i := sort.Search(len(active), func(i int) bool { return active[i].End > r.StartTime })
-		for ; i < len(active) && active[i].Start < r.EndTime; i++ {
-			lo, hi := math.Max(active[i].Start, r.StartTime), math.Min(active[i].End, r.EndTime)
-			if hi > lo {
-				points = append(points, endpoint{lo, kind, 1}, endpoint{hi, kind, -1})
-			}
-		}
-	}
-	sort.Slice(points, func(i, j int) bool {
-		if points[i].time != points[j].time {
-			return points[i].time < points[j].time
-		}
-		if points[i].kind != points[j].kind {
-			return points[i].kind < points[j].kind
-		}
-		return points[i].delta < points[j].delta
-	})
-	var counts [kindCount]int
-	spans := make([]workSpan, 0, len(points)/2)
-	for i := 0; i < len(points); {
-		t := points[i].time
-		for i < len(points) && points[i].time == t {
-			counts[points[i].kind] += points[i].delta
-			i++
-		}
-		if i == len(points) {
-			break
-		}
-		for kind := kindCount - 1; kind >= 0; kind-- {
-			if counts[kind] <= 0 {
-				continue
-			}
-			end := points[i].time
-			if len(spans) > 0 && spans[len(spans)-1].kind == kind && spans[len(spans)-1].end == t {
-				spans[len(spans)-1].end = end
-			} else {
-				spans = append(spans, workSpan{t, end, kind})
-			}
-			break
-		}
-	}
-	return spans
-}
-
-func occupancy(spans []workSpan, active []Interval, start, end float64) Occupancy {
+func occupancy(spans []workSpan, collections, active []Interval, start, end float64) Occupancy {
 	var ms [kindCount]float64
 	var o Occupancy
 	for _, a := range active {
@@ -207,15 +165,27 @@ func occupancy(spans []workSpan, active []Interval, start, end float64) Occupanc
 			o.DurationMs += (hi - lo) * 1000
 		}
 	}
-	i := sort.Search(len(spans), func(i int) bool { return spans[i].end > start })
-	for ; i < len(spans) && spans[i].start < end; i++ {
+	first := sort.Search(len(spans), func(i int) bool { return spans[i].end > start })
+	for i := first; i < len(spans) && spans[i].start < end; i++ {
 		span := spans[i]
 		ms[span.kind] += (math.Min(end, span.end) - math.Max(start, span.start)) * 1000
 	}
 	o.ScriptMs, o.StyleMs, o.LayoutMs = ms[kindScript], ms[kindStyle], ms[kindLayout]
-	o.PaintMs, o.CompositeMs, o.GCMs = ms[kindPaint], ms[kindComposite], ms[kindGC]
+	o.PaintMs, o.CompositeMs = ms[kindPaint], ms[kindComposite]
 	for _, value := range ms {
 		o.WorkMs += value
+	}
+	j := first
+	for i := sort.Search(len(collections), func(i int) bool { return collections[i].End > start }); i < len(collections) && collections[i].Start < end; i++ {
+		gc := collections[i]
+		lo, hi := math.Max(start, gc.Start), math.Min(end, gc.End)
+		o.GCMs += (hi - lo) * 1000
+		for j < len(spans) && spans[j].end <= lo {
+			j++
+		}
+		for k := j; k < len(spans) && spans[k].start < hi; k++ {
+			o.GCOverlapWithWorkMs += math.Max(0, math.Min(hi, spans[k].end)-math.Max(lo, spans[k].start)) * 1000
+		}
 	}
 	return o
 }
@@ -225,17 +195,32 @@ func Measure(rec *model.Recording, start, end float64) Occupancy {
 		return Occupancy{}
 	}
 	active := ActiveIntervals(rec, start, end)
-	return occupancy(exclusiveSpans(rec, active), active, start, end)
+	return occupancy(exclusiveSpans(rec, active), collectorIntervals(rec, active), active, start, end)
 }
+
+// FrameClass distinguishes measured work from idle gaps and input stalls.
+type FrameClass string
+
+const (
+	FrameActive     FrameClass = "active"
+	FrameIdleGap    FrameClass = "idle-gap"
+	FrameInputStall FrameClass = "input-stall"
+
+	// FrameBudgetMs is the fixed 60 Hz classification and standards budget.
+	// Configurable finding thresholds must not change this classification.
+	FrameBudgetMs = 16.7
+	// LongTaskBudgetMs is the fixed blocking-time and long-task metric budget.
+	LongTaskBudgetMs = 50.0
+)
 
 // Frame is an observed rendering interval, not necessarily a busy refresh.
 type Frame struct {
-	Start           float64   `json:"start"`
-	End             float64   `json:"end"`
-	DurationMs      float64   `json:"durationMs"`
-	Occupancy       Occupancy `json:"occupancy"`
-	IdleGap         bool      `json:"idleGap"`
-	DominantTrigger string    `json:"dominantTrigger,omitempty"`
+	Start           float64    `json:"start"`
+	End             float64    `json:"end"`
+	DurationMs      float64    `json:"durationMs"`
+	Occupancy       Occupancy  `json:"occupancy"`
+	Class           FrameClass `json:"class"`
+	DominantTrigger string     `json:"dominantTrigger,omitempty"`
 }
 
 // Idle-gap thresholds are deliberately conservative: an interval must exceed
@@ -304,6 +289,7 @@ func Frames(rec *model.Recording, start, end float64) []Frame {
 	}
 	active := ActiveIntervals(rec, start, end)
 	spans := exclusiveSpans(rec, active)
+	collections := collectorIntervals(rec, active)
 	haveWork := false
 	for _, instrument := range rec.InstrumentTypes {
 		if instrument == model.TypeScript || instrument == model.TypeLayout {
@@ -312,10 +298,10 @@ func Frames(rec *model.Recording, start, end float64) []Frame {
 	}
 	var triggers []triggerSpan
 	for _, r := range rec.Records {
-		if _, ok := category(r); ok {
+		if r.Type == model.TypeScript || r.Type == model.TypeLayout {
 			haveWork = true
 		}
-		if r.Type != model.TypeScript || IsGC(r) || CountOnly(r.EventType) {
+		if r.Type != model.TypeScript || IsGC(r) || CountOnly(r.EventType) || !finite(r.StartTime) || !finite(r.EndTime) {
 			continue
 		}
 		triggers = append(triggers, triggerSpan{r.StartTime, math.Max(r.StartTime, r.EndTime), r.EventType, IsInputDriven(r)})
@@ -346,17 +332,17 @@ func Frames(rec *model.Recording, start, end float64) []Frame {
 			continue
 		}
 		duration := hi - lo
-		o := occupancy(spans, active, lo, hi)
+		o := occupancy(spans, collections, active, lo, hi)
 		if o.DurationMs+1e-6 < duration*1000 {
 			continue
 		}
-		f := Frame{Start: lo, End: hi, DurationMs: duration * 1000, Occupancy: o}
+		f := Frame{Start: lo, End: hi, DurationMs: duration * 1000, Occupancy: o, Class: FrameActive}
 		weights := map[string]float64{}
 		input := false
 		i := sort.Search(len(maxEnd), func(i int) bool { return maxEnd[i] >= lo })
 		for ; i < len(triggers) && triggers[i].start < hi; i++ {
 			t := triggers[i]
-			if t.end < lo {
+			if t.end < lo || (t.end == lo && t.start < lo) {
 				continue
 			}
 			input = input || t.input
@@ -369,7 +355,12 @@ func Frames(rec *model.Recording, start, end float64) []Frame {
 				f.DominantTrigger = event
 			}
 		}
-		f.IdleGap = haveWork && f.DurationMs > IdleGapMinMs && o.WorkMs/f.DurationMs < IdleGapMaxWorkRatio && !input
+		switch {
+		case haveWork && input && f.DurationMs > FrameBudgetMs && o.WorkMs <= FrameBudgetMs:
+			f.Class = FrameInputStall
+		case haveWork && !input && f.DurationMs > IdleGapMinMs && o.WorkMs/f.DurationMs < IdleGapMaxWorkRatio:
+			f.Class = FrameIdleGap
+		}
 		out = append(out, f)
 	}
 	sort.Slice(out, func(i, j int) bool {

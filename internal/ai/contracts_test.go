@@ -16,8 +16,14 @@ func TestPromptStructuredEvidenceAndLocations(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := audit.Build([]audit.Scene{{Name: "edit", Runs: []audit.Run{{Report: &r}}}}, audit.Options{})
-	for _, p := range []Prompt{BuildAnalyzePrompt([]*insights.Report{&r}, Context{}), BuildComparePrompt(&compare.Result{}, nil, &r, Context{}), BuildAuditPrompt(a, Context{})} {
-		for _, want := range []string{"bundle.js:1:222", "src/App.tsx:18:4", "script.timer.total_ms", "confidence=medium", "limited samples", "verify:", "decrease", "window:", "0.2", "0.4"} {
+	for i, p := range []Prompt{BuildAnalyzePrompt([]*insights.Report{&r}, Context{}), BuildComparePrompt(&compare.Result{}, nil, &r, Context{}), BuildAuditPrompt(a, Context{})} {
+		wants := []string{"bundle.js:1:222", "src/App.tsx:18:4", "script.timer.total_ms", "verify:", "decrease", "window:", "0.2", "0.4"}
+		if i < 2 {
+			wants = append(wants, "confidence=medium", "limited samples")
+		} else {
+			wants = append(wants, "confidence=low", "evidenceBasis=hypothesis", "1 of 1 runs (1 parsed)")
+		}
+		for _, want := range wants {
 			if !strings.Contains(p.User, want) {
 				t.Errorf("prompt missing %q in %s", want, p.User)
 			}

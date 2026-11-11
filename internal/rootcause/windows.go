@@ -19,7 +19,7 @@ func digest(parts ...string) string {
 func (b builder) window(kind, label string, from, to, durationMs, workMs float64) Window {
 	from = seconds(math.Max(from, b.from))
 	to = seconds(math.Min(to, b.to))
-	w := Window{Kind: kind, Label: label, FromSec: b.exportTime(from), ToSec: b.exportTime(to), DurationMs: number(durationMs), ActiveMs: number(workMs), Command: b.query("hot-path --min-share 0", from, to)}
+	w := Window{Kind: kind, Label: label, FromSec: b.exportTime(from), ToSec: b.exportTime(to), DurationMs: number(durationMs), ActiveMs: number(workMs), Command: b.query("hot-path --min-share 0.05", from, to)}
 	key := windowKey(w)
 	w.Stats = []Stat{
 		b.stat(key+".from_sec", "Window start", w.FromSec, "s", timelineBasis),
@@ -69,24 +69,38 @@ func (b builder) heaviestWindowStack(from, to float64, prefix string) *Stack {
 		}
 	}
 	v := weights[best]
-	stack := b.finishStack(Stack{Frames: b.pathByID[best].Frames, SelfMs: v.ms, Samples: v.samples, FirstSec: b.exportTime(v.first), LastSec: b.exportTime(v.last)}, prefix, b.pathKeys[best])
+	first, last := b.exportTime(v.first), b.exportTime(v.last)
+	stack := b.finishStack(Stack{Frames: b.pathByID[best].Frames, SelfMs: v.ms, Samples: v.samples, FirstSec: &first, LastSec: &last}, prefix, b.pathKeys[best])
 	stack.Command = b.query("stacks "+quote(best), from, to)
 	return &stack
 }
 
 func (b builder) completeWindows(windows []Window) {
+	totalMs := b.tree.Root.TotalMs
+	if !b.tree.UntimedIncluded {
+		totalMs += b.tree.UntimedTotal.Ms
+	}
+	note := UntimedAttributionNote(b.tree.UntimedTotal.Ms, totalMs)
 	for i := range windows {
 		w := &windows[i]
 		from, to := seconds(w.FromSec-b.o.OffsetSec), seconds(w.ToSec-b.o.OffsetSec)
 		key := windowKey(*w)
 		w.TopStack = b.heaviestWindowStack(from, to, key)
 		if w.TopStack == nil {
-			w.SampleStatus = "No overlapping sampler samples; timeline evidence only."
+			w.Command = b.reproduce(key + ".duration_ms")
+			w.SampleStatus = UntimedSampleStatus(b.tree.UntimedSpans, from, to, b.o.OffsetSec)
+			if w.SampleStatus == "" {
+				w.SampleStatus = "No overlapping sampler samples; timeline evidence only."
+			}
 		} else {
+			w.Command = w.TopStack.Command
 			w.SampleStatus = "Duration-weighted sampler estimates at timestamps inside this interval; overlap is not causal attribution."
 		}
+		if note != "" {
+			w.SampleStatus += " " + note
+		}
 		if i < b.o.Top {
-			tree := b.tree.Window(from, to)
+			tree := b.tree.Window(from, to).TimedOnly()
 			path := b.hotPath(tree, key+".hot_path", from, to)
 			w.HotPath = &path
 		}
@@ -94,6 +108,9 @@ func (b builder) completeWindows(windows []Window) {
 }
 
 func windowLess(a, b Window) bool {
+	if a.ActiveMs != b.ActiveMs {
+		return a.ActiveMs > b.ActiveMs
+	}
 	if a.DurationMs != b.DurationMs {
 		return a.DurationMs > b.DurationMs
 	}
@@ -109,13 +126,10 @@ func windowLess(a, b Window) bool {
 	return a.Label < b.Label
 }
 
-func (b builder) windows() (longTasks, slowFrames, bursts, worst []Window) {
+func (b builder) windows() (longTasks, slowFrames, inputStalls, bursts, worst []Window) {
 	seen := map[string]bool{}
-	for _, r := range b.rec.Records {
-		if r.Type != model.TypeScript || profile.IsGC(r) || profile.CountOnly(r.EventType) {
-			continue
-		}
-		from, to := math.Max(b.from, r.StartTime-b.rec.StartTime), math.Min(b.to, r.EndTime-b.rec.StartTime)
+	for _, task := range profile.Tasks(b.rec) {
+		from, to := math.Max(b.from, task.StartTime-b.rec.StartTime), math.Min(b.to, task.EndTime-b.rec.StartTime)
 		if to <= from {
 			continue
 		}
@@ -123,16 +137,11 @@ func (b builder) windows() (longTasks, slowFrames, bursts, worst []Window) {
 		if number(ms) <= b.o.LongTaskMs {
 			continue
 		}
-		label := eventName(r)
-		key := label + "\x00" + decimal(from) + "\x00" + decimal(to)
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		longTasks = append(longTasks, b.window("long-task", label, from, to, ms, ms))
+		// A task union covers every instant with observed, non-GC work.
+		longTasks = append(longTasks, b.window("long-task", eventName(task.Record), from, to, ms, ms))
 	}
 	for _, f := range profile.Frames(b.rec, b.rec.StartTime+b.from, b.rec.StartTime+b.to) {
-		if f.IdleGap || number(f.DurationMs) <= b.o.JankMs {
+		if f.Class == profile.FrameIdleGap || f.Class == profile.FrameActive && number(f.DurationMs) <= b.o.JankMs {
 			continue
 		}
 		label := f.DominantTrigger
@@ -145,16 +154,28 @@ func (b builder) windows() (longTasks, slowFrames, bursts, worst []Window) {
 			continue
 		}
 		seen[key] = true
-		slowFrames = append(slowFrames, b.window("slow-frame", label, from, to, f.DurationMs, f.Occupancy.WorkMs))
+		kind := "slow-frame"
+		if f.Class == profile.FrameInputStall {
+			kind = "input-stall"
+		}
+		w := b.window(kind, label, from, to, f.DurationMs, f.Occupancy.WorkMs)
+		if f.Class == profile.FrameInputStall {
+			inputStalls = append(inputStalls, w)
+		} else {
+			slowFrames = append(slowFrames, w)
+		}
 	}
 	sort.Slice(longTasks, func(i, j int) bool { return windowLess(longTasks[i], longTasks[j]) })
 	sort.Slice(slowFrames, func(i, j int) bool { return windowLess(slowFrames[i], slowFrames[j]) })
+	sort.Slice(inputStalls, func(i, j int) bool { return windowLess(inputStalls[i], inputStalls[j]) })
 	bursts = b.eventBursts()
 	b.completeWindows(longTasks)
 	b.completeWindows(slowFrames)
+	b.completeWindows(inputStalls)
 	b.completeWindows(bursts)
 	worst = append(worst, longTasks[:min(len(longTasks), b.o.Top)]...)
 	worst = append(worst, slowFrames[:min(len(slowFrames), b.o.Top)]...)
+	worst = append(worst, inputStalls[:min(len(inputStalls), b.o.Top)]...)
 	worst = append(worst, bursts[:min(len(bursts), b.o.Top)]...)
 	sort.Slice(worst, func(i, j int) bool { return windowLess(worst[i], worst[j]) })
 	return
@@ -202,7 +223,7 @@ func (b builder) gcOverlaps() []GCOverlap {
 			continue
 		}
 		seen[key] = true
-		g := GCOverlap{FromSec: b.exportTime(from), ToSec: b.exportTime(to), Attribution: "Instrumented GC pause and temporal event overlap only; sampled allocation or application causes are not established.", Command: b.query("events "+quote("garbage-collected"), from, to)}
+		g := GCOverlap{FromSec: b.exportTime(from), ToSec: b.exportTime(to), Attribution: "Instrumented collector interval, not necessarily main-thread time; temporal event overlap does not establish sampled allocation or application causes.", Command: b.reproduce(key + ".duration_ms")}
 		for _, p := range parts {
 			g.DurationMs += (p.End - p.Start) * 1000
 		}
@@ -229,7 +250,7 @@ func (b builder) gcOverlaps() []GCOverlap {
 				continue
 			}
 			eventsSeen[eventID] = true
-			e := EventOverlap{Event: name, FromSec: b.exportTime(lo), ToSec: b.exportTime(hi), OverlapMs: number(ms), Command: b.query("events", lo, hi)}
+			e := EventOverlap{Event: name, FromSec: b.exportTime(lo), ToSec: b.exportTime(hi), OverlapMs: number(ms), Command: b.reproduce(key + ".event." + eventID + ".overlap_ms")}
 			e.Stats = []Stat{
 				b.stat(key+".event."+eventID+".from_sec", "GC/event overlap start", e.FromSec, "s", timelineBasis),
 				b.stat(key+".event."+eventID+".to_sec", "GC/event overlap end", e.ToSec, "s", timelineBasis),
@@ -250,10 +271,11 @@ func (b builder) gcOverlaps() []GCOverlap {
 			return g.Events[i].Event < g.Events[j].Event
 		})
 		g.Stats = []Stat{
-			b.stat(key+".from_sec", "GC pause start", g.FromSec, "s", timelineBasis),
-			b.stat(key+".to_sec", "GC pause end", g.ToSec, "s", timelineBasis),
-			b.stat(key+".duration_ms", "Instrumented active GC pause", g.DurationMs, "ms", timelineBasis),
+			b.stat(key+".from_sec", "Collector interval start", g.FromSec, "s", timelineBasis),
+			b.stat(key+".to_sec", "Collector interval end", g.ToSec, "s", timelineBasis),
+			b.stat(key+".duration_ms", "Observed active collector interval", g.DurationMs, "ms", timelineBasis),
 			b.stat(key+".events", "Distinct overlapping script events", float64(len(g.Events)), "count", timelineBasis),
+			b.stat(key+".work_overlap_ms", "Collector interval overlapping instrumented main-thread work", profile.Measure(b.rec, b.rec.StartTime+from, b.rec.StartTime+to).GCOverlapWithWorkMs, "ms", timelineBasis),
 		}
 		out = append(out, g)
 	}

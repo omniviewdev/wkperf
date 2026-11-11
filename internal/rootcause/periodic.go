@@ -3,6 +3,7 @@ package rootcause
 import (
 	"math"
 	"sort"
+	"strings"
 
 	"github.com/omniviewdev/wkperf/internal/flame"
 	"github.com/omniviewdev/wkperf/internal/model"
@@ -17,11 +18,14 @@ type rootGroup struct {
 type fireGroup struct {
 	from, to, last float64
 	event          string
+	raf            bool
 	samples        []flame.Sample
 }
 type rootEvent struct {
 	from, to, maxEnd float64
 	name             string
+	kind             string
+	input            bool
 }
 
 func (b builder) rootEvents() []rootEvent {
@@ -36,7 +40,7 @@ func (b builder) rootEvents() []rootEvent {
 			key := name + "\x00" + decimal(part.Start) + "\x00" + decimal(part.End)
 			if !seen[key] {
 				seen[key] = true
-				out = append(out, rootEvent{from: part.Start, to: part.End, name: name})
+				out = append(out, rootEvent{from: part.Start, to: part.End, name: name, kind: r.EventType, input: profile.IsInputDriven(r)})
 			}
 		}
 	}
@@ -64,9 +68,13 @@ func (b builder) rootFires(samples []flame.Sample, events []rootEvent) []fireGro
 	var burst *fireGroup
 	for _, s := range samples {
 		var chosen *rootEvent
+		raf := false
 		end := sort.Search(len(events), func(i int) bool { return events[i].from > s.Timestamp })
 		for i := end - 1; i >= 0 && events[i].maxEnd > s.Timestamp; i-- {
 			e := &events[i]
+			if s.Timestamp < e.to && e.kind == "animation-frame-fired" {
+				raf = true
+			}
 			if s.Timestamp < e.to && (chosen == nil || e.to-e.from < chosen.to-chosen.from || e.to-e.from == chosen.to-chosen.from && e.name < chosen.name) {
 				chosen = e
 			}
@@ -81,6 +89,7 @@ func (b builder) rootFires(samples []flame.Sample, events []rootEvent) []fireGro
 			}
 			f.samples = append(f.samples, s)
 			f.last = s.Timestamp
+			f.raf = f.raf || raf
 			burst = nil
 			continue
 		}
@@ -109,6 +118,28 @@ func (b builder) rootFires(samples []flame.Sample, events []rootEvent) []fireGro
 	return out
 }
 
+func (b builder) periodicInputWindows(events []rootEvent) []flame.Interval {
+	var input []flame.Interval
+	for _, e := range events {
+		if e.input {
+			input = append(input, flame.Interval{Start: e.from, End: e.to})
+		}
+	}
+	input = union(input)
+	all := append([]flame.Interval(nil), input...)
+	for _, r := range b.rec.Records {
+		if r.Type != model.TypeRenderingFrame {
+			continue
+		}
+		from, to := r.StartTime-b.rec.StartTime, r.EndTime-b.rec.StartTime
+		i := sort.Search(len(input), func(i int) bool { return input[i].End > from })
+		if i < len(input) && input[i].Start < to {
+			all = append(all, b.active(from, to)...)
+		}
+	}
+	return union(all)
+}
+
 func (b builder) periodicRoots() []PeriodicRoot {
 	groups := map[string]*rootGroup{}
 	for _, s := range b.tree.Samples {
@@ -125,10 +156,11 @@ func (b builder) periodicRoots() []PeriodicRoot {
 		g.samples = append(g.samples, s)
 	}
 	events := b.rootEvents()
+	inputWindows := b.periodicInputWindows(events)
 	var out []PeriodicRoot
 	for key, g := range groups {
 		fires := b.rootFires(g.samples, events)
-		if len(fires) < 4 {
+		if len(fires) < 6 || fires[len(fires)-1].from-fires[0].from < 2-1e-9 {
 			continue
 		}
 		periods := make([]float64, 0, len(fires)-1)
@@ -154,8 +186,15 @@ func (b builder) periodicRoots() []PeriodicRoot {
 			continue
 		}
 		id := "periodic." + key
-		p := PeriodicRoot{Root: g.root, TargetID: g.targetID, FireCount: len(fires), PeriodMs: number(period), JitterMs: number(jitter), Regularity: number(regularity), Command: b.query("paths "+quote(g.root.Name), b.from, b.to)}
+		p := PeriodicRoot{Root: g.root, TargetID: g.targetID, FireCount: len(fires), PeriodMs: number(period), JitterMs: number(jitter), Regularity: number(regularity), SampleIDs: b.sampleIDs(g.samples), Kind: "unknown", Command: b.query("paths "+quote(flame.FunctionID(g.root)), b.from, b.to)}
 		for i, f := range fires {
+			if f.raf {
+				p.RAFFires++
+			}
+			input := sort.Search(len(inputWindows), func(j int) bool { return inputWindows[j].End > f.from })
+			if input < len(inputWindows) && inputWindows[input].Start <= math.Max(f.to, f.from) {
+				p.InputFires++
+			}
 			var ms float64
 			for _, s := range f.samples {
 				ms += s.WeightMs
@@ -171,6 +210,21 @@ func (b builder) periodicRoots() []PeriodicRoot {
 			}
 			p.Fires = append(p.Fires, fire)
 		}
+		if p.RAFFires*2 > p.FireCount {
+			p.Kind = "raf"
+		} else if p.InputFires*2 > p.FireCount {
+			p.Kind = "input"
+		} else {
+			timers := 0
+			for _, f := range fires {
+				if strings.HasPrefix(f.event, "timer-fired") {
+					timers++
+				}
+			}
+			if timers*2 > p.FireCount && p.RAFFires == 0 && p.InputFires == 0 {
+				p.Kind = "background"
+			}
+		}
 		p.TotalMs = number(p.TotalMs)
 		p.MeanCostMs = number(p.TotalMs / float64(p.FireCount))
 		p.Evidence = b.stacks(g.samples, id)
@@ -181,6 +235,9 @@ func (b builder) periodicRoots() []PeriodicRoot {
 			b.stat(id+".regularity", "Period regularity", p.Regularity, "ratio", "1 - mean absolute period deviation / median period"),
 			b.stat(id+".mean_cost_ms", "Mean sampled cost per fire", p.MeanCostMs, "ms", sampledBasis),
 			b.stat(id+".total_ms", "Total sampled cost across fires", p.TotalMs, "ms", sampledBasis),
+			b.stat(id+".span_ms", "Elapsed time between first and last fire", (fires[len(fires)-1].from-fires[0].from)*1000, "ms", timelineBasis),
+			b.stat(id+".raf_fires", "Fires enclosed by animation-frame callbacks", float64(p.RAFFires), "count", timelineBasis),
+			b.stat(id+".input_fires", "Fires overlapping input-driven frames or dispatches", float64(p.InputFires), "count", timelineBasis),
 		}
 		out = append(out, p)
 	}

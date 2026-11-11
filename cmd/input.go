@@ -7,6 +7,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"github.com/omniviewdev/wkperf/internal/diagnostic"
+	"github.com/omniviewdev/wkperf/internal/flame"
 	"github.com/omniviewdev/wkperf/internal/model"
 	"github.com/omniviewdev/wkperf/internal/schema"
 	"github.com/omniviewdev/wkperf/internal/sourcemap"
@@ -14,9 +16,23 @@ import (
 
 func addSourceMapFlags(cmd *cobra.Command) {
 	cmd.Flags().StringArray("sourcemap", nil, "source map path (repeatable); adjacent maps are also discovered before analysis")
+	cmd.Flags().StringArray("app-url", nil, "first-party URL glob (repeatable; config app-url); ** crosses path separators")
+	cmd.Flags().StringArray("library-url", nil, "library URL glob (repeatable; config library-url); takes precedence over app-url")
 }
 
-func bindSourceMapFlags(cmd *cobra.Command) error { return bindFlags(cmd, "sourcemap") }
+func bindSourceMapFlags(cmd *cobra.Command) error {
+	if err := bindFlags(cmd, "sourcemap", "app-url", "library-url"); err != nil {
+		return err
+	}
+	if err := ownershipRules().Validate(); err != nil {
+		return fmt.Errorf("ownership URL patterns (--app-url/--library-url): %w", err)
+	}
+	return nil
+}
+
+func ownershipRules() flame.OwnershipRules {
+	return flame.OwnershipRules{AppURLs: viper.GetStringSlice("app-url"), LibraryURLs: viper.GetStringSlice("library-url")}
+}
 
 func addModuleGroupingFlag(cmd *cobra.Command) {
 	cmd.Flags().String("module-grouping", "file", "module rollup: file|parent-directory (npm packages remain package-scoped)")
@@ -34,11 +50,11 @@ func loadRecording(cmd *cobra.Command, path string) (*model.Recording, sourcemap
 	var diagnostics sourcemap.Diagnostics
 	rec, err := model.Load(path)
 	if err != nil {
-		return nil, diagnostics, &inputError{File: path, Code: "load_error", Err: err}
+		return nil, diagnostics, diagnostic.Wrap(diagnostic.LoadError, path, err)
 	}
 	diagnostics, err = sourcemap.Resolve(rec, viper.GetStringSlice("sourcemap"), path)
 	if err != nil {
-		return nil, diagnostics, &inputError{File: path, Code: "source_map_error", Err: err}
+		return nil, diagnostics, diagnostic.Wrap(diagnostic.SourceMapError, path, err)
 	}
 	for _, warning := range diagnostics.Warnings {
 		fmt.Fprintf(cmd.ErrOrStderr(), "%s: %s\n", path, warning)
@@ -52,7 +68,7 @@ func expandPathsContinuing(paths []string) ([]string, []schema.Error) {
 	for _, path := range paths {
 		expanded, err := expandPaths([]string{path})
 		if err != nil {
-			failures = append(failures, failuresFor(&inputError{File: path, Code: "input_error", Err: err})...)
+			failures = append(failures, failuresFor(diagnostic.Wrap(diagnostic.InputError, path, err))...)
 			continue
 		}
 		files = append(files, expanded...)
@@ -67,7 +83,7 @@ func discoverScenesContinuing(paths []string, groupByPrefix bool) ([]sceneFiles,
 	for _, path := range paths {
 		found, err := discoverScenes([]string{path}, groupByPrefix)
 		if err != nil {
-			failures = append(failures, failuresFor(&inputError{File: path, Code: "input_error", Err: err})...)
+			failures = append(failures, failuresFor(diagnostic.Wrap(diagnostic.InputError, path, err))...)
 			continue
 		}
 		for _, scene := range found {
@@ -104,7 +120,7 @@ func combineFailures(failures []schema.Error, err error) error {
 }
 
 func validateMarkdownOptions(format string, maxBytes int, ai bool) error {
-	if format != "md" && format != "all" {
+	if format != "term" && format != "md" && format != "all" {
 		return nil
 	}
 	if maxBytes < 0 {
@@ -114,7 +130,7 @@ func validateMarkdownOptions(format string, maxBytes int, ai bool) error {
 		return fmt.Errorf("--max-bytes must be at least 64 to retain the truncation marker")
 	}
 	if maxBytes > 0 && ai {
-		return fmt.Errorf("--max-bytes cannot be combined with --ai; omit --ai for a deterministic bounded Markdown report")
+		return fmt.Errorf("--max-bytes cannot be combined with --ai; omit --ai for a deterministic bounded text report")
 	}
 	return nil
 }

@@ -14,6 +14,9 @@ func TestIdleSafeFrameStandards(t *testing.T) {
 		r.Records = append(r.Records, model.Record{Type: model.TypeRenderingFrame, StartTime: s, EndTime: s + 1}, script("timer-fired", s+0.001, s+0.006, "poll"))
 	}
 	c := Evaluate(r, insights.Analyze(r, "idle.json", insights.Options{}))
+	if c.Grade != "n/a" || !c.Partial {
+		t.Fatalf("idle-only observation cannot support an overall grade: %+v", c)
+	}
 	for _, id := range []string{"frame-p95", "jank-ratio", "fps"} {
 		if result := get(t, c, id); result.Rating != Unavailable {
 			t.Errorf("%s must not grade idle-gap cadence: %+v", id, result)

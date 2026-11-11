@@ -18,27 +18,40 @@ func Stats(r *Report) []Stat {
 			add(s.Stats)
 		}
 	}
+	addPath := func(path Path) {
+		add(path.Stats)
+		for _, node := range path.Nodes {
+			add(node.Stats)
+		}
+		for _, branch := range path.Branches {
+			add(branch.Stats)
+		}
+	}
 	addWindow := func(w Window) {
 		add(w.Stats)
 		if w.HotPath != nil {
-			add(w.HotPath.Stats)
+			addPath(*w.HotPath)
 		}
 		if w.TopStack != nil {
 			add(w.TopStack.Stats)
 		}
 	}
 	add(r.Stats)
-	add(r.HotPath.Stats)
+	addPath(r.HotPath)
 	for _, o := range r.Owners {
 		add(o.Stats)
 	}
-	for _, a := range r.AppAttribution {
+	add(r.ContextUnavailable.Stats)
+	for _, a := range r.ContextAttribution {
 		add(a.Stats)
 		addStacks(a.Stacks)
 	}
 	for _, f := range r.Findings {
 		add(f.Stats)
 		addStacks(f.Evidence)
+		for _, api := range f.NativeReads {
+			add(api.Stats)
+		}
 	}
 	for _, p := range r.PeriodicRoots {
 		add(p.Stats)
@@ -60,6 +73,9 @@ func Stats(r *Report) []Stat {
 		addWindow(w)
 	}
 	for _, w := range r.SlowFrames {
+		addWindow(w)
+	}
+	for _, w := range r.InputStalls {
 		addWindow(w)
 	}
 	for _, w := range r.EventBursts {

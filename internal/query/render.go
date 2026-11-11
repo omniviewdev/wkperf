@@ -9,39 +9,82 @@ import (
 	"strings"
 )
 
+// Render writes only after the complete representation fits its byte budget.
 func Render(w io.Writer, result *Result, format string) error {
-	if format == "json" {
-		enc := json.NewEncoder(w)
-		enc.SetEscapeHTML(false)
-		enc.SetIndent("", "  ")
-		return enc.Encode(result)
+	_, data, err := Prepare(result, format)
+	if err != nil {
+		return err
 	}
-	if format != "md" && format != "tsv" {
-		return fmt.Errorf("unknown format %q (want json|md|tsv)", format)
+	_, err = w.Write(data)
+	return err
+}
+
+func renderUnbounded(w io.Writer, result *Result, format string) error {
+	if format == "json" {
+		encoder := json.NewEncoder(w)
+		encoder.SetEscapeHTML(false)
+		return encoder.Encode(Wire(result))
 	}
 	headers, records := table(result)
-	functionsTruncated := false
-	for _, row := range result.Rows {
-		if row.FunctionsTruncated {
-			functionsTruncated = true
-			break
-		}
-	}
 	if format == "md" {
-		if _, err := fmt.Fprintf(w, "# Query: %s\n\nReproduce: `%s`\n\nReturned %d of %d rows.\n\n", result.Operation, strings.ReplaceAll(CommandString(result.Command), "`", "\\`"), len(records), result.TotalCount); err != nil {
+		if _, err := fmt.Fprintf(w, "# Query: %s\n\n", result.Operation); err != nil {
 			return err
 		}
+		if len(result.Errors) > 0 {
+			if _, err := fmt.Fprint(w, "## Errors\n\n"); err != nil {
+				return err
+			}
+			for _, failure := range result.Errors {
+				if _, err := fmt.Fprintf(w, "- %s: %s: %s\n", codeSpan(failure.File), failure.Code, singleLine(failure.Message)); err != nil {
+					return err
+				}
+			}
+			if _, err := fmt.Fprint(w, "\n"); err != nil {
+				return err
+			}
+		}
+		if _, err := fmt.Fprintf(w, "Schema: %s\n\nReproduce: %s\n\nReturned %d of %d rows; offset=%d; limit=%d; max_bytes=%d.\n\n", result.Schema, codeSpan(CommandString(result.Command)), result.ReturnedCount, result.TotalCount, result.Offset, result.Limit, result.MaxBytes); err != nil {
+			return err
+		}
+		for _, source := range result.Sources {
+			if _, err := fmt.Fprintf(w, "- Source: %s; window %s–%s s; untimed samples=%d (%s ms), excluded=%t.\n", codeSpan(source.File), number(source.From), number(source.To), source.UntimedSamples, number(source.UntimedMs), source.UntimedExcluded); err != nil {
+				return err
+			}
+			diagnostics := source.SourceMaps
+			if _, err := fmt.Fprintf(w, "  Source maps: mapped=%d, unmapped=%d, minified=%t; missing=%s.\n", diagnostics.MappedFrames, diagnostics.UnmappedFrames, diagnostics.Minified, codeSpan(strings.Join(diagnostics.MissingMaps, ", "))); err != nil {
+				return err
+			}
+			for _, warning := range diagnostics.Warnings {
+				if _, err := fmt.Fprintf(w, "  Warning: %s\n", singleLine(warning)); err != nil {
+					return err
+				}
+			}
+		}
+		if result.DiffNormalization != nil {
+			n := result.DiffNormalization
+			if _, err := fmt.Fprintf(w, "\nNormalization: %s (%s); raw baseline=%s ms, candidate=%s ms; active baseline=%s ms, candidate=%s ms.\n", n.Mode, n.Unit, number(n.BeforeTotalMs), number(n.AfterTotalMs), number(n.BeforeActiveMs), number(n.AfterActiveMs)); err != nil {
+				return err
+			}
+			for _, warning := range n.Warnings {
+				if _, err := fmt.Fprintf(w, "- %s: %s\n", warning.Code, singleLine(warning.Message)); err != nil {
+					return err
+				}
+			}
+		}
 		if result.Status == "ambiguous" {
-			if _, err := fmt.Fprint(w, "Ambiguous selector. Choose an ID from these candidates.\n\n"); err != nil {
+			if _, err := fmt.Fprint(w, "\nAmbiguous selector. Choose an ID from these candidates.\n"); err != nil {
 				return err
 			}
 		}
 		writeLine := func(fields []string) error {
 			escaped := make([]string, len(fields))
 			for i, field := range fields {
-				escaped[i] = strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(field, "\\", "\\\\"), "|", "\\|"), "\n", " ")
+				escaped[i] = strings.ReplaceAll(strings.ReplaceAll(singleLine(field), "\\", "\\\\"), "|", "\\|")
 			}
 			_, err := fmt.Fprintf(w, "| %s |\n", strings.Join(escaped, " | "))
+			return err
+		}
+		if _, err := fmt.Fprint(w, "\n"); err != nil {
 			return err
 		}
 		if err := writeLine(headers); err != nil {
@@ -59,22 +102,27 @@ func Render(w io.Writer, result *Result, format string) error {
 				return err
 			}
 		}
-		if result.Truncated {
-			if _, err := fmt.Fprintf(w, "\n**TRUNCATED: returned %d of %d; limit=%d.**\n", len(records), result.TotalCount, result.Limit); err != nil {
+		if result.HotPathStopReason != "" {
+			if _, err := fmt.Fprintf(w, "\nHot path stop: %s. Competing branches: %d of %d shown.\n", result.HotPathStopReason, len(result.HotPathBranches), result.HotPathBranchesTotal); err != nil {
 				return err
 			}
-		}
-		if functionsTruncated {
-			if _, err := fmt.Fprintf(w, "\n**TRUNCATED: trigger function lists use limit=%d; full counts appear in each row.**\n", result.Limit); err != nil {
-				return err
+			for _, branch := range result.HotPathBranches {
+				if _, err := fmt.Fprintf(w, "- %s @ %s: %s ms inclusive (%s%%), %d samples.\n", singleLine(functionName(branch.Function)), singleLine(location(branch.Function)), number(branch.TotalMS), number(branch.Percent), branch.Samples); err != nil {
+					return err
+				}
 			}
 		}
 		if len(result.DeepestStack) > 0 {
-			names := make([]string, len(result.DeepestStack))
-			for i, f := range result.DeepestStack {
-				names[i] = f.Name
+			if _, err := fmt.Fprintf(w, "\nDeepest stack (%d frames): %s\n", len(result.DeepestStack), singleLine(stackLabels(result.DeepestStack, stackLimit(result)))); err != nil {
+				return err
 			}
-			if _, err := fmt.Fprintf(w, "\nDeepest stack: %s\n", strings.Join(names, " → ")); err != nil {
+		}
+		if result.Truncated {
+			next := ""
+			if result.NextOffset != nil {
+				next = fmt.Sprintf("; next_offset=%d", *result.NextOffset)
+			}
+			if _, err := fmt.Fprintf(w, "\n**TRUNCATED: returned %d of %d; offset=%d; by=%s%s.**\n", result.ReturnedCount, result.TotalCount, result.Offset, strings.Join(result.TruncatedBy, ","), next); err != nil {
 				return err
 			}
 		}
@@ -82,14 +130,50 @@ func Render(w io.Writer, result *Result, format string) error {
 	}
 	writer := csv.NewWriter(w)
 	writer.Comma = '\t'
-	if err := writer.Write([]string{"# schema", result.Schema}); err != nil {
+	write := func(fields ...string) error { return writer.Write(fields) }
+	for _, failure := range result.Errors {
+		if err := write("# error", failure.File, string(failure.Code), failure.Message); err != nil {
+			return err
+		}
+	}
+	if err := write("# schema", result.Schema); err != nil {
 		return err
 	}
-	if err := writer.Write([]string{"# reproduce", CommandString(result.Command)}); err != nil {
+	if err := write("# reproduce", CommandString(result.Command)); err != nil {
 		return err
 	}
-	if err := writer.Write([]string{"# status", result.Status, "total_count", strconv.Itoa(result.TotalCount), "limit", strconv.Itoa(result.Limit), "truncated", strconv.FormatBool(result.Truncated)}); err != nil {
+	if err := write("# status", result.Status, "total_count", strconv.Itoa(result.TotalCount), "returned_count", strconv.Itoa(result.ReturnedCount), "offset", strconv.Itoa(result.Offset), "limit", strconv.Itoa(result.Limit), "max_bytes", strconv.Itoa(result.MaxBytes), "truncated", strconv.FormatBool(result.Truncated), "truncated_by", strings.Join(result.TruncatedBy, ",")); err != nil {
 		return err
+	}
+	if result.NextOffset != nil {
+		if err := write("# next_offset", strconv.Itoa(*result.NextOffset)); err != nil {
+			return err
+		}
+	}
+	for _, source := range result.Sources {
+		if err := write("# source", source.File, "from_s", number(source.From), "to_s", number(source.To), "untimed_samples", strconv.Itoa(source.UntimedSamples), "untimed_ms", number(source.UntimedMs), "untimed_excluded", strconv.FormatBool(source.UntimedExcluded)); err != nil {
+			return err
+		}
+		d := source.SourceMaps
+		if err := write("# source_maps", source.File, "mapped_frames", strconv.Itoa(d.MappedFrames), "unmapped_frames", strconv.Itoa(d.UnmappedFrames), "minified", strconv.FormatBool(d.Minified), "missing_maps", strings.Join(d.MissingMaps, "; ")); err != nil {
+			return err
+		}
+		for _, warning := range d.Warnings {
+			if err := write("# source_map_warning", source.File, warning); err != nil {
+				return err
+			}
+		}
+	}
+	if result.DiffNormalization != nil {
+		n := result.DiffNormalization
+		if err := write("# normalization", string(n.Mode), "unit", n.Unit, "baseline_total_ms", number(n.BeforeTotalMs), "candidate_total_ms", number(n.AfterTotalMs), "baseline_active_ms", number(n.BeforeActiveMs), "candidate_active_ms", number(n.AfterActiveMs)); err != nil {
+			return err
+		}
+		for _, warning := range n.Warnings {
+			if err := write("# warning", warning.Code, warning.Message); err != nil {
+				return err
+			}
+		}
 	}
 	if err := writer.Write(headers); err != nil {
 		return err
@@ -97,22 +181,23 @@ func Render(w io.Writer, result *Result, format string) error {
 	if err := writer.WriteAll(records); err != nil {
 		return err
 	}
-	if result.Truncated {
-		if err := writer.Write([]string{"# TRUNCATED", fmt.Sprintf("returned %d of %d; limit=%d", len(records), result.TotalCount, result.Limit)}); err != nil {
+	if result.HotPathStopReason != "" {
+		if err := write("# hot_path_stop", result.HotPathStopReason, "branches_shown", strconv.Itoa(len(result.HotPathBranches)), "branches_total", strconv.Itoa(result.HotPathBranchesTotal)); err != nil {
 			return err
 		}
-	}
-	if functionsTruncated {
-		if err := writer.Write([]string{"# TRUNCATED", fmt.Sprintf("trigger function lists use limit=%d; full counts appear in each row", result.Limit)}); err != nil {
-			return err
+		for _, branch := range result.HotPathBranches {
+			if err := write("# branch", branch.ID, functionName(branch.Function), location(branch.Function), number(branch.TotalMS), number(branch.Percent), strconv.Itoa(branch.Samples)); err != nil {
+				return err
+			}
 		}
 	}
 	if len(result.DeepestStack) > 0 {
-		record := []string{"# deepest_stack"}
-		for _, f := range result.DeepestStack {
-			record = append(record, f.ID+" "+f.Name)
+		if err := write("# deepest_stack", "depth", strconv.Itoa(len(result.DeepestStack)), stackLabels(result.DeepestStack, stackLimit(result))); err != nil {
+			return err
 		}
-		if err := writer.Write(record); err != nil {
+	}
+	if result.Truncated {
+		if err := write("# TRUNCATED", "returned_count", strconv.Itoa(result.ReturnedCount), "total_count", strconv.Itoa(result.TotalCount), "truncated_by", strings.Join(result.TruncatedBy, ",")); err != nil {
 			return err
 		}
 	}
@@ -124,15 +209,27 @@ func table(result *Result) ([]string, [][]string) {
 	rows := [][]string{}
 	if result.Status == "ambiguous" {
 		for _, f := range result.Candidates {
-			rows = append(rows, []string{f.ID, f.Name, location(f), f.Category})
+			rows = append(rows, []string{f.ID, functionName(f), location(f), f.Category})
 		}
 		return []string{"id", "name", "source", "category"}, rows
 	}
-	if result.Operation == "metrics" || result.Operation == "rootcause" {
+	if result.Operation == "keys" {
+		for _, row := range result.Rows {
+			rows = append(rows, []string{row.Key, row.Operation, row.Unit, row.Description, row.Basis, row.AliasOf})
+		}
+		return []string{"key", "op", "unit", "description", "basis", "alias_of"}, rows
+	}
+	if result.Operation == "metrics" {
 		for _, row := range result.Rows {
 			rows = append(rows, []string{row.Key, number(row.Value), row.Unit})
 		}
 		return []string{"key", "value", "unit"}, rows
+	}
+	if result.Operation == "rootcause" {
+		for _, row := range result.Rows {
+			rows = append(rows, []string{row.Key, number(row.Value), row.Unit, row.Basis})
+		}
+		return []string{"key", "value", "unit", "basis"}, rows
 	}
 	if result.Operation == "events" {
 		for _, row := range result.Rows {
@@ -142,18 +239,43 @@ func table(result *Result) ([]string, [][]string) {
 	}
 	if result.Operation == "diff" {
 		for _, row := range result.Rows {
-			rows = append(rows, []string{row.ID, row.Name, location(row.Function), number(row.BaselineSelfMS), number(row.CandidateSelfMS), number(row.DeltaSelfMS), number(row.BaselineTotalMS), number(row.CandidateTotalMS), number(row.DeltaTotalMS), strconv.Itoa(row.Samples)})
+			rows = append(rows, []string{row.ID, functionName(row.Function), location(row.Function), number(row.BaselineSelfMS), number(row.CandidateSelfMS), number(row.DeltaSelfMS), number(row.BaselineTotalMS), number(row.CandidateTotalMS), number(row.DeltaTotalMS), strconv.Itoa(row.Samples)})
 		}
 		return []string{"id", "name", "source", "baseline_self_ms", "candidate_self_ms", "delta_self_ms", "baseline_total_ms", "candidate_total_ms", "delta_total_ms", "delta_samples"}, rows
 	}
-	for _, row := range result.Rows {
-		names := make([]string, len(row.Stack))
-		for i, f := range row.Stack {
-			names[i] = f.Name + "@" + location(f)
+	if result.Operation == "depth" {
+		for _, row := range result.Rows {
+			rows = append(rows, []string{strconv.Itoa(row.Depth), number(row.SelfMS), number(row.TotalMS), strconv.Itoa(row.Samples), number(row.Percent)})
 		}
-		rows = append(rows, []string{row.ID, row.NodeID, row.Name, location(row.Function), number(row.SelfMS), number(row.TotalMS), number(row.Percent), strconv.Itoa(row.Samples), strconv.Itoa(row.Depth), strings.Join(names, " → ")})
+		return []string{"depth", "self_ms", "total_ms", "samples", "percent"}, rows
 	}
-	return []string{"id", "node_id", "name", "source", "self_ms", "total_ms", "percent", "samples", "depth", "stack"}, rows
+	headers := []string{"id", "node_id", "name", "source"}
+	if result.Operation != "callers" && result.Operation != "callees" {
+		headers = append(headers, "self_ms")
+	}
+	headers = append(headers, "total_ms", "percent", "samples")
+	path := result.Operation == "paths" || result.Operation == "stacks" || result.Operation == "subtree"
+	if path || result.Operation == "hot-path" {
+		headers = append(headers, "depth")
+	}
+	if path {
+		headers = append(headers, "stack_depth", "stack")
+	}
+	for _, row := range result.Rows {
+		fields := []string{row.ID, row.NodeID, functionName(row.Function), location(row.Function)}
+		if result.Operation != "callers" && result.Operation != "callees" {
+			fields = append(fields, number(row.SelfMS))
+		}
+		fields = append(fields, number(row.TotalMS), number(row.Percent), strconv.Itoa(row.Samples))
+		if path || result.Operation == "hot-path" {
+			fields = append(fields, strconv.Itoa(row.Depth))
+		}
+		if path {
+			fields = append(fields, strconv.Itoa(len(row.Stack)), stackLabels(row.Stack, stackLimit(result)))
+		}
+		rows = append(rows, fields)
+	}
+	return headers, rows
 }
 
 func location(f Function) string {
@@ -168,7 +290,7 @@ func number(value float64) string { return strconv.FormatFloat(value, 'g', -1, 6
 func costLabels(costs []FunctionCost) string {
 	labels := make([]string, len(costs))
 	for i, cost := range costs {
-		labels[i] = cost.Name + "@" + location(cost.Function) + " (self=" + number(cost.SelfMS) + "ms, total=" + number(cost.TotalMS) + "ms)"
+		labels[i] = functionName(cost.Function) + "@" + location(cost.Function) + " (self=" + number(cost.SelfMS) + "ms, total=" + number(cost.TotalMS) + "ms, samples=" + strconv.Itoa(cost.SelfSamples) + ", category=" + cost.Category + ")"
 	}
 	return strings.Join(labels, "; ")
 }
@@ -184,4 +306,54 @@ func CommandString(args []string) string {
 		}
 	}
 	return strings.Join(quoted, " ")
+}
+
+func functionName(f Function) string {
+	if f.Name == "" {
+		return "(anonymous)"
+	}
+	return f.Name
+}
+
+func stackLabels(frames []Function, limit int) string {
+	head, tail, omitted := previewFrames(frames, limit)
+	size := len(head) + len(tail)
+	if omitted > 0 {
+		size++
+	}
+	labels := make([]string, 0, size)
+	for _, f := range head {
+		labels = append(labels, functionName(f)+"@"+location(f))
+	}
+	if omitted > 0 {
+		labels = append(labels, fmt.Sprintf("… %d frames elided …", omitted))
+	}
+	for _, f := range tail {
+		labels = append(labels, functionName(f)+"@"+location(f))
+	}
+	return strings.Join(labels, " → ")
+}
+
+var lineEscaper = strings.NewReplacer("\r", " ", "\n", " ")
+
+func singleLine(value string) string {
+	return lineEscaper.Replace(value)
+}
+
+func codeSpan(value string) string {
+	value = singleLine(value)
+	longest, run := 0, 0
+	for _, ch := range value {
+		if ch == '`' {
+			run++
+			longest = max(longest, run)
+		} else {
+			run = 0
+		}
+	}
+	fence := strings.Repeat("`", longest+1)
+	if strings.HasPrefix(value, "`") || strings.HasSuffix(value, "`") {
+		return fence + " " + value + " " + fence
+	}
+	return fence + value + fence
 }

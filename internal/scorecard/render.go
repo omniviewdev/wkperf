@@ -97,19 +97,33 @@ func gapLine(g GapItem) string {
 	return fmt.Sprintf("%s %s %.1fx the %s target (now %s)", g.Name, verb, g.Factor, fmtStd(s, g.Target), fmtStd(s, g.Value))
 }
 
+func scoreLabel(c *Scorecard) string {
+	if c.Partial {
+		return fmt.Sprintf("partial score %.0f/100", c.Score)
+	}
+	return fmt.Sprintf("score %.0f/100", c.Score)
+}
+
+func gradeRequirement() string {
+	return fmt.Sprintf("Letter grade requires at least %.0f%% standard coverage and available frame standards; every aggregate input must also support a grade.", MinCoverage*100)
+}
+
 // RenderTerm writes the scorecard as a terminal report. color enables ANSI.
 func RenderTerm(w io.Writer, c *Scorecard, color bool) error {
 	var b strings.Builder
-	b.WriteString(paint(color, ansiBold, fmt.Sprintf("Performance scorecard: grade %s, score %.0f/100", c.Grade, c.Score)) + "\n\n")
+	b.WriteString(paint(color, ansiBold, fmt.Sprintf("Performance scorecard: grade %s, %s, coverage %.1f%%", c.Grade, scoreLabel(c), c.Coverage*100)) + "\n\n")
+	if c.Partial {
+		b.WriteString(gradeRequirement() + "\n\n")
+	}
 
 	rows := [][]string{{"Standard", "Value", "Target (good)", "Rating", "Source"}}
 	for _, r := range c.Results {
 		val, detail := "n/a", ""
 		if r.Rating != Unavailable {
 			val = fmtStd(r.Standard, r.Value)
-			if r.Detail != "" {
-				detail = " (" + r.Detail + ")"
-			}
+		}
+		if r.Detail != "" {
+			detail = " (" + r.Detail + ")"
 		}
 		rows = append(rows, []string{r.Name, val + detail, cmpPrefix(r.Standard) + fmtStd(r.Standard, r.Good), string(r.Rating), r.Source})
 	}
@@ -143,7 +157,11 @@ func RenderTerm(w io.Writer, c *Scorecard, color bool) error {
 
 	b.WriteString("\n" + paint(color, ansiBold, "How far from a performant UI") + "\n")
 	if len(c.Gap) == 0 {
-		b.WriteString("Every available standard is met.\n")
+		if c.Coverage == 0 {
+			b.WriteString("No standards have sufficient data.\n")
+		} else {
+			b.WriteString("Every available standard is met.\n")
+		}
 	}
 	for _, g := range c.Gap {
 		b.WriteString("  " + paint(color, ratingColor(g.Rating), "•") + " " + gapLine(g) + "\n")
@@ -155,21 +173,28 @@ func RenderTerm(w io.Writer, c *Scorecard, color bool) error {
 // RenderMarkdown writes the same content as RenderTerm as Markdown.
 func RenderMarkdown(w io.Writer, c *Scorecard) error {
 	var b strings.Builder
-	fmt.Fprintf(&b, "## Performance scorecard: grade %s, score %.0f/100\n\n", c.Grade, c.Score)
+	fmt.Fprintf(&b, "## Performance scorecard: grade %s, %s, coverage %.1f%%\n\n", c.Grade, scoreLabel(c), c.Coverage*100)
+	if c.Partial {
+		b.WriteString(gradeRequirement() + "\n\n")
+	}
 	b.WriteString("| Standard | Value | Target (good) | Rating | Source |\n|---|---|---|---|---|\n")
 	for _, r := range c.Results {
 		val := "n/a"
 		if r.Rating != Unavailable {
 			val = fmtStd(r.Standard, r.Value)
-			if r.Detail != "" {
-				val += " (" + r.Detail + ")"
-			}
+		}
+		if r.Detail != "" {
+			val += " (" + r.Detail + ")"
 		}
 		fmt.Fprintf(&b, "| %s | %s | %s%s | %s | %s |\n", r.Name, val, cmpPrefix(r.Standard), fmtStd(r.Standard, r.Good), r.Rating, r.Source)
 	}
 	b.WriteString("\n### How far from a performant UI\n\n")
 	if len(c.Gap) == 0 {
-		b.WriteString("Every available standard is met.\n")
+		if c.Coverage == 0 {
+			b.WriteString("No standards have sufficient data.\n")
+		} else {
+			b.WriteString("Every available standard is met.\n")
+		}
 	}
 	for _, g := range c.Gap {
 		b.WriteString("- " + gapLine(g) + "\n")

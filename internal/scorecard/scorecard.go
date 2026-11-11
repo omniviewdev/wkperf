@@ -36,6 +36,12 @@ const (
 	maxFactor     = 1000.0
 	secondsPerMin = 60.0
 	minMemSamples = 5
+	// MinActiveFrames and MinActiveFrameMs bound the observation needed to
+	// rate the fixed-60Hz frame standards. Both minimums must be met.
+	MinActiveFrames  = 30
+	MinActiveFrameMs = 1000.0
+	// MinCoverage is the fraction of standard weight needed for a grade.
+	MinCoverage = 0.5
 )
 
 var interactionEvents = map[string]bool{
@@ -48,25 +54,25 @@ var interactionEvents = map[string]bool{
 func Standards() []Standard {
 	return []Standard{
 		{ID: "frame-p95", Name: "Frame time p95", Source: "frame budget (60Hz)", Unit: metrics.UnitMs, Good: 16.7, Poor: 33.4, Weight: 3,
-			Note: "95th percentile of active rendering-frame durations, excluding idle gaps and paused spans; 16.7ms is one 60Hz frame."},
+			Note: "95th percentile of active rendering-frame durations, excluding idle gaps, input stalls and paused spans; fixed 16.7ms budget. Needs at least 30 active frames and 1000ms of active-frame observation."},
 		{ID: "jank-ratio", Name: "Jank ratio", Source: "frame budget (60Hz)", Unit: metrics.UnitRatio, Good: 0.05, Poor: 0.25, Weight: 3,
-			Note: "Share of active rendering frames longer than 16.7ms; idle-gap frames and paused spans are excluded. Thresholds are wkperf choices."},
+			Note: "Share of active rendering frames longer than the fixed 16.7ms budget; idle gaps, input stalls and paused spans are excluded. Needs at least 30 active frames and 1000ms of active-frame observation. Thresholds are wkperf choices."},
 		{ID: "fps", Name: "Average FPS", Source: "frame budget (60Hz)", Unit: metrics.UnitFPS, Good: 55, Poor: 30, HigherBetter: true, Weight: 3,
-			Note: "1000 / mean active frame duration, not display refresh rate. Idle-gap frames are excluded; an all-idle capture has no FPS grade."},
+			Note: "1000 / mean active frame duration, not display refresh rate. Idle gaps, input stalls and paused spans are excluded. Needs at least 30 active frames and 1000ms of active-frame observation."},
 		{ID: "tbt", Name: "Total Blocking Time", Source: "Lighthouse", Unit: metrics.UnitMs, Good: 200, Poor: 600, Weight: 2,
-			Note: "Adapted: Lighthouse measures TBT between FCP and TTI of a page load. Here it is the sum of (duration-50ms) over script records longer than 50ms, normalized to ms per 10 seconds of recording so captures of different lengths compare."},
+			Note: "Adapted: Lighthouse measures TBT between FCP and TTI of a page load. Here it is the sum of (duration-50ms) over maximal overlapping script tasks longer than 50ms, normalized to ms per 10 seconds of active recording."},
 		{ID: "inp", Name: "Interaction latency (INP approx.)", Source: "Core Web Vitals", Unit: metrics.UnitMs, Good: 200, Poor: 500, Weight: 2,
 			Note: "Approximation of INP: p98 (max when fewer than 50 events) of event-dispatched script durations for click/pointer/key/input/touch events. Measures handler time only; excludes input delay and presentation delay, so real INP is higher."},
 		{ID: "long-task-rate", Name: "Long tasks per minute", Source: "wkperf heuristic", Unit: metrics.UnitCount, Good: 3, Poor: 12, Weight: 2,
-			Note: "Script records longer than 50ms (garbage collection excluded) per minute of recording."},
+			Note: "Maximal overlapping script tasks longer than the fixed 50ms threshold (garbage collection and count-only records excluded) per minute of active recording."},
 		{ID: "fcp", Name: "First Contentful Paint", Source: "Lighthouse", Unit: metrics.UnitMs, Good: 1800, Poor: 3000, Weight: 1,
 			Note: "From the first-contentful-paint layout record relative to recording start. Page-load metric: only meaningful if the recording covers a load."},
 		{ID: "lcp", Name: "Largest Contentful Paint", Source: "Core Web Vitals", Unit: metrics.UnitMs, Good: 2500, Poor: 4000, Weight: 1,
 			Note: "From the largest-contentful-paint layout record relative to recording start. Page-load metric: only meaningful if the recording covers a load."},
 		{ID: "main-busy", Name: "Main thread script busy", Source: "wkperf heuristic", Unit: metrics.UnitRatio, Good: 0.25, Poor: 0.5, Weight: 1,
 			Note: "Script time as a share of wall time. Thresholds are wkperf choices: a main thread busy more than half the time leaves little headroom for input and rendering."},
-		{ID: "gc-share", Name: "GC share of wall time", Source: "wkperf heuristic", Unit: metrics.UnitRatio, Good: 0.03, Poor: 0.10, Weight: 1,
-			Note: "Total garbage-collection time over wall time. Thresholds are wkperf choices."},
+		{ID: "gc-share", Name: "Main-thread GC pause share", Source: "wkperf heuristic", Unit: metrics.UnitRatio, Good: 0.03, Poor: 0.10, Weight: 1,
+			Note: "Unavailable: WebKit garbage-collected records measure collector intervals, not main-thread pauses. Collector occupancy is reported separately and cannot rate this standard."},
 		{ID: "memory-growth", Name: "Memory growth", Source: "wkperf heuristic", Unit: metrics.UnitMB, Good: 1, Poor: 10, Weight: 1,
 			Note: "MB per minute, slope of a linear regression over total memory samples; needs at least 5 samples. A heuristic for leaks in long sessions."},
 		{ID: "forced-layout-rate", Name: "Forced layouts per second", Source: "wkperf heuristic", Unit: metrics.UnitCount, Good: 0.5, Poor: 5, Weight: 1,
@@ -79,10 +85,9 @@ type measure struct {
 	detail string
 }
 
-// Evaluate rates one recording. rep supplies the frame, GC, memory and
-// script-busy numbers already computed by the analyzer; everything else is
-// derived from rec. rep may be nil, in which case summary-based standards
-// are unavailable.
+// Evaluate rates one recording. rep supplies the frame, memory and script-busy
+// numbers already computed by the analyzer; everything else is derived from
+// rec. rep may be nil, in which case summary-based standards are unavailable.
 func Evaluate(rec *model.Recording, rep *insights.Report) *Scorecard {
 	var sum *metrics.Summary
 	dur := 0.0
@@ -105,14 +110,23 @@ func Evaluate(rec *model.Recording, rep *insights.Report) *Scorecard {
 	lookup("frame-p95", "frames.p95_ms")
 	lookup("fps", "frames.fps")
 	lookup("jank-ratio", "frames.jank_ratio")
-	lookup("main-busy", "script.busy_ratio")
-	if sum != nil && dur > 0 && instrumentAvailable(rec, model.TypeScript) {
-		if x, ok := sum.Lookup("gc.total_ms"); ok {
-			m["gc-share"] = measure{v: x.Value / 1000 / dur, detail: fmt.Sprintf("%.0fms GC", x.Value)}
+	frameOK, frameDetail := frameObservation(sum)
+	for _, id := range []string{"frame-p95", "fps", "jank-ratio"} {
+		x, found := m[id]
+		if frameOK && found {
+			x.detail = frameDetail
 		} else {
-			m["gc-share"] = measure{v: 0, detail: "no GC recorded"}
+			if frameOK {
+				x.detail = "insufficient data: frame statistic not recorded; " + frameDetail
+			} else {
+				x.detail = frameDetail
+			}
+			x.v = math.NaN()
 		}
+		m[id] = x
 	}
+	lookup("main-busy", "script.busy_ratio")
+	m["gc-share"] = measure{v: math.NaN(), detail: "unavailable: collector intervals do not measure main-thread GC pauses"}
 	if sum != nil {
 		if v, n, ok := memoryGrowth(sum.MemoryMB); ok {
 			m["memory-growth"] = measure{v: v, detail: fmt.Sprintf("%d memory samples", n)}
@@ -124,6 +138,27 @@ func Evaluate(rec *model.Recording, rep *insights.Report) *Scorecard {
 	return build(m)
 }
 
+func frameObservation(sum *metrics.Summary) (bool, string) {
+	minimum := fmt.Sprintf("minimum %d active frames and %.0fms active-frame observation", MinActiveFrames, MinActiveFrameMs)
+	if sum == nil {
+		return false, "insufficient data: active-frame observation not recorded; " + minimum
+	}
+	count, countOK := sum.Lookup("frames.count")
+	active, activeOK := sum.Lookup("frames.active_ms")
+	if !countOK || !activeOK {
+		return false, "insufficient data: active-frame count or observation time not recorded; " + minimum
+	}
+	idleDetail := "idle gaps not recorded"
+	if idle, ok := sum.Lookup("frames.idle_wakeups"); ok {
+		idleDetail = fmt.Sprintf("%.0f idle gaps", idle.Value)
+	}
+	detail := fmt.Sprintf("%.0f active frames, %.1fms active-frame observation, %s", count.Value, active.Value, idleDetail)
+	if count.Value < MinActiveFrames || active.Value < MinActiveFrameMs {
+		return false, "insufficient data: " + detail + "; " + minimum
+	}
+	return true, detail
+}
+
 func deriveFromRecords(rec *model.Recording, dur float64, m map[string]measure) {
 	var tbt, worst float64
 	long := 0
@@ -132,6 +167,14 @@ func deriveFromRecords(rec *model.Recording, dur float64, m map[string]measure) 
 	layouts := 0
 	forced := len(profile.ForcedLayoutRecords(rec))
 	fcp, lcp := math.Inf(1), math.Inf(1)
+	for _, task := range profile.Tasks(rec) {
+		d := task.Duration() * 1000
+		if d > longTaskMs {
+			long++
+			tbt += d - longTaskMs
+			worst = math.Max(worst, d)
+		}
+	}
 	for i := range rec.Records {
 		r := &rec.Records[i]
 		if !profile.Observed(rec, *r) {
@@ -143,11 +186,6 @@ func deriveFromRecords(rec *model.Recording, dur float64, m map[string]measure) 
 				continue
 			}
 			d := profile.ActiveDuration(rec, r.StartTime, r.EndTime) * 1000
-			if d > longTaskMs {
-				long++
-				tbt += d - longTaskMs
-				worst = math.Max(worst, d)
-			}
 			if r.EventType == "event-dispatched" {
 				if name := detailName(r); interactionEvents[name] {
 					inp = append(inp, d)
@@ -278,13 +316,76 @@ func Values(c *Scorecard) map[string]float64 {
 	return out
 }
 
+// Aggregate rates per-standard medians while preserving missing observations.
+// Coverage is the mean input coverage, not the union of available standards.
+// Every input must support a grade before the aggregate can support one.
+func Aggregate(cards []*Scorecard) *Scorecard {
+	perStd := map[string][]float64{}
+	reasons := map[string]string{}
+	var coverage float64
+	partial := len(cards) == 0
+	for _, c := range cards {
+		if c == nil {
+			partial = true
+			continue
+		}
+		coverage += c.Coverage
+		if c.Partial || c.Grade == "n/a" || c.Grade == "" {
+			partial = true
+		}
+		for _, r := range c.Results {
+			if r.Rating != Unavailable {
+				perStd[r.ID] = append(perStd[r.ID], r.Value)
+			} else if r.Detail != "" && reasons[r.ID] == "" {
+				reasons[r.ID] = r.Detail
+			}
+		}
+	}
+	m := map[string]measure{}
+	for _, std := range Standards() {
+		vs := perStd[std.ID]
+		if len(vs) == 0 {
+			detail := reasons[std.ID]
+			if detail == "" {
+				detail = "insufficient data: no contributing input measured this standard"
+			}
+			m[std.ID] = measure{v: math.NaN(), detail: detail}
+			continue
+		}
+		sort.Float64s(vs)
+		n := len(vs)
+		v := vs[n/2]
+		if n%2 == 0 {
+			v = (vs[n/2-1] + v) / 2
+		}
+		m[std.ID] = measure{v: v, detail: fmt.Sprintf("median of %d of %d inputs with data", n, len(cards))}
+	}
+	c := build(m)
+	if len(cards) > 0 {
+		c.Coverage = coverage / float64(len(cards))
+	}
+	c.Partial = c.Partial || partial || c.Coverage < MinCoverage
+	if c.Partial {
+		c.Grade = "n/a"
+	}
+	return c
+}
+
 func build(m map[string]measure) *Scorecard {
 	c := &Scorecard{}
-	var wsum, ssum float64
+	var wsum, ssum, totalWeight float64
+	frameAvailable := false
 	for _, s := range Standards() {
+		totalWeight += s.Weight
 		r := Result{Standard: s, Rating: Unavailable}
+		if x, ok := m[s.ID]; ok {
+			r.Detail = x.detail
+		}
 		if x, ok := m[s.ID]; ok && !math.IsNaN(x.v) {
-			r.Value, r.Detail = x.v, x.detail
+			r.Value = x.v
+			if s.ID == "frame-p95" || s.ID == "fps" || s.ID == "jank-ratio" {
+				frameAvailable = true
+			}
 			r.Rating = rate(s, x.v)
 			r.Score = score(s, x.v)
 			wsum += s.Weight
@@ -298,7 +399,14 @@ func build(m map[string]measure) *Scorecard {
 	if wsum > 0 {
 		c.Score = ssum / wsum
 	}
-	c.Grade = grade(c.Score)
+	if totalWeight > 0 {
+		c.Coverage = wsum / totalWeight
+	}
+	c.Partial = c.Coverage < MinCoverage || !frameAvailable
+	c.Grade = "n/a"
+	if !c.Partial {
+		c.Grade = grade(c.Score)
+	}
 	sort.SliceStable(c.Gap, func(i, j int) bool {
 		if c.Gap[i].Factor != c.Gap[j].Factor {
 			return c.Gap[i].Factor > c.Gap[j].Factor

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -218,13 +219,12 @@ func TestPipelineBoundedMarkdown(t *testing.T) {
 	if err != nil || one != two || len(one) > 1800 {
 		t.Fatalf("markdown must be deterministic and bounded: %v %d/%d", err, len(one), len(two))
 	}
-	for _, heading := range []string{"findings", "hot functions", "verification"} {
-		if !strings.Contains(strings.ToLower(one), heading) {
-			t.Fatalf("brief lacks fixed %q section: %s", heading, one)
-		}
+	if !strings.Contains(one, "- Source:") || !strings.Contains(one, f) {
+		t.Fatalf("bounded Markdown must retain source identity: %s", one)
 	}
-	if !strings.Contains(strings.ToLower(one), "truncat") {
-		t.Fatalf("bounded output must mark omitted detail: %s", one)
+	lines := strings.Split(strings.TrimSpace(one), "\n")
+	if !strings.Contains(lines[len(lines)-1], "[truncated:") {
+		t.Fatalf("bounded output must end with omitted-detail marker: %s", one)
 	}
 	jsonOut, _, err := runPipeline(t, "analyze", f, "--format", "json", "--brief", "--max-bytes", "1800")
 	if err != nil || len(jsonOut) <= 1800 {
@@ -253,7 +253,7 @@ func TestPipelineSchemaContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	doc := decodeDocument(t, out)
-	if !strings.Contains(string(doc["$schema"]), "2020-12") || !strings.Contains(out, "wkperf-insights/v2") {
+	if !strings.Contains(string(doc["$schema"]), "2020-12") || !strings.Contains(out, "wkperf-insights/v3") {
 		t.Fatalf("schema missing version: %.300s", out)
 	}
 	for _, field := range []string{"findings", "hotspots", "inclusiveHotspots", "triggers", "wakeups", "suggestedWindows", "scorecard", "column", "errors"} {
@@ -269,7 +269,7 @@ func TestPipelineSchemaContract(t *testing.T) {
 	var result struct {
 		Schema string `json:"schema"`
 	}
-	if err := json.Unmarshal([]byte(analysis), &result); err != nil || result.Schema != "wkperf-insights/v2" {
+	if err := json.Unmarshal([]byte(analysis), &result); err != nil || result.Schema != "wkperf-insights/v3" {
 		t.Fatalf("actual schema differs: %v %s", err, result.Schema)
 	}
 }
@@ -432,7 +432,7 @@ func TestPipelineWindowCommandsKeepOriginalClock(t *testing.T) {
 		t.Fatal(err)
 	}
 	var doc struct {
-		Reports []insights.Report `json:"reports"`
+		Reports []insights.WireReport `json:"reports"`
 	}
 	if err := json.Unmarshal([]byte(out), &doc); err != nil || len(doc.Reports) != 1 {
 		t.Fatalf("report: %v", err)
@@ -467,8 +467,8 @@ func TestPipelineWindowCommandsKeepOriginalClock(t *testing.T) {
 			if err != nil {
 				t.Fatalf("reproduce %s: %v", evidence.MetricKey, err)
 			}
-			var q query.Result
-			if err := json.Unmarshal([]byte(result), &q); err != nil || len(q.Rows) != 1 || q.Rows[0].Value != evidence.Value {
+			var q queryOutput[query.ValueRow]
+			if err := json.Unmarshal([]byte(result), &q); err != nil || len(q.Rows) != 1 || math.Abs(q.Rows[0].Value-evidence.Value) > 1e-9 {
 				t.Fatalf("windowed evidence %s did not reproduce: %v want %.12g result %s", evidence.MetricKey, err, evidence.Value, result)
 			}
 			if !strings.Contains(evidence.Command, "--from 2") || !strings.Contains(evidence.Command, "--to 5") {
@@ -536,7 +536,7 @@ func TestPipelineModuleGrouping(t *testing.T) {
 					t.Fatal(err)
 				}
 				var doc struct {
-					Reports []insights.Report `json:"reports"`
+					Reports []insights.WireReport `json:"reports"`
 					Report  struct {
 						Modules []insights.ModuleStat `json:"modules"`
 					} `json:"report"`

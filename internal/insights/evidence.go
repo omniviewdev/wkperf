@@ -2,11 +2,15 @@ package insights
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/omniviewdev/wkperf/internal/flame"
 	"github.com/omniviewdev/wkperf/internal/metrics"
+	"github.com/omniviewdev/wkperf/internal/model"
+	"github.com/omniviewdev/wkperf/internal/profile"
 )
 
 func functionLabel(f metrics.FuncStat) string {
@@ -27,6 +31,36 @@ func functionLabel(f metrics.FuncStat) string {
 		return fmt.Sprintf("%s (%s:%d:%d) [generated %s (%s)]", originalName, o.URL, o.Line, o.Column, name, generated)
 	}
 	return fmt.Sprintf("%s (%s)", name, generated)
+}
+
+func singleSampleCaveat(c *ruleCtx) string {
+	if len(c.rep.Hotspots) == 0 || c.rep.Hotspots[0].SelfSamples != 1 || c.rep.FlameTree == nil {
+		return ""
+	}
+	function := c.rep.Hotspots[0]
+	for _, sample := range c.rep.FlameTree.Samples {
+		if len(sample.Frames) == 0 || flame.FunctionID(sample.Frames[len(sample.Frames)-1]) != function.ID {
+			continue
+		}
+		at := c.rec.StartTime + sample.Timestamp
+		var enclosing *model.Record
+		durationMs := math.Inf(1)
+		for i := range c.rec.Records {
+			record := &c.rec.Records[i]
+			if record.Type != model.TypeScript || profile.IsGC(*record) || !profile.Observed(c.rec, *record) || at < record.StartTime || at >= record.EndTime {
+				continue
+			}
+			ms := profile.ActiveDuration(c.rec, record.StartTime, record.EndTime) * 1000
+			if ms > 0 && (ms < durationMs || (ms == durationMs && enclosing != nil && eventLabel(record) < eventLabel(enclosing))) {
+				enclosing, durationMs = record, ms
+			}
+		}
+		if enclosing != nil && sample.WeightMs >= 0.8*durationMs {
+			return fmt.Sprintf("%s: one sample stands for the %sms %s event in the weighted ranking (sample weight %sms); this is not a measured function duration.", functionLabel(function), f1(durationMs), eventLabel(enclosing), f1(sample.WeightMs))
+		}
+		break
+	}
+	return ""
 }
 
 func sampledSeverity(c *ruleCtx, ms, share float64) Severity {
@@ -58,26 +92,26 @@ func primaryMetricKeys(id string) []string {
 	switch id {
 	case "jank":
 		return []string{"frames.p95_ms", "frames.jank_ratio"}
-	case "forced-layout":
-		return []string{"layout.forced-layout.total_ms", "layout.layout.total_ms"}
-	case "layout-after-script", "layout-heavy":
-		return []string{"layout.layout.total_ms", "layout.recalculate-styles.total_ms"}
+	case "input-stall":
+		return []string{"frames.input_stalls", "frames.input_stall_max_ms"}
+	case "layout-heavy":
+		return []string{"layout.layout.exclusive_ms", "layout.layout.total_ms"}
 	case "style-recalc-heavy":
-		return []string{"layout.recalculate-styles.total_ms"}
+		return []string{"layout.recalculate-styles.exclusive_ms", "layout.recalculate-styles.total_ms"}
 	case "paint-heavy":
-		return []string{"layout.paint.total_ms"}
+		return []string{"layout.paint.exclusive_ms", "layout.paint.total_ms"}
 	case "raf-load":
-		return []string{"script.animation-frame-fired.total_ms", "script.animation-frame-fired.max_ms"}
+		return []string{"script.animation-frame-fired.exclusive_ms", "script.animation-frame-fired.total_ms", "script.animation-frame-fired.max_ms"}
 	case "timer-storm":
 		return []string{"script.timer-fired.count", "script.timer-installed.count"}
 	case "event-handler-heavy":
-		return []string{"script.event-dispatched.total_ms", "script.event-dispatched.max_ms"}
+		return []string{"script.event-dispatched.exclusive_ms", "script.event-dispatched.total_ms", "script.event-dispatched.max_ms"}
 	case "microtask-heavy":
-		return []string{"script.microtask-fired.total_ms"}
+		return []string{"script.microtask-dispatched.exclusive_ms", "script.microtask-dispatched.total_ms"}
 	case "observer-callback-heavy":
-		return []string{"script.observer-callback-fired.total_ms"}
+		return []string{"script.observer-callback.exclusive_ms", "script.observer-callback.total_ms"}
 	case "gc-pressure":
-		return []string{"gc.total_ms", "gc.count"}
+		return []string{"gc.total_ms", "gc.overlap_with_work_ms", "gc.count"}
 	case "memory-growth":
 		return []string{"memory.peak_mb", "memory.final_mb"}
 	case "cpu-high":
@@ -94,7 +128,7 @@ func verificationTarget(id string, metric metrics.Metric) float64 {
 	switch metric.Key {
 	case "frames.p95_ms":
 		return 16.7
-	case "frames.jank_ratio":
+	case "frames.jank_ratio", "findings.jank.ratio":
 		return 0.05
 	case "cpu.mean_pct", "cpu.main.mean_pct":
 		return 50
@@ -110,7 +144,7 @@ func verificationTarget(id string, metric metrics.Metric) float64 {
 }
 
 func appendUnique(items []string, value string) []string {
-	if value == "" || strings.HasPrefix(value, "No samples") {
+	if value == "" || strings.HasPrefix(value, "No samples") || strings.HasPrefix(value, "No timed samples") {
 		return items
 	}
 	for _, item := range items {
@@ -134,6 +168,8 @@ func implicatedTriggers(id string, triggers []TriggerStat) []TriggerStat {
 			include = trigger.Kind == "dispatch"
 		case "microtask-heavy":
 			include = trigger.Kind == "microtask"
+		case "observer-callback-heavy":
+			include = trigger.Kind == "observer"
 		case "long-tasks", "forced-layout", "layout-after-script", "jank", "hot-function", "hot-module", "cpu-high":
 			include = true
 		}
@@ -150,7 +186,10 @@ func implicatedTriggers(id string, triggers []TriggerStat) []TriggerStat {
 func suggestedWindow(c *ruleCtx, context findingContext) SuggestedWindow {
 	from := context.s - c.rec.StartTime + c.opt.WindowStartSec
 	to := context.e - c.rec.StartTime + c.opt.WindowStartSec
-	flags := []string{"--from", seconds(from), "--to", seconds(to)}
+	flags := []string{}
+	if !c.rep.WholeRecording || !profile.CoversRecording(c.rec, context.s-c.rec.StartTime, context.e-c.rec.StartTime) {
+		flags = append(flags, "--from", seconds(from), "--to", seconds(to))
+	}
 	if c.opt.JankMs != 16.7 {
 		flags = append(flags, "--jank-ms", seconds(c.opt.JankMs))
 	}
@@ -163,12 +202,19 @@ func suggestedWindow(c *ruleCtx, context findingContext) SuggestedWindow {
 	for _, path := range c.opt.Sourcemaps {
 		flags = append(flags, "--sourcemap", path)
 	}
+	for _, pattern := range c.opt.Ownership.AppURLs {
+		flags = append(flags, "--app-url", pattern)
+	}
+	for _, pattern := range c.opt.Ownership.LibraryURLs {
+		flags = append(flags, "--library-url", pattern)
+	}
 	return SuggestedWindow{FromSec: from, ToSec: to, Reason: context.reason, Flags: flags}
 }
 
 func enrichFindings(c *ruleCtx, findings []Finding) {
 	for i := range findings {
 		f := &findings[i]
+		preset := f.NumericEvidence
 		f.NumericEvidence = []Evidence{}
 		f.MetricKeys = []string{}
 		f.Verify = []Verification{}
@@ -180,17 +226,15 @@ func enrichFindings(c *ruleCtx, findings []Finding) {
 		f.Nodes = []NodeClue{}
 		context := contextForFinding(c, *f)
 		addNodeClues(c, f, context)
-		f.Confidence = "low"
-		f.ConfidenceReasons = []string{"Single-run observation; repeat the same scene to estimate variance."}
-		if c.rep.DurationSec < 10 {
-			f.ConfidenceReasons = append(f.ConfidenceReasons, "Short capture: fewer than 10 active seconds.")
-		}
+		SetFindingConfidence(f, []*Report{c.rep}, 1, 1)
 		coverage := c.rep.SampleCoverage
-		if coverage.SampleCount < 100 {
-			f.ConfidenceReasons = append(f.ConfidenceReasons, "Sparse JavaScript samples: fewer than 100 weighted samples.")
-		}
-		if coverage.Available && coverage.Ratio < 0.5 {
-			f.ConfidenceReasons = append(f.ConfidenceReasons, "Sample weights cover less than half the measured script time.")
+		for _, e := range preset {
+			f.NumericEvidence = append(f.NumericEvidence, e)
+			f.MetricKeys = appendUnique(f.MetricKeys, e.MetricKey)
+			if len(f.Verify) == 0 {
+				target := verificationTarget(f.ID, metrics.Metric{Key: e.MetricKey, Value: e.Value})
+				f.Verify = append(f.Verify, Verification{MetricKey: e.MetricKey, Direction: "decrease", Target: target, Unit: e.Unit, Description: "Compare repeated captures with the same configured threshold.", Command: e.Command})
+			}
 		}
 		for _, key := range primaryMetricKeys(f.ID) {
 			metric, ok := c.sum.Lookup(key)
@@ -208,20 +252,56 @@ func enrichFindings(c *ruleCtx, findings []Finding) {
 		if f.ID == "hot-function" || f.ID == "hot-module" || f.ID == "cpu-high" {
 			basis = "estimated"
 		}
-		f.NumericEvidence = append(f.NumericEvidence, Evidence{MetricKey: impactKey, Value: f.ImpactMs, Unit: metrics.UnitMs, Description: "Attributed impact; overlapping findings are not additive.", Basis: basis, Command: metricCommand(c, impactKey)})
+		description := "Attributed impact; overlapping findings are not additive."
+		switch f.ID {
+		case "jank":
+			description = "Exclusive main-thread work excess above the configured threshold across active slow frames."
+		case "input-stall":
+			description = "Observed input-stall intervals; not measured main-thread blocking time."
+		case "gc-pressure":
+			description = "Collector-interval union; not measured main-thread blocking time."
+		}
+		f.NumericEvidence = append(f.NumericEvidence, Evidence{MetricKey: impactKey, Value: f.ImpactMs, Unit: metrics.UnitMs, Description: description, Basis: basis, Command: metricCommand(c, impactKey)})
 		f.MetricKeys = appendUnique(f.MetricKeys, impactKey)
 		if len(f.Verify) == 0 {
 			f.Verify = append(f.Verify, Verification{MetricKey: impactKey, Direction: "decrease", Target: f.ImpactMs * 0.8, Unit: metrics.UnitMs, Description: "Aim for roughly 20% less measured or sampled cost in repeated equivalent captures.", Command: metricCommand(c, impactKey)})
 		}
 		if f.ID == "hot-function" || f.ID == "hot-module" || f.ID == "low-sample-coverage" {
 			f.NumericEvidence = append(f.NumericEvidence,
-				Evidence{MetricKey: "samples.count", Value: float64(coverage.SampleCount), Unit: metrics.UnitCount, Description: "Weighted samples supporting function rankings", Basis: "measured", Command: metricCommand(c, "samples.count")},
-				Evidence{MetricKey: "samples.coverage_ratio", Value: coverage.Ratio, Unit: metrics.UnitRatio, Description: "Sampled weight / exclusive measured script time; unavailable without script intervals", Basis: "estimated", Command: metricCommand(c, "samples.coverage_ratio")})
+				Evidence{MetricKey: "samples.count", Value: float64(coverage.SampleCount), Unit: metrics.UnitCount, Description: "Profiler samples supporting function rankings; weights do not increase the count", Basis: "measured", Command: metricCommand(c, "samples.count")})
 			f.MetricKeys = appendUnique(f.MetricKeys, "samples.count")
-			f.MetricKeys = appendUnique(f.MetricKeys, "samples.coverage_ratio")
-			f.Evidence = append(f.Evidence, fmt.Sprintf("sample coverage ratio %.3f (%d samples; measured script %.1fms; available=%t)", coverage.Ratio, coverage.SampleCount, coverage.ScriptMs, coverage.Available))
+			if coverage.Available {
+				f.NumericEvidence = append(f.NumericEvidence, Evidence{MetricKey: "samples.coverage_ratio", Value: coverage.Ratio, Unit: metrics.UnitRatio, Description: "Sampled weight / exclusive measured script time", Basis: "estimated", Command: metricCommand(c, "samples.coverage_ratio")})
+				f.MetricKeys = appendUnique(f.MetricKeys, "samples.coverage_ratio")
+				f.Evidence = append(f.Evidence, fmt.Sprintf("sample coverage ratio %.3f (samples=%d; measured script %.1fms)", coverage.Ratio, coverage.SampleCount, coverage.ScriptMs))
+			} else {
+				f.Evidence = append(f.Evidence, fmt.Sprintf("sample coverage ratio unavailable (samples=%d; no measured script denominator)", coverage.SampleCount))
+			}
+			if f.ID == "hot-function" && len(c.rep.Hotspots) > 0 {
+				function := c.rep.Hotspots[0]
+				key := functionMetricPrefix(function) + ".self_samples"
+				f.NumericEvidence = append(f.NumericEvidence, Evidence{MetricKey: key, Value: float64(function.SelfSamples), Unit: metrics.UnitCount, Description: "Samples ending in the concentrated function", Basis: "measured", Command: metricCommand(c, key)})
+				f.MetricKeys = appendUnique(f.MetricKeys, key)
+			}
+			if f.ID == "hot-module" {
+				for _, module := range c.mods {
+					if module.Name == "(native)" {
+						continue
+					}
+					key := moduleMetricPrefix(c.opt.ModuleGrouping, module.Name) + ".self_samples"
+					f.NumericEvidence = append(f.NumericEvidence, Evidence{MetricKey: key, Value: float64(module.SelfSamples), Unit: metrics.UnitCount, Description: "Samples ending in the concentrated module", Basis: "measured", Command: metricCommand(c, key)})
+					f.MetricKeys = appendUnique(f.MetricKeys, key)
+					break
+				}
+			}
 			if f.ID == "low-sample-coverage" {
-				f.Verify = []Verification{{MetricKey: "samples.coverage_ratio", Direction: "increase", Target: 0.5, Unit: metrics.UnitRatio, Description: "Capture at least half the measured script time as sample weight before trusting sampled rankings.", Command: metricCommand(c, "samples.coverage_ratio")}}
+				f.Verify = []Verification{}
+				if coverage.SampleCount < minCoverageSamples {
+					f.Verify = append(f.Verify, Verification{MetricKey: "samples.count", Direction: "increase", Target: minCoverageSamples, Unit: metrics.UnitCount, Description: "Retain at least 20 profiler samples before trusting function and module rankings.", Command: metricCommand(c, "samples.count")})
+				}
+				if coverage.Available && coverage.Ratio < 0.5 {
+					f.Verify = append(f.Verify, Verification{MetricKey: "samples.coverage_ratio", Direction: "increase", Target: 0.5, Unit: metrics.UnitRatio, Description: "Capture at least half the measured script time as sample weight before trusting sampled rankings.", Command: metricCommand(c, "samples.coverage_ratio")})
+				}
 			}
 		}
 		for _, trigger := range implicatedTriggers(f.ID, contextTriggers(c, context)) {
@@ -244,4 +324,14 @@ func enrichFindings(c *ruleCtx, findings []Finding) {
 		sort.Strings(f.Functions)
 		sort.Strings(f.Triggers)
 	}
+}
+
+func temporalFinding(id string) bool {
+	switch id {
+	case "jank", "input-stall", "long-tasks", "react-sync-in-trigger", "react-sync", "periodic-root", "forced-style-or-layout-read",
+		"forced-layout", "layout-after-script", "layout-heavy", "style-recalc-heavy", "paint-heavy",
+		"raf-load", "timer-storm", "event-handler-heavy", "microtask-heavy", "observer-callback-heavy":
+		return true
+	}
+	return false
 }

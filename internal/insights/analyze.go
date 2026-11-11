@@ -2,6 +2,7 @@ package insights
 
 import (
 	"encoding/json"
+	"math"
 	"sort"
 	"strings"
 
@@ -18,7 +19,7 @@ func (o Options) withDefaults() Options {
 		o.Top = 10
 	}
 	if o.JankMs <= 0 {
-		o.JankMs = 16.7
+		o.JankMs = profile.FrameBudgetMs
 	}
 	if o.LongTaskMs <= 0 {
 		o.LongTaskMs = 50
@@ -35,31 +36,42 @@ func Analyze(rec *model.Recording, source string, o Options) *Report {
 	if rec == nil {
 		rec = &model.Recording{}
 	}
-	tree := flame.Build(rec)
+	if rec.SampleEvidence != nil {
+		o.WindowStartSec = rec.StartTime - rec.SampleEvidence.StartTime
+	}
+	tree := flame.Build(rec, flame.Options{Ownership: o.Ownership})
+	o.Ownership = tree.Ownership
 	sum := analyze.SummarizeWithTree(rec, source, tree)
+	work, costs := profile.MeasureRecords(rec, rec.StartTime, rec.EndTime)
 	r := &Report{
-		SchemaVersion:     "wkperf-insights/v2",
-		FlameTree:         tree,
-		Source:            source,
-		WindowStartSec:    o.WindowStartSec,
-		WindowEndSec:      o.WindowStartSec + rec.EndTime - rec.StartTime,
-		ModuleGrouping:    o.ModuleGrouping,
-		JankMs:            o.JankMs,
-		LongTaskMs:        o.LongTaskMs,
-		Sourcemaps:        append([]string{}, o.Sourcemaps...),
-		Name:              rec.DisplayName,
-		DurationSec:       sum.DurationSec,
-		Summary:           sum,
-		Breakdown:         computeBreakdown(rec),
-		Hotspots:          []metrics.FuncStat{},
-		InclusiveHotspots: []metrics.FuncStat{},
-		CommonStacks:      []metrics.StackStat{},
-		Triggers:          []TriggerStat{},
-		Wakeups:           WakeupStats{Causes: []TriggerStat{}},
-		Modules:           []ModuleStat{},
-		SlowFrames:        []SlowFrame{},
-		LongTasks:         []LongTask{},
-		Findings:          []Finding{},
+		SchemaVersion:       "wkperf-insights/v3",
+		Top:                 o.Top,
+		FlameTree:           tree,
+		Source:              source,
+		WindowStartSec:      o.WindowStartSec,
+		WindowEndSec:        o.WindowStartSec + rec.EndTime - rec.StartTime,
+		WholeRecording:      !rec.UntimedExcluded && o.WindowStartSec <= 1e-9,
+		ModuleGrouping:      o.ModuleGrouping,
+		JankMs:              o.JankMs,
+		LongTaskMs:          o.LongTaskMs,
+		SourceMapPaths:      append([]string{}, o.Sourcemaps...),
+		Ownership:           tree.Ownership,
+		Name:                rec.DisplayName,
+		DurationSec:         sum.DurationSec,
+		Summary:             sum,
+		Breakdown:           breakdownWithWork(rec, work),
+		GCMs:                work.GCMs,
+		GCOverlapWithWorkMs: work.GCOverlapWithWorkMs,
+		Hotspots:            []metrics.FuncStat{},
+		InclusiveHotspots:   []metrics.FuncStat{},
+		CommonStacks:        []metrics.StackStat{},
+		Triggers:            []TriggerStat{},
+		Wakeups:             WakeupStats{Causes: []TriggerStat{}},
+		Modules:             []ModuleStat{},
+		SlowFrames:          []SlowFrame{},
+		InputStalls:         []InputStall{},
+		LongTasks:           []LongTask{},
+		Findings:            []Finding{},
 	}
 	for _, f := range sum.Functions {
 		if len(r.Hotspots) >= o.Top || f.SelfMs <= 0 {
@@ -84,45 +96,55 @@ func Analyze(rec *model.Recording, source string, o Options) *Report {
 		r.Modules = mods
 	}
 
-	idx := newSampleIndex(tree, rec.StartTime)
+	idx := newSampleIndex(tree, rec.StartTime, o.WindowStartSec)
 	r.Triggers = triggerStatsWithTree(rec, tree, o.Top)
 	r.Wakeups = idleWakeups(rec, tree, o.Top)
-	r.SampleCoverage = sampleCoverage(rec, sum)
-	r.SampleCoverage.SampleCount = len(tree.Samples)
+	r.SampleCoverage = sampleCoverage(sum, work.ScriptMs)
+	r.SampleCoverage.SampleCount = tree.SampleCount()
+	r.SampleCoverage.TimedSampleCount = len(tree.Samples)
+	r.SampleCoverage.UntimedSampleCount = tree.UntimedTotal.Count
+	r.SampleCoverage.UntimedMs = tree.UntimedTotal.Ms
+	r.SampleCoverage.UntimedExcluded = tree.UntimedTotal.Count > 0 && !tree.UntimedIncluded
+	r.SampleCoverage.UntimedSpans = append([]flame.UntimedSpan{}, tree.UntimedSpans...)
+	for i := range r.SampleCoverage.UntimedSpans {
+		span := &r.SampleCoverage.UntimedSpans[i]
+		span.FromSec = math.Round((span.FromSec+o.WindowStartSec)*1e9) / 1e9
+		span.ToSec = math.Round((span.ToSec+o.WindowStartSec)*1e9) / 1e9
+		if span.FromSec == 0 {
+			span.FromSec = 0
+		}
+	}
+	sampledMs := r.SampleCoverage.SampledMs
+	if r.SampleCoverage.UntimedExcluded {
+		sampledMs += r.SampleCoverage.UntimedMs
+	}
+	note := rootcause.UntimedAttributionNote(r.SampleCoverage.UntimedMs, sampledMs)
 	allSlow := slowFrames(rec, idx, o.JankMs)
+	allStalls := inputStalls(rec, idx)
 	allLong := longTasks(rec, idx, o.LongTaskMs)
-	r.SlowFrames = topN(allSlow, o.Top)
-	r.LongTasks = topNLong(allLong, o.Top)
+	for i := range allSlow {
+		allSlow[i].SampleStatus = note
+	}
+	for i := range allStalls {
+		allStalls[i].SampleStatus = note
+	}
+	for i := range allLong {
+		allLong[i].SampleStatus = note
+	}
+	r.SlowFrames, r.SlowFramesTotal = allSlow, len(allSlow)
+	r.InputStalls, r.InputStallsTotal = allStalls, len(allStalls)
+	r.LongTasks, r.LongTasksTotal = allLong, len(allLong)
 
 	r.RootCause = rootcause.Build(rec, tree, rootcause.Options{
 		Source: source, OffsetSec: o.WindowStartSec, Sourcemaps: o.Sourcemaps,
-		Top: o.Top, JankMs: o.JankMs, LongTaskMs: o.LongTaskMs,
+		Top: o.Top, JankMs: o.JankMs, LongTaskMs: o.LongTaskMs, Ownership: o.Ownership,
 	})
-	ctx := &ruleCtx{rec: rec, sum: sum, rep: r, opt: o, mods: mods, slow: allSlow, long: allLong, wallMs: sum.DurationSec * 1000}
+	ctx := &ruleCtx{rec: rec, sum: sum, rep: r, opt: o, mods: mods, slow: allSlow, long: allLong, costs: costs, wallMs: sum.DurationSec * 1000}
 	r.Findings = runRules(ctx)
-	r.Findings = append(r.Findings, rootFindings(ctx)...)
+	r.Findings = mergeSampleFindings(append(r.Findings, rootFindings(ctx)...))
 	sortFindings(r.Findings)
+	syncRootFindingSeverities(r)
 	return r
-}
-
-func topN(in []SlowFrame, n int) []SlowFrame {
-	if len(in) > n {
-		in = in[:n]
-	}
-	if in == nil {
-		return []SlowFrame{}
-	}
-	return in
-}
-
-func topNLong(in []LongTask, n int) []LongTask {
-	if len(in) > n {
-		in = in[:n]
-	}
-	if in == nil {
-		return []LongTask{}
-	}
-	return in
 }
 
 // detailString returns Details when it is a JSON string, or the "url" field
@@ -166,18 +188,24 @@ func moduleGroup(url, grouping string) string {
 }
 
 func computeModules(fns []metrics.FuncStat, grouping string) []ModuleStat {
-	agg := map[string]float64{}
+	agg := map[string]ModuleStat{}
 	total := 0.0
 	for _, f := range fns {
 		if f.SelfMs <= 0 {
 			continue
 		}
-		agg[moduleGroup(f.URL, grouping)] += f.SelfMs
+		name := moduleGroup(f.URL, grouping)
+		module := agg[name]
+		module.Name = name
+		module.SelfMs += f.SelfMs
+		module.SelfSamples += f.SelfSamples
+		agg[name] = module
 		total += f.SelfMs
 	}
 	var out []ModuleStat
-	for n, ms := range agg {
-		out = append(out, ModuleStat{Name: n, SelfMs: ms, Pct: ms / total * 100})
+	for _, module := range agg {
+		module.Pct = module.SelfMs / total * 100
+		out = append(out, module)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].SelfMs != out[j].SelfMs {
@@ -190,11 +218,14 @@ func computeModules(fns []metrics.FuncStat, grouping string) []ModuleStat {
 
 // sampleIndex is a time-sorted flattening of all samples for range queries.
 type sampleIndex struct {
-	rows []indexedSample
+	rows         []indexedSample
+	untimedSpans []flame.UntimedSpan
+	origin       float64
+	offset       float64
 }
 
-func newSampleIndex(tree *flame.Tree, origin float64) *sampleIndex {
-	x := &sampleIndex{rows: make([]indexedSample, 0, len(tree.Samples))}
+func newSampleIndex(tree *flame.Tree, origin, offset float64) *sampleIndex {
+	x := &sampleIndex{rows: make([]indexedSample, 0, len(tree.Samples)), untimedSpans: tree.UntimedSpans, origin: origin, offset: offset}
 	for _, sample := range tree.Samples {
 		if len(sample.Frames) == 0 {
 			continue
@@ -229,6 +260,9 @@ func (x *sampleIndex) top(s, e float64) string {
 		}
 	}
 	if best == "" {
+		if status := rootcause.UntimedSampleStatus(x.untimedSpans, s-x.origin, e-x.origin, x.offset); status != "" {
+			return status
+		}
 		return "No samples in this interval"
 	}
 	return best
@@ -265,24 +299,23 @@ func stringDetail(r *model.Record) string {
 }
 
 func slowFrames(rec *model.Recording, idx *sampleIndex, jankMs float64) []SlowFrame {
-	var out []SlowFrame
+	out := []SlowFrame{}
 	for _, f := range profile.Frames(rec, rec.StartTime, rec.EndTime) {
-		if f.IdleGap || f.DurationMs <= jankMs {
+		if f.Class != profile.FrameActive || f.DurationMs <= jankMs {
 			continue
 		}
 		work := f.Occupancy
 		sf := SlowFrame{
-			T: f.Start - rec.StartTime, Ms: f.DurationMs,
+			T: f.Start - rec.StartTime, Ms: f.DurationMs, WorkMs: work.WorkMs,
 			ScriptMs: work.ScriptMs, LayoutMs: work.LayoutMs + work.StyleMs,
 			PaintMs: work.PaintMs + work.CompositeMs, GCMs: work.GCMs,
+			GCOverlapWithWorkMs: work.GCOverlapWithWorkMs,
 		}
 		byEvent := map[string]float64{}
-		for j := range rec.Records {
-			r := &rec.Records[j]
-			if r.Type != model.TypeScript || profile.IsGC(*r) {
-				continue
+		for _, cost := range profile.ExclusiveRecords(rec, f.Start, f.End) {
+			if cost.Record.Type == model.TypeScript {
+				byEvent[eventLabel(&cost.Record)] += cost.ExclusiveMs
 			}
-			byEvent[eventLabel(r)] += overlap(f.Start, f.End, r.StartTime, r.EndTime) * 1000
 		}
 		best, bm := "", 0.0
 		for l, ms := range byEvent {
@@ -295,6 +328,9 @@ func slowFrames(rec *model.Recording, idx *sampleIndex, jankMs float64) []SlowFr
 		out = append(out, sf)
 	}
 	sort.Slice(out, func(i, j int) bool {
+		if out[i].WorkMs != out[j].WorkMs {
+			return out[i].WorkMs > out[j].WorkMs
+		}
 		if out[i].Ms != out[j].Ms {
 			return out[i].Ms > out[j].Ms
 		}
@@ -309,14 +345,34 @@ func slowFrames(rec *model.Recording, idx *sampleIndex, jankMs float64) []SlowFr
 	return out
 }
 
+func inputStalls(rec *model.Recording, idx *sampleIndex) []InputStall {
+	out := []InputStall{}
+	for _, f := range profile.Frames(rec, rec.StartTime, rec.EndTime) {
+		if f.Class != profile.FrameInputStall {
+			continue
+		}
+		out = append(out, InputStall{
+			T: f.Start - rec.StartTime, Ms: f.DurationMs, WorkMs: f.Occupancy.WorkMs,
+			TopEvent: f.DominantTrigger, TopFunc: idx.top(f.Start, f.End),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Ms != out[j].Ms {
+			return out[i].Ms > out[j].Ms
+		}
+		return out[i].T < out[j].T
+	})
+	return out
+}
+
 func longTasks(rec *model.Recording, idx *sampleIndex, thr float64) []LongTask {
-	var out []LongTask
-	for _, record := range LongTaskRecords(rec, thr) {
+	out := []LongTask{}
+	for _, task := range longTaskSpans(rec, thr) {
 		out = append(out, LongTask{
-			T:         record.StartTime - rec.StartTime,
-			Ms:        profile.ActiveDuration(rec, record.StartTime, record.EndTime) * 1000,
-			EventType: record.EventType, Detail: detailString(&record),
-			TopFunc: idx.top(record.StartTime, record.EndTime),
+			T:         task.StartTime - rec.StartTime,
+			Ms:        (task.EndTime - task.StartTime) * 1000,
+			EventType: task.EventType, Children: task.Children, ChildrenTotal: len(task.Children), Detail: detailString(&task.Record),
+			TopFunc: idx.top(task.StartTime, task.EndTime),
 		})
 	}
 	return out

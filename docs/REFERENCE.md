@@ -34,11 +34,37 @@ The sample set also includes `regressions/idle-gap.json`, `stack-evidence.json` 
 
 Paused intervals in `recording.discontinuities` use `{startTime,endTime}` in recording timestamps. Their union is excluded from active wall time and rate denominators. Work overlapping pauses is clipped; paused frame intervals do not enter rendering statistics. Window flags remain seconds from the original recording start, not a compressed paused-time clock.
 
-Rendering-frame spans alone do not measure CPU work. An interval longer than 50 ms with less than 10% exclusive instrumented work and no input-driven event is classified as an idle gap. It is excluded from frame percentiles, jank ratios, and active-frame FPS, and reported as an idle wakeup with its dominant trigger. Its unoccupied time belongs to `Idle`; known work still belongs to script/style/layout/paint/GC. Other active-frame time is labeled `Frame time not attributed to work`. This classification is inferred from exported instrumentation, not a display-refresh measurement.
+`compare` and `summary` reject empty or zero-active-time selections with `window_error` and exit 1 before producing summaries or evaluating CI gates. A comparison cannot pass strict-fixture checks on an empty window.
+
+Rendering-frame spans alone do not measure CPU work. An interval longer than 50 ms with less than 10% exclusive instrumented work and no input-driven event is an inferred idle gap, reported as an idle wakeup rather than jank. An input-driven interval over budget with at most one budget of measured work is an input stall, not evidence that JavaScript occupied the whole interval. Idle gaps and input stalls do not enter active-frame percentiles, work-bound jank ratios, or FPS. Slow active frames retain their observed duration; work over budget and unexplained interval excess remain separate.
+
+Exclusive main-thread work follows the innermost record: latest original start, then shortest duration, then a deterministic category tie-break. Script, style, layout, paint, and composite partition that measured work. GC collector intervals are a separate overlay, with overlap against work; their elapsed duration is not a main-thread pause measurement. Uninstrumented active-frame time is labeled accordingly rather than attributed to JavaScript or GC.
+
+Tasks are maximal unions of overlapping non-GC, non-count-only script records. Touching intervals remain separate tasks. Long-task counts, TBT, triage, and `--around-long-task` share those boundaries, so nested callbacks and microtasks are not counted repeatedly. WebKit event names include `microtask-dispatched` and `observer-callback`; per-trigger inclusive durations can overlap and are labeled separately from exclusive work.
+
+Analysis exposes `gcMs` and `gcOverlapWithWorkMs` outside the exclusive breakdown, and keeps input stalls in their own bounded `inputStalls` list with totals. Jank findings cite `findings.jank.ratio` and `findings.jank.threshold_ms`; fixed-standard `frames.*` measurements remain separate. `findings.jank.interval_excess_ms` reports observed interval excess independently of measured work excess.
 
 Sampling weights come from `durations[i]`, in seconds, paired with `stackTraces[i]`. Missing weights use a 1 ms default. WebKit's actual [CallingContextTree consumer](https://github.com/WebKit/WebKit/blob/main/Source/WebInspectorUI/UserInterface/Models/CallingContextTree.js) visits frames last-to-first and identifies index zero as the leaf. wkperf normalizes these raw stacks to root-to-leaf paths. This follows the consumer rather than the protocol's ambiguous top/bottom wording.
 
 Sample durations are statistical weights, not measured execution intervals. A time window selects samples by timestamp in `[from,to)` and retains each selected sample's full weight; it does not spread or proportionally clip the weight over wall time. Sampling totals can therefore differ from instrumented script totals and should not be presented as an exclusive elapsed-time breakdown.
+
+### Samples without usable timestamps
+
+When the original recording starts after zero, samples with `timestamp: 0` have an unknown position in time, not a position at the start of the recording. WebKit can export these when the sampler's stopwatch has not accumulated time. Their weights are still useful for whole-recording rankings, call trees, ownership, folded stacks, and coverage. A genuine zero-time sample in a recording starting at zero remains timed.
+
+Whole-recording views include both timed and untimed weights. Partial windows, task/frame attribution, trigger tables, and periodic detection use timed samples only. Output reports untimed counts, weights, and exclusions explicitly; it never reconstructs timestamps from sample weights. Coverage can exceed 1 because weights include default estimates and event averages while script time is an exclusive measurement.
+
+Export order can bound a run of untimed samples between neighboring timed samples when those timed timestamps are monotonic. These spans are labeled inferences used only to explain missing temporal attribution; they never move sampled weight into a window. Stack first/last times are nullable when no timed observation exists.
+
+Window coverage uses a shared 1 ns tolerance. An explicitly selected full recording includes the same samples as the default view, even when a printed endpoint is rounded. Reproduction commands omit `--from` and `--to` for whole-recording measurements.
+
+| Metric key | Unit | Meaning |
+| --- | --- | --- |
+| `samples.untimed_count` | count | untimed observations in the original recording |
+| `samples.untimed_ms` | ms | their total statistical weight |
+| `samples.untimed_excluded_ms` | ms | weight excluded from this selection because its position is unknown; zero for a whole-recording view |
+
+Query source metadata uses `untimed_samples`, `untimed_ms`, `untimed_excluded`, and `untimed_spans`. These describe missing placement in the original recording, not a claim that every unknown sample occurred inside the requested window.
 
 See WebKit's [TimelineRecording implementation](https://github.com/WebKit/WebKit/blob/main/Source/WebInspectorUI/UserInterface/Models/TimelineRecording.js) and [RenderingFrameTimelineRecord implementation](https://github.com/WebKit/WebKit/blob/main/Source/WebInspectorUI/UserInterface/Models/RenderingFrameTimelineRecord.js) for export semantics. Real recordings are not bundled; regression fixtures reproduce reported shapes and edge cases.
 
@@ -129,20 +155,22 @@ wkperf version
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--format` | `term` | `term`, `md`, `html`, `json`, `folded`, or `all` |
-| `--out` | `wkperf-analysis.html` | output file; directory or prefix with `all` (writes `.md`, `.json`, `.html`). `md` and `json` print to stdout without `--out` |
+| `--out` | `wkperf-analysis.html` | output file; `-` writes to stdout; directory or prefix with `all` (writes `.md`, `.json`, `.html`). `md` and `json` print to stdout without `--out` |
 | `--top` | `10` | list length for hotspots, modules, slow frames, long tasks |
 | `--jank-ms` | `16.7` | slow-frame threshold |
 | `--long-task-ms` | `50` | long-task threshold |
 | `--no-scorecard` | off | skip the per-recording scorecard |
 | `--sourcemap` | auto-discovery only | repeatable source-map file or directory; show original and generated locations |
 | `--module-grouping` | `file` | `file` or `parent-directory`; also supported by audit and comparison's representative analyses |
-| `--brief` | off | compact agent-oriented Markdown |
-| `--max-bytes` | `0` (unlimited) | cap Markdown bytes; positive limits below 64 are rejected; JSON stays complete |
+| `--brief` | off | compact agent-oriented Markdown or terminal output |
+| `--max-bytes` | `0` (unlimited) | cap Markdown or terminal bytes, including the final truncation marker; positive limits below 64 are rejected |
 | `--open`, `--no-color` | | as in `compare` |
 
-Each recording is followed by its scorecard (see Scorecard). Analysis JSON uses the versioned `wkperf-insights/v2` envelope; each report carries a `scorecard` field unless `--no-scorecard`. This replaces v1: agents must check the `schema` discriminator before reading the report. HTML includes time breakdowns, self and inclusive hotspots, trigger attribution, idle wakeups, and findings with confidence and verification guidance.
+Each recording is followed by its scorecard (see Scorecard). v0.5.0 uses `wkperf-insights/v3`; v0.4.0 emits v2. Each report carries a `scorecard` field unless `--no-scorecard`. Consumers must check the `schema` discriminator, including nullable stack times and untimed-sample metadata. HTML includes time breakdowns, self and inclusive hotspots, trigger attribution, idle wakeups, and findings with confidence and verification guidance.
 
-Bounded Markdown cannot be combined with a live `--ai` completion; emit the bounded local report or a prompt separately. The byte limit covers the whole Markdown artifact, including truncation markers.
+Bounded text cannot be combined with a live `--ai` completion; emit the bounded local report or a prompt separately. The limit applies to the complete text artifact, including scorecards and truncation markers. JSON keeps exact selected evidence and explicit retrieval metadata rather than inheriting text limits.
+
+`analyze --out -` writes a single-format report to stdout. It cannot be combined with `--format all` or `--open`.
 
 ### Findings catalogue
 
@@ -172,7 +200,7 @@ Sampled hotspot findings require at least 20 ms and 0.1% of active wall time. A 
 
 Function identity is `(url,line,column,name)`, with `sourceID` in place of the URL when the URL is empty. Distinct anonymous functions on one minified line stay distinct. Reports print generated `file:line:column` and original locations when a map resolves them. Native frames retain their source identity even without a URL.
 
-Pass `--sourcemap path/to/bundle.js.map` or `--sourcemap path/to/maps` repeatedly. Standard v3 `mappings` and `names` resolve generated columns to original file, line, column, and name. Local bundle-adjacent maps and recording-adjacent bundle-name sidecars can be discovered without network requests. Ambiguous matches retain the generated frame with a warning. Without a matching map, minified profiles include a source-map hint; no source locations are invented.
+Pass `--sourcemap path/to/bundle.js.map` or `--sourcemap path/to/maps` repeatedly. Standard v3 mappings resolve original file, line, and column; function names use conservative declaration-oriented lookup rather than the parameter token at the profiler position. Anonymous frames do not inherit a nearby parameter name. Local bundle-adjacent maps and recording-adjacent bundle-name sidecars can be discovered without network requests. A directory scan warns and continues past unrelated unsupported maps; explicitly supplied unsupported map files still fail. Missing relocated sources retain their cleaned map-relative path with a warning rather than inventing a local absolute path. Ambiguous matches retain the generated frame with a warning.
 
 Hot functions retain a stable query `id`, self and inclusive time, weighted callers and callees, and `commonStack`. The common stack is the most frequent complete containing path by sample count, with weight and lexical tie-breaks; it is distinct from the heaviest window stack. Module grouping defaults to individual file URLs without query/hash. Use `--module-grouping parent-directory` for roll-up. Inclusive time overlaps between callers and callees; never add inclusive rows as a wall-time breakdown.
 
@@ -187,14 +215,14 @@ Trigger tables separate event names and timer/rAF/microtask dispatches. Each row
 | `--format` | `term` | `term`, `md`, `json`, `html`, or `all` |
 | `--out` | `wkperf-audit.html` | output file; directory or prefix with `all` |
 | `--group-by-prefix` | off | group loose files `<scene>-<n>.json` / `<scene>_<n>.json` into scene `<scene>` |
-| `--min-score` | `0` (off) | exit 4 when the overall score is below N |
+| `--min-score` | `0` (off) | exit 4 when the overall score is below N or an overall grade is unavailable |
 | `--top` | `10` | list length for priorities, hotspots, modules |
 | `--jank-ms`, `--long-task-ms` | `16.7`, `50` | thresholds as in `analyze` |
 | `--trim-start`, `--trim-end`, `--from`, `--to` | `0` | window applied to every recording |
 | `--open`, `--no-color` | | as in `compare` |
 | `--ai`, `--emit-prompt`, `--ai-*`, `--app-*` | | see AI workflow (audit prompt) |
 
-JSON output is `{"schema": "wkperf-audit/v1", "report": {...}}`.
+The v0.5.0 audit envelope is `{"schema": "wkperf-audit/v2", "report": {...}}`; v0.4.0 emits v1. Its embedded analysis follows the updated analysis contract.
 
 
 ## Flame graphs
@@ -213,22 +241,29 @@ wkperf flame --diff before.json after.json --format html --out diff.html
 
 | Flag | Meaning |
 | --- | --- |
-| `--format html\|svg\|folded\|speedscope\|json` | interactive HTML by default; static SVG, collapsed stacks weighted in ms, Speedscope sampled profile, or tree JSON |
-| `--focus FUNC` | focus a selected function subtree |
+| `--format html\|svg\|folded\|speedscope\|json` | interactive HTML by default; static SVG, integer-microsecond collapsed stacks, Speedscope sampled profile, or compact flat JSON |
+| `--focus FUNC` | merge all contexts of one function; an exact `n_` selector retains one calling context |
 | `--invert` | invert the call view |
 | `--min-ms N` | suppress nodes below a sampled-time threshold |
 | `--from SEC`, `--to SEC` | restrict samples to recording-relative bounds |
 | `--around-long-task N` | select the Nth longest active long task, starting at 1; `0` disables; GC and count-only records are excluded |
 | `--sourcemap PATH` | repeatable source-map files or directories |
+| `--normalize auto\|none\|per-second\|share` | differential display normalization; auto uses per-second when active durations differ by more than 10% |
 | `--diff A B` | show changes between two profiles with a differential color scale |
 
 HTML is self-contained: zoom/focus by clicking frames, search with a regular expression, switch call direction, and inspect generated/original source locations and self/inclusive time in tooltips. SVG works without JavaScript. Analysis and audit HTML embed the same graph implementation. No external scripts, fonts, or CDN are required.
 
-HTML defaults to `wkperf-flame.html`; `--out -` writes it to stdout. Other formats default to stdout. Multiple inputs remain separate charts/profiles rather than silently merging scenes. Folded multi-input output adds a recording-name root; differential folded output has baseline and candidate millisecond columns. Speedscope diff output retains separate baseline/candidate profiles. `--invert` and `--min-ms` affect the visual view; canonical sampled exports preserve root-to-leaf weights.
+HTML defaults to `wkperf-flame.html`; `--out -` writes it to stdout. Other formats default to stdout. Multiple inputs remain separate charts/profiles. Folded counts are rounded integer microseconds, including raw baseline/candidate columns for differential output. Spaces and backslashes remain literal; `%`, semicolons, and ASCII controls are percent-encoded to keep stack boundaries unambiguous. Speedscope diff output retains separate raw profiles. Visual inversion and minimum-size filtering never truncate canonical exported stacks.
+
+Function focus includes every matching calling context without counting a recursive sample twice. Generated and original names, locations, stable IDs, and `/regex/` selectors use exact selection rules; ambiguous distinct functions return candidates instead of guessing. Interactive focus follows the same semantics, with regex highlighting kept separate. Deep graphs place roots at the top; tooltips and static labels retain readable contrast.
+
+Differential JSON retains raw totals, active durations, per-function/context before/after weights, resolved mode, unit, and comparability warnings. Displayed deltas use milliseconds, milliseconds per active second, or percentage points of selected sampled weight. Folded and Speedscope exports retain raw weights even when a visual graph is normalized.
+
+`wkperf-flame/v2` has one document-level `frames` table shared across charts. Profile trees use flat preorder `nodes`, zero-based parent/frame indices, a root index, and sample references to terminal path IDs. The synthetic root uses `-1` parent/frame indices. Timed sample `t` values are recording-relative seconds; `w` is exact statistical weight in milliseconds. Untimed samples have no invented timestamp. This replaces v1's repeated nested tree/frame representation.
 
 ## Queries for agents
 
-`wkperf query FILE OP [ARGS]` returns targeted evidence instead of a full profile dump. JSON is the default; select `--format md|tsv` for text. `--limit` defaults to 50 and is capped at 1000. Subtree depth defaults to 8; hot-path minimum share defaults to 0.05. JSON includes schema, sources, total count, the limit, and an explicit truncation flag. Text output marks truncation. Tie-breaking is stable.
+`wkperf query FILE OP [ARGS]` returns targeted evidence instead of a full profile dump. JSON is the default; select `--format md|tsv` for text. `--limit` defaults to 50 and is capped at 1000; `--offset` pages through the deterministic ordering. `--max-bytes` defaults to 131072 bytes and cannot exceed 4194304. The byte budget applies to the rendered report, not only its rows. JSON retains total and returned counts, pagination, and explicit truncation reasons. Text output marks truncation. Subtree depth defaults to eight.
 
 | Operation | Meaning |
 | --- | --- |
@@ -237,17 +272,24 @@ HTML defaults to `wkperf-flame.html`; `--out -` writes it to stdout. Other forma
 | `paths FUNC` | heaviest complete stacks containing a selected function |
 | `stacks PATH_ID` | retrieve an exact canonical stack, including a hotspot's `commonStackID` |
 | `subtree FUNC --depth D --min-ms N` | bounded call subtree |
-| `hot-path --min-share 0.05` | greedily follow the heaviest child from the roots |
+| `hot-path --min-share 0.05 --min-samples 5 --tie-ratio 0.8` | follow supported heavy branches; expose alternatives at a near tie |
 | `by-root` | group sampled paths by root/trigger |
 | `find REGEX` | matching functions with inclusive and self time |
 | `window FROM TO OP [ARGS]` | restrict another operation to a recording-relative window |
 | `diff A B` | per-function self/inclusive deltas, largest absolute change first; invoke as `wkperf query diff A B` or `wkperf query A diff B` |
 | `depth` | stack-depth distribution and deepest paths |
-| `metrics` | scalar recording metrics and their units |
+| `keys [PREFIX\|/REGEX/]` | discover scalar keys, operation, unit, description, and evidence basis; supports pagination |
+| `metrics [KEY\|PREFIX.*\|/REGEX/]` | scalar recording metrics and their units |
 | `events` | trigger counts and timing aggregates |
-| `rootcause KEY` | reproduce a named root-cause measurement |
+| `rootcause [KEY\|PREFIX.*\|/REGEX/]` | reproduce named root-cause measurements |
 
 Selectors accept plain names, stable IDs, `url:line:col`, or `/regex/`. If a selector is ambiguous, the command returns candidates and IDs rather than guessing. Source-mapped originals and generated locations are preserved. Native frames without URLs and anonymous frames are valid selectors through their stable IDs.
+
+Discovery can return the same key for different owning operations; use the row's `op` to choose `metrics` or `rootcause`. Function scalar keys use canonical IDs such as `functions.f_ID.self_ms`, not encoded name/URL tuples. Alias metadata names the canonical measurement as `operation:key`. For example, `recording.duration_sec` aliases `metrics:overview.duration_s`, and root-cause `samples.self_ms` aliases `metrics:samples.sampled_ms`. Aliases share the same values and nine-decimal rounding rather than recomputing competing totals.
+
+Stacks default to a 48-frame preview: the first eight root frames and last forty leaf frames. `stack_depth` retains the full depth, and a `{ "elided": N }` item marks omitted frames. `--max-stack-frames 0` requests the exact stack; increase `--max-bytes` if needed. Row limits apply before byte limits. Function metadata is interned once, and unused entries are removed when rows are cut. Use `next_offset` when present rather than assuming a page contains `--limit` rows.
+
+Query diffs use `--normalize auto|none|per-second|share`, as flame diffs do. Automatic normalization compares sampled milliseconds per active second when durations differ by more than 10%; otherwise it compares milliseconds. Raw before/after weights, active durations, the delta unit, and comparability warnings remain visible. `diff_normalization.unit` governs normalized `delta_self_ms` and `delta_total_ms` values despite their historical suffix; raw baseline/candidate fields remain milliseconds. Share deltas use percentage points. Ordering follows the absolute normalized delta, with stable function-identity ties.
 
 ```bash
 wkperf query recording.json top --by total --limit 8 --format json
@@ -259,7 +301,9 @@ wkperf query recording.json depth --format json
 
 ### MCP
 
-`wkperf mcp` starts a stdio MCP server with tools backed by the same query engine. Connect it as a command-based server; stdout is reserved for JSON-RPC protocol messages and diagnostics go to stderr. Tools accept local recording paths, query arguments, and window bounds. Tool results use the same bounded structured query schema as the CLI. Requests and responses are bounded at 4 MiB, with explicit truncation metadata for cut result detail.
+`wkperf mcp` starts a stdio MCP server with tools backed by the same query engine. Connect it as a command-based server; stdout is reserved for JSON-RPC protocol messages and diagnostics go to stderr. Tools accept local recording paths, query arguments, window bounds, `offset`, `max_bytes`, and `max_stack_frames`. Tool results use the same bounded structured query schema as the CLI. The default query budget is 128 KiB. Requests and complete encoded responses are bounded at 4 MiB, including the duplicated text and structured MCP content; explicit truncation metadata describes omitted detail.
+
+Request IDs must be strings or integer literals; integers retain their exact value. Null, fractional, boolean, array, and object IDs receive `-32600` with a null response ID. An oversized line is discarded through its newline, rejected, and followed by normal processing of later requests. `initialize.serverInfo.version` uses the same installed-module build-info fallback as the version command. Recording and source-map inputs must be regular files; directories, devices, and named pipes are rejected before reading.
 
 ```json
 {
@@ -276,45 +320,71 @@ The server reads files that the local process can access. Do not expose it to un
 
 ## Deterministic root-cause reports
 
-The hot path is a greedy inclusive-time chain, not a self-time ranking. Time-by-owner splits sampled self time into app, framework/library, native, and GC. Known framework internals can be recognized even in bundled code; source maps improve classification. Nearest-app attribution identifies the closest app ancestor preceding expensive framework/native work in each sampled path.
+The hot path is a supported inclusive-time chain, not a self-time ranking. Each step reports self/total weight and sample support. Defaults are 5% minimum share, five observations, and a near tie when the second branch reaches 80% of the heaviest. Insufficient support or a near tie stops the chain and exposes alternatives instead of pretending one leaf explains the profile. Printed queries preserve the same rules. Use `--min-samples 0 --tie-ratio 0` for an explicitly raw greedy query. Query JSON includes `hot_path_branches`, its total, and `hot_path_stop_reason` when relevant.
 
-Stack-based findings retain their exact paths and reproducing query commands: native layout-related APIs, synchronous React work inside event/microtask intervals, unusual recursion/commit depth, periodic roots, and GC/event overlap. Layout-related API names and temporal overlap do not prove causation. Render/commit estimates are sampled contributions, not React Profiler measurements.
+Owner categories are `app`, `framework`, `native`, `gc`, `unknown-bundled`, and `injected`. Mapped library paths and known bundled React internals identify framework work; React-like names in source files do not. Unmapped bundles remain unknown rather than being declared app code. First-party `/_/plugins/NAME/` bundles stay app/plugin code unless explicitly overridden; `user-script:N` stays injected.
+
+Repeat `--app-url` and `--library-url` to supply ownership rules. Matching uses the whole normalized generated or original URL: `*` excludes slashes, `**` spans directories, `?` matches one non-slash character, and bracket classes are supported. Invalid patterns fail before capture loading; library rules win overlaps, while native/GC/injected categories remain explicit. Viper configuration uses the same `app-url` and `library-url` keys. Effective report settings appear under `ownership`; query/MCP request arrays use `app_url` and `library_url`.
+
+`contextAttribution` identifies the nearest captured non-framework ancestor, with its category, and charges observed framework/native self weight to that context. A context is not automatically app code. Framework-only stacks explicitly say the scheduling app frame was not captured; missing ancestry is not invented. Rows reference `frame`, replacing the old app-named field.
+
+Native API findings distinguish style reads, geometry/layout reads, and unknown flush behavior. `getAnimations` is not presented as proof of a layout flush. Timed style/layout records can corroborate nearby activity; API names, statistical weights, and temporal overlap still do not prove causation. Ordinary explicit/in-script forced-layout evidence remains a separate signal.
+
+React synchronous-work findings require actual SyncLane/flushSync evidence, not `renderRootSync` alone. React's own scheduler microtasks/messages are not described as external user triggers. Render/commit estimates follow phase ancestry and remain sampled contributions, not React Profiler measurements. Deep-stack findings consolidate depth, repetition, and commit facets; ordinary React traversal is not called runaway recursion.
+
+Periodic detection requires at least six fires over two seconds. Animation/input-driven roots are labeled accordingly rather than background work. Leads sharing at least 80% of supporting observations are consolidated while their numeric facets remain inspectable. Function/module dominance requires at least five profiler observations by default; sparse or low-coverage evidence is disclosed, including the limitation of a single heavily weighted observation. Anonymous functions retain an explicit label and location.
 
 Window triage ranks long tasks, active slow frames, and event bursts. Detailed hot paths are built for the highest-ranked windows; lower-priority rows may have `hotPath: null` to avoid repeated tree construction. Every task/frame still retains its complete heaviest sampled stack, numeric evidence, and exact query command. Windows without sampler evidence say so explicitly.
 
-Stable ordering applies to tree nodes, functions, paths, findings, triggers, selectors, and exports. Equal-weight functions sort by name, URL, line, then column. Reports do not insert the current clock time. Shuffling samples with their paired durations preserves outputs; timestamps still control temporal operations.
+Stable ordering applies to tree nodes, functions, paths, findings, triggers, selectors, and exports. Equal-weight functions sort by name, URL, line, then column. Reports do not insert the current clock time. Aggregate weights and identities are invariant under paired sample reordering. Inferred untimed spans depend on meaningful export order and are unavailable when chronological ordering cannot be established.
 
 Local reports and emitted prompts are deterministic. Responses from external AI providers are not guaranteed deterministic.
 
 ## JSON contracts and errors
 
-Use the `schema` discriminator before decoding a result. `wkperf schema` prints a Draft 2020-12 JSON Schema covering the versioned output envelopes; breaking consumer changes get a new discriminator. JSON is never abbreviated by `--brief` or `--max-bytes`.
+Use the `schema` discriminator before decoding a result. `wkperf schema` prints a Draft 2020-12 JSON Schema covering the versioned output envelopes; breaking consumer changes get a new discriminator. Primitive fields have semantic descriptions and units where applicable; enums constrain documented vocabularies. Analysis and audit JSON are never abbreviated by `--brief` or `--max-bytes`. Query/MCP JSON is intentionally bounded and reports omitted detail.
+
+Numeric schema properties carry `x-unit`: a physical unit, dimensionless scale, or an explicit reference to a sibling unit field. Native or unknown source locations can retain zero or negative sentinel coordinates; consumers must not treat every location as a positive source line.
 
 | Output | Contract |
 | --- | --- |
-| Analysis | `wkperf-insights/v2`: a `reports` array, per-file `errors`, optional AI response |
-| Query/MCP | `wkperf.query.v1`: `operation`, `status`, `sources`, `command`, `rows`, `total_count`, `limit`, `truncated` |
-| Comparison | `wkperf/v1`: baseline/candidate groups, metric/function deltas, verdicts, comparability warnings |
-| Audit | `wkperf-audit/v1`: scene scorecards, priorities, overall scorecard, per-file errors |
-| Flame | `wkperf-flame/v1`: `mode` (`profile` or `diff`), `charts`, and visual `view` settings |
+| Analysis | `wkperf-insights/v3` (v0.5.0): reports, untimed accounting, per-file errors, optional AI response |
+| Query/MCP | `wkperf.query.v2` (v0.5.0): sparse operation-specific rows, shared functions, sampled totals, pagination, byte/stack truncation |
+| Comparison | `wkperf/v2` (v0.5.0): baseline/candidate groups, metric/function deltas, verdicts, comparability warnings, camelCase counts |
+| Audit | `wkperf-audit/v2` (v0.5.0): scene scorecards, priorities, overall scorecard, per-file errors |
+| Flame | `wkperf-flame/v2` (v0.5.0): shared frames, flat profile/delta nodes, exact sample/path references, normalization metadata |
 | Summary | `wkperf-summary/v1`: scalar summary output |
 | Error-only result | `wkperf-error/v1`: machine-readable command errors |
 
-An analysis report retains recording identity and active duration, exclusive time breakdown, self/inclusive hotspots, file modules, slow frames, long tasks, idle wakeups, trigger tables, findings, and root-cause evidence. A hotspot retains generated URL/line/column/source identity, optional original location, weighted self/inclusive times, sample count, caller/callee edges, and a common full stack. Source-map enrichment never changes generated identity.
+An analysis report retains recording identity and active duration, exclusive time breakdown, self/inclusive hotspots, file modules, slow frames, long tasks, idle wakeups, trigger tables, findings, and root-cause evidence. Its `frames` array stores generated identity, URL/line/column, category, native/anonymous flags, and optional original location once. Hotspots use a zero-based `frame` index, retain weighted self/inclusive times and sample counts, and link caller/callee frame indices. Source-map enrichment never changes generated identity.
 
-Findings retain `id`, `severity`, `confidence`, human-readable `evidence`, `numericEvidence`, `metricKeys`, `verify`, and `suggestedWindows`. Numeric evidence contains `metricKey`, `value`, `unit`, `description`, `basis`, and a reproducing `command`. Verification entries carry metric key, direction, rough target, unit, explanation, and command. Windows contain `fromSec`, `toSec`, `reason`, and reusable flags. Supporting `functions`, `triggers`, and layout `nodes` preserve measured names and CSS paths when available. `rootCause` includes hot path, sampled owners, nearest-app attribution, exact-stack findings, periodic roots, GC overlaps, depth outliers, and ranked windows. Windows retain their heaviest full sampled stack or an explicit no-samples status.
+Analysis and nested root-cause `sourceMapPaths` contain requested path strings. Source-map diagnostics are separate structured metadata describing resolution and warnings, not another path list. Query/MCP retain these diagnostics so an agent can distinguish unmapped code from a resolver failure.
 
-Canonical findings also carry `stacks` and a `command` when a stack detector supplies exact evidence. Raw detector output remains under `rootCause` alongside the enriched finding, so an agent can inspect the measured chain without guessing from a generic optimization suggestion.
+Findings retain `id`, `severity`, `confidence`, human-readable `evidence`, `numericEvidence`, `metricKeys`, `verify`, and `suggestedWindows`. Numeric evidence contains `metricKey`, `value`, `unit`, `description`, `basis`, and a reproducing `command`. Verification entries identify metric, direction, rough target, unit, description, and command. Windows contain `fromSec`, `toSec`, `reason`, and reusable flags. Supporting functions, triggers, and layout nodes preserve captured names and CSS paths. `rootCause` includes supported hot path, owners, non-framework contexts, exact-stack findings, periodic roots, GC overlaps, depth facets, and ranked windows. Windows retain their heaviest selected stack or an explicit sample-placement status. Canonical findings provide the only severity decision; matching raw evidence receives that tier rather than a contradictory second rating.
 
-Query rows use explicit millisecond fields (`self_ms`, `total_ms`, deltas), `samples`, and `percent` in percentage points. `stack` is root-to-leaf. Ambiguous selectors include `candidates`; they do not return a guessed result. Caller/callee percentages use the selected function's inclusive sampled time as denominator. Sampled owner costs are self time, so their sum does not double-count callers.
+`evidenceBasis` distinguishes `measured` timeline evidence, `sampled` estimates, and `hypothesis` leads. `replication` reports attempted `runs`, available `parsedRuns`, and `runsWithFinding`; failed inputs never become supporting observations. High confidence requires measured evidence in at least three parsed runs and presence in at least two thirds of attempted runs. A measured single capture of at least ten seconds can reach medium confidence. Strong sampled evidence requires at least 100 observations, 50% script coverage, and ten seconds to reach medium; hypotheses and weaker evidence remain low. Severity remains the impact estimate, not a confidence tier. Comparison confidence describes run-to-run change evidence and is a separate concept.
+
+Exact selected paths live once in the report's `stacks` map, keyed by stable `n_` selectors. Each entry has root-to-leaf frame indices and full `depth`; occurrences use `stackId` or `stackIds` plus their own numeric observations. Canonical and raw findings reference the same paths. Detailed lists honor `--top` and carry explicit totals and retrieval commands, so a bounded default report does not pretend omitted evidence is absent. Text and HTML use shared stack references and root/leaf previews; query retrieves full stacks.
+
+When structured lists are capped, `moreEvidenceCommand` reruns `analyze` with a sufficient `--top` value and preserves selection, maps, thresholds, and module grouping. Use it for the remaining structured rows; existing `query stacks`, `query paths`, and scalar queries retrieve exact selected evidence without inventing a list operation.
+
+Query v2 uses operation-specific rows instead of a numeric union full of irrelevant zeros. Scalar rows contain `key`, `value`, and `unit`; genuine zero values remain present. Function rows reference a shared canonical `functions` dictionary keyed by `f_` identity. Sampled millisecond fields and the envelope's `sampled_total_ms` are weighted profiler estimates, not elapsed time. Stack references are root-to-leaf and retain full depth plus preview omissions. Ambiguous selectors include bounded `candidates`; they never return a guessed result. Caller/callee percentages use the selected function's inclusive sampled weight as denominator. Sampled owner costs are self weight, so their sum does not double-count callers.
 
 Errors contain `message`, `file`, and `code`. With JSON output, failures appear in the single stdout JSON document as well as human-readable stderr diagnostics. Multi-file `analyze` and `audit` keep successful results, list failed files, and exit 1 after processing the group. `compare` and `summary` may stop at the first bad input. Treat a nonempty `errors` array as incomplete evidence even when useful reports exist.
 
-For bounded agent context, use Markdown `--brief` or `--max-bytes N`. Its fixed priority is findings, hot path, top functions, then verification. A truncation marker states that material was cut; retain full JSON separately when exact downstream analysis matters.
+Machine error codes distinguish `input_error`, `load_error`, `source_map_error`, `window_error`, `selector_error`, `ambiguous_selector`, `unknown_key`, and `usage_error`. Gate failures use `regression`, `fixture_mismatch`, or `score_below_minimum`. A missing file is a load failure, not a selector failure. An invalid window is not reported as an unrecognized recording.
+
+With `--out FILE`, a successfully written complete or partial report is the machine-readable artifact; stdout does not receive a second error-only document. Failures before report rendering still emit one JSON error document on stdout when JSON is selected. Stderr remains human-readable and names each file once.
+
+For bounded agent context, use `--brief` or `--max-bytes N` with Markdown or terminal output. Priority is recording identities and errors, all finding summaries, hot path, top functions, verification, then details. The final truncation marker counts toward the limit. Repeated stacks are referenced rather than expanded at every occurrence; use their query commands to retrieve full context.
 
 ## Scorecard
 
-Each recording is rated per standard as `good` / `needs-improvement` / `poor` (or `n/a` when the recording lacks the data), scored 0 to 100 (weighted mean), and graded A (90+), B (75+), C (60+), D (40+), F. "Gap" lists what is not good, with how many times over target. Targets are not Lighthouse or Core Web Vitals scores: TBT is normalized per 10 s of recording, INP is a handler-time approximation, FCP/LCP need load records, CLS is not measured, and wkperf-heuristic thresholds are our choices.
+Each available standard is rated `good`, `needs-improvement`, or `poor`; missing evidence is `n/a`. The numeric score is a weighted mean of available standards. Overall grade is unavailable when measured standards cover less than half the total weight, or all three frame standards are unavailable. A retained numeric value is then a partial score, not a claim of a healthy UI. Otherwise grades are A (90+), B (75+), C (60+), D (40+), and F. Targets are not Lighthouse or Core Web Vitals scores: TBT is normalized per 10 s, INP is a handler-time approximation, FCP/LCP need load records, and CLS is not measured.
+
+Frame p95, jank ratio, and FPS require at least 30 active frames and 1,000 ms of active-frame observation. `frames.active_ms` exposes the latter. Fixed 60 Hz standards always use 16.7 ms; `--jank-ms` changes finding thresholds, not those standards. Audit score gates cannot pass an unavailable overall grade.
+
+Scorecards expose `coverage` and `partial`. A recording's coverage is available standard weight divided by total standard weight. Audit aggregation uses mean child coverage rather than combining disjoint measurements into fictional complete coverage; any unavailable or missing child keeps the aggregate partial. Failed requested inputs also prevent a conclusive overall grade.
 
 | Standard | Source | ID | Good | Poor | Weight |
 | --- | --- | --- | --- | --- | --- |
@@ -327,9 +397,11 @@ Each recording is rated per standard as `good` / `needs-improvement` / `poor` (o
 | First Contentful Paint | Lighthouse | `fcp` | ≤ 1800 ms | > 3000 ms | 1 |
 | Largest Contentful Paint | Core Web Vitals | `lcp` | ≤ 2500 ms | > 4000 ms | 1 |
 | Main thread script busy | wkperf heuristic | `main-busy` | ≤ 25% | > 50% | 1 |
-| GC share of wall time | wkperf heuristic | `gc-share` | ≤ 3% | > 10% | 1 |
+| Main-thread GC pause share | wkperf heuristic | `gc-share` | ≤ 3% | > 10% | 1 |
 | Memory growth | wkperf heuristic | `memory-growth` | ≤ 1 MB/min | > 10 MB/min | 1 |
 | Forced layouts per second | wkperf heuristic | `forced-layout-rate` | ≤ 0.5 /s | > 5 /s | 1 |
+
+Collector intervals alone leave `gc-share` unavailable. Their coverage and overlap remain visible as diagnostics, not evidence of equivalent main-thread blocking.
 
 ### Findings → scorecard
 
@@ -432,7 +504,7 @@ Verdicts: `improved`, `regressed`, `unchanged`, `noisy` (change within run-to-ru
 | 1 | input or runtime error, including partial success when some analyze/audit files fail; valid results are still emitted |
 | 2 | `--fail-on-regression` and a regressed metric with confidence other than `low` in the frames, script, layout, or cpu groups |
 | 3 | `--strict-fixture` and the comparability score is below `--min-comparability` |
-| 4 | `audit --min-score N` and the overall score is below N |
+| 4 | `audit --min-score N` and the overall score is below N or cannot be graded with available evidence |
 
 ## CI usage
 

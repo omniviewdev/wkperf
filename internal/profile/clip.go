@@ -13,7 +13,14 @@ func Clip(rec *model.Recording, start, end float64) *model.Recording {
 	if rec == nil {
 		return nil
 	}
+	if CoversRecording(rec, start-rec.StartTime, end-rec.StartTime) {
+		return rec
+	}
 	out := *rec
+	out.UntimedExcluded = true
+	if out.SampleEvidence == nil {
+		out.SampleEvidence = &model.SampleEvidence{StartTime: rec.StartTime, EndTime: rec.EndTime, Samples: rec.Samples}
+	}
 	start = math.Max(start, rec.StartTime)
 	end = math.Min(end, rec.EndTime)
 	if end < start {
@@ -44,6 +51,9 @@ func Clip(rec *model.Recording, start, end float64) *model.Recording {
 			continue
 		}
 		if r.EndTime > r.StartTime {
+			if r.OriginalEndTime <= r.OriginalStartTime && (r.StartTime < start || r.EndTime > end) {
+				r.OriginalStartTime, r.OriginalEndTime = r.StartTime, r.EndTime
+			}
 			r.StartTime = math.Max(start, r.StartTime)
 			r.EndTime = math.Min(end, r.EndTime)
 		}
@@ -72,7 +82,7 @@ func Clip(rec *model.Recording, start, end float64) *model.Recording {
 	for _, t := range rec.Samples {
 		selected := model.TargetSamples{Target: t.Target, StackTraces: []model.StackTrace{}, Durations: []float64{}}
 		for i, stack := range t.StackTraces {
-			if !Contains(active, stack.Timestamp) {
+			if !UntimedTimestamp(rec, stack.Timestamp) && !Contains(active, stack.Timestamp) {
 				continue
 			}
 			weight := .001

@@ -64,15 +64,7 @@ func median(v []float64) float64 {
 	return (s[n/2-1] + s[n/2]) / 2
 }
 
-// cardValues is the available id->value map of c (nil-safe).
-func cardValues(c *scorecard.Scorecard) map[string]float64 {
-	if c == nil {
-		return nil
-	}
-	return scorecard.Values(c)
-}
-
-// Build aggregates scenes into one Report. Scenes without runs are dropped.
+// Build aggregates scenes into one Report. Scenes with no requested runs are dropped.
 // Scenes are ordered worst score first; Top (default 10) caps the priority,
 // hotspot and module lists.
 //
@@ -88,7 +80,7 @@ func Build(scenes []Scene, o Options) *Report {
 
 	results := make([]SceneResult, 0, len(scenes))
 	for _, s := range scenes {
-		if len(s.Runs) == 0 {
+		if len(s.Runs) == 0 && s.MissingRuns == 0 {
 			continue
 		}
 		results = append(results, buildScene(s))
@@ -106,32 +98,41 @@ func Build(scenes []Scene, o Options) *Report {
 	rep.Breakdown = mergeBreakdown(results)
 	rep.Priorities = buildPriorities(results, top)
 	rep.Hotspots, rep.Modules = mergeHotspots(results, top)
+	for i := range results {
+		results[i].runs = nil // Keep only the representative after deriving replication.
+	}
 	return rep
 }
 
 func buildScene(s Scene) SceneResult {
-	sr := SceneResult{Name: s.Name, Runs: len(s.Runs)}
+	if len(s.Runs) > 1 {
+		s.Runs = append([]Run(nil), s.Runs...)
+		sort.SliceStable(s.Runs, func(i, j int) bool {
+			a, b := s.Runs[i], s.Runs[j]
+			if runSource(a) != runSource(b) {
+				return runSource(a) < runSource(b)
+			}
+			av, _ := frameP95(a)
+			bv, _ := frameP95(b)
+			return av < bv
+		})
+	}
+	sr := SceneResult{Name: s.Name, Sources: []string{}, Runs: len(s.Runs), AttemptedRuns: len(s.Runs) + s.MissingRuns, MissingRuns: s.MissingRuns, runs: s.Runs}
 
-	perStd := map[string][]float64{}
+	cards := make([]*scorecard.Scorecard, len(s.Runs)+s.MissingRuns)
 	var durations []float64
-	for _, r := range s.Runs {
+	for i, r := range s.Runs {
 		if r.Source != "" {
 			sr.Sources = append(sr.Sources, r.Source)
 		} else if r.Report != nil && r.Report.Source != "" {
 			sr.Sources = append(sr.Sources, r.Report.Source)
 		}
-		for id, v := range cardValues(r.Card) {
-			perStd[id] = append(perStd[id], v)
-		}
+		cards[i] = r.Card
 		if r.Report != nil {
 			durations = append(durations, r.Report.DurationSec)
 		}
 	}
-	meds := make(map[string]float64, len(perStd))
-	for id, vs := range perStd {
-		meds[id] = median(vs)
-	}
-	sr.Card = scorecard.FromValues(meds)
+	sr.Card = scorecard.Aggregate(cards)
 	sr.DurationSec = median(durations)
 	sr.Breakdown = medianBreakdown(s.Runs)
 	sr.Rep = pickRep(s.Runs)
@@ -147,23 +148,29 @@ func buildScene(s Scene) SceneResult {
 	return sr
 }
 
-func frameP95(rep *insights.Report) (float64, bool) {
-	if rep == nil || rep.Summary == nil {
-		return 0, false
+func runSource(run Run) string {
+	if run.Source != "" {
+		return run.Source
 	}
-	m, ok := rep.Summary.Lookup("frames.p95_ms")
-	if !ok {
-		return 0, false
+	if run.Report != nil {
+		return run.Report.Source
 	}
-	return m.Value, true
+	return ""
 }
 
-// pickRep returns the run whose frame p95 is closest to the median frame p95;
-// the first run with a report when no run has that metric.
+func frameP95(run Run) (float64, bool) {
+	if run.Report == nil {
+		return 0, false
+	}
+	return CardValue(run.Card, "frame-p95")
+}
+
+// pickRep returns the run whose rated frame p95 is closest to the median;
+// the first run with a report when no run has sufficient frame data.
 func pickRep(runs []Run) *insights.Report {
 	var vals []float64
 	for _, r := range runs {
-		if v, ok := frameP95(r.Report); ok {
+		if v, ok := frameP95(r); ok {
 			vals = append(vals, v)
 		}
 	}
@@ -172,7 +179,7 @@ func pickRep(runs []Run) *insights.Report {
 		var best *insights.Report
 		bestD := 0.0
 		for _, r := range runs {
-			v, ok := frameP95(r.Report)
+			v, ok := frameP95(r)
 			if !ok {
 				continue
 			}
@@ -222,15 +229,9 @@ func medianBreakdown(runs []Run) []insights.Slice {
 // overall builds the typical-scene card (median per standard across scenes)
 // and the scene with the worst value per standard.
 func overall(scenes []SceneResult) (*scorecard.Scorecard, map[string]string) {
-	perStd := map[string][]float64{}
+	cards := make([]*scorecard.Scorecard, 0, len(scenes))
 	for _, s := range scenes {
-		for id, v := range cardValues(s.Card) {
-			perStd[id] = append(perStd[id], v)
-		}
-	}
-	meds := make(map[string]float64, len(perStd))
-	for id, vs := range perStd {
-		meds[id] = median(vs)
+		cards = append(cards, s.Card)
 	}
 	worst := map[string]string{}
 	for _, std := range scorecard.Standards() {
@@ -247,7 +248,7 @@ func overall(scenes []SceneResult) (*scorecard.Scorecard, map[string]string) {
 			}
 		}
 	}
-	return scorecard.FromValues(meds), worst
+	return scorecard.Aggregate(cards), worst
 }
 
 // mergeBreakdown is the duration-weighted mean share per slice, normalized so
@@ -300,7 +301,25 @@ func buildPriorities(scenes []SceneResult, top int) []Priority {
 	}
 	byID := map[string]*acc{}
 	var order []string
-	for _, s := range scenes {
+	findingRuns := map[string][]*insights.Report{}
+	attemptedRuns, parsedRuns := 0, 0
+	for _, scene := range scenes {
+		attemptedRuns += scene.AttemptedRuns
+		for _, run := range scene.runs {
+			if run.Report == nil {
+				continue
+			}
+			parsedRuns++
+			seen := make(map[string]bool, len(run.Report.Findings))
+			for _, finding := range run.Report.Findings {
+				if !seen[finding.ID] {
+					findingRuns[finding.ID] = append(findingRuns[finding.ID], run.Report)
+					seen[finding.ID] = true
+				}
+			}
+		}
+	}
+	for sceneIndex, s := range scenes {
 		if s.Rep == nil {
 			continue
 		}
@@ -326,11 +345,16 @@ func buildPriorities(scenes []SceneResult, top int) []Priority {
 				a.hasBest, a.bestImp = true, f.ImpactMs
 				a.p.Title, a.p.Category, a.p.Suggestion = f.Title, f.Category, f.Suggestion
 				a.p.EvidenceScene = s.Name
+				a.p.EvidenceSceneIndex = sceneIndex
 				a.p.NumericEvidence, a.p.MetricKeys, a.p.Verify = f.NumericEvidence, f.MetricKeys, f.Verify
-				a.p.Confidence, a.p.ConfidenceReasons = f.Confidence, f.ConfidenceReasons
+				a.p.EvidenceBasis = f.EvidenceBasis
 				a.p.SuggestedWindows, a.p.Functions, a.p.Triggers = f.SuggestedWindows, f.Functions, f.Triggers
 				a.p.Nodes = f.Nodes
 				a.p.Stacks, a.p.Command = f.Stacks, f.Command
+				a.p.StackIDs, a.p.StacksTotal = f.StackIDs, f.StacksTotal
+				a.p.RelatedFindings = f.RelatedFindings
+				a.p.NativeReads, a.p.NativeReadsTotal = f.NativeReads, f.NativeReadsTotal
+				a.p.Depth = f.Depth
 				a.p.Evidence = nil
 				for _, e := range f.Evidence {
 					a.p.Evidence = append(a.p.Evidence, s.Name+": "+e)
@@ -344,6 +368,10 @@ func buildPriorities(scenes []SceneResult, top int) []Priority {
 		if len(scenes) > 0 {
 			a.p.AvgImpactPct = a.pctSum / float64(len(scenes))
 		}
+		finding := insights.Finding{ID: a.p.ID, EvidenceBasis: a.p.EvidenceBasis}
+		insights.SetFindingConfidence(&finding, findingRuns[id], attemptedRuns, parsedRuns)
+		a.p.EvidenceBasis, a.p.Replication = finding.EvidenceBasis, finding.Replication
+		a.p.Confidence, a.p.ConfidenceReasons = finding.Confidence, finding.ConfidenceReasons
 		out = append(out, a.p)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
@@ -367,7 +395,7 @@ func mergeHotspots(scenes []SceneResult, top int) ([]HotFunction, []insights.Mod
 	mod := map[string]*insights.ModuleStat{}
 	totalSelf := 0.0
 	totalMod := 0.0
-	for _, s := range scenes {
+	for sceneIndex, s := range scenes {
 		if s.Rep == nil {
 			continue
 		}
@@ -376,12 +404,16 @@ func mergeHotspots(scenes []SceneResult, top int) ([]HotFunction, []insights.Mod
 			k := h.Key()
 			hf := fn[k]
 			if hf == nil {
-				hf = &HotFunction{ID: h.ID, Name: h.Name, URL: h.URL, Line: h.Line, Column: h.Column, SourceID: h.SourceID, Original: h.Original}
+				hf = &HotFunction{ID: h.ID, Name: h.Name, URL: h.URL, Line: h.Line, Column: h.Column, SourceID: h.SourceID, Original: h.Original, EvidenceSceneIndex: sceneIndex}
 				fn[k] = hf
 			}
 			if len(hf.CommonStack) == 0 && len(h.CommonStack) > 0 {
 				hf.CommonStack, hf.CommonStackScene = h.CommonStack, s.Name
+				hf.EvidenceSceneIndex = sceneIndex
 				hf.CommonStackID = h.CommonStackID
+				if hf.CommonStackID == "" {
+					hf.CommonStackID = insights.MetricStackID(h.CommonStack)
+				}
 			}
 			hf.SelfMs += h.SelfMs
 			totalSelf += h.SelfMs

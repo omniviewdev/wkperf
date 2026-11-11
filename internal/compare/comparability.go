@@ -11,6 +11,7 @@ import (
 
 // Warning codes (Warning.Code).
 const (
+	CodeWindowEmpty        = "window-empty"
 	CodeDurationMismatch   = "duration-mismatch"
 	CodeFrameCountMismatch = "frame-count-mismatch"
 	CodeURLMismatch        = "url-mismatch"
@@ -54,7 +55,26 @@ func assess(base, cand []*metrics.Summary, normalized bool) Comparability {
 		c.Warnings = append(c.Warnings, Warning{Level: level, Code: code, Message: msg})
 		c.Score -= weight
 	}
-	if len(base) == 0 || len(cand) == 0 {
+	windowEmpty := false
+	for _, g := range []struct {
+		name  string
+		group []*metrics.Summary
+	}{{"baseline", base}, {"candidate", cand}} {
+		empty := len(g.group) == 0
+		for _, s := range g.group {
+			if s.DurationSec <= 0 {
+				empty = true
+				break
+			}
+		}
+		if empty {
+			add(LevelWarn, CodeWindowEmpty,
+				fmt.Sprintf("%s has no runs or a window with zero active duration; select an observed active window", g.name), 1)
+			windowEmpty = true
+		}
+	}
+	if windowEmpty {
+		c.Score = 0
 		return c
 	}
 

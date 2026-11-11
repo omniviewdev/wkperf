@@ -1,10 +1,13 @@
 package flame
 
+//go:generate node gen_react_names.mjs
+
 import (
 	"cmp"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -47,6 +50,19 @@ func contextID(parentID, functionID string) string {
 	h.Write([]byte{0})
 	h.Write([]byte(functionID))
 	return "n_" + hex.EncodeToString(h.Sum(nil))
+}
+
+// StackID is the canonical calling-context ID of a root-to-leaf stack.
+// It matches the path selectors returned by Tree.Paths.
+func StackID(frames []Frame) string {
+	id := "root"
+	for _, frame := range frames {
+		id = contextID(id, FunctionID(frame))
+	}
+	if len(frames) == 0 {
+		return ""
+	}
+	return id
 }
 
 func compareFrame(a, b Frame) int {
@@ -97,7 +113,7 @@ func compareStack(a, b []Frame) int {
 	return cmp.Compare(len(a), len(b))
 }
 
-func fromModel(raw model.StackFrame, mapper FrameMapper) Frame {
+func fromModel(raw model.StackFrame, mapper FrameMapper, classifier *Classifier) Frame {
 	frame := Frame{Name: raw.Name, URL: raw.URL, Line: raw.Line, Column: raw.Column,
 		SourceID: raw.SourceID, Native: raw.URL == "", Anonymous: raw.Name == ""}
 	if raw.Original != nil {
@@ -109,67 +125,43 @@ func fromModel(raw model.StackFrame, mapper FrameMapper) Frame {
 			frame.Original = &copy
 		}
 	}
-	frame.Category = Categorize(frame)
+	frame.Category = classifier.Categorize(frame)
+	frame.ID = FunctionID(frame)
 	return frame
 }
 
-// Categorize uses original paths when available, then generated metadata.
+// Categorize applies the default ownership classifier. Use NewClassifier to
+// reuse explicit URL rules without losing them during frame conversions.
 func Categorize(frame Frame) Category {
-	name, path := frame.Name, frame.URL
-	if frame.Original != nil {
-		if frame.Original.Name != "" {
-			name = frame.Original.Name
-		}
-		if frame.Original.URL != "" {
-			path = frame.Original.URL
-		}
-	}
-	lower := strings.ToLower(name)
-	if lower == "gc" || lower == "(gc)" || strings.Contains(lower, "garbage collect") || strings.HasPrefix(lower, "jsc::heap::collect") {
-		return CategoryGC
-	}
-	if reactFunction(name) || reactFunction(frame.Name) {
-		return CategoryFramework
-	}
-	path = strings.ToLower(strings.ReplaceAll(path, "\\", "/"))
-	if strings.Contains(path, "node_modules/") || strings.Contains(path, "/vendor/") ||
-		strings.Contains(path, "/vendor-") || strings.Contains(path, "/vendor.") ||
-		strings.HasPrefix(path, "vendor/") || strings.HasPrefix(path, "vendor-") ||
-		strings.Contains(path, "/plugins/") || strings.Contains(path, "/plugin/") ||
-		strings.Contains(path, "/plugin-") || strings.Contains(path, "/plugin.") ||
-		strings.HasPrefix(path, "plugin-") || strings.HasPrefix(path, "plugin.") ||
-		strings.HasPrefix(path, "plugin://") || strings.HasPrefix(path, "plugins/") {
-		return CategoryFramework
-	}
-	if path == "" {
-		return CategoryNative
-	}
-	return CategoryApp
+	return defaultClassifier.Categorize(frame)
 }
+
+var defaultClassifier Classifier
 
 func reactFunction(name string) bool {
-	switch name {
-	case "performSyncWorkOnRoot", "performConcurrentWorkOnRoot", "performWorkOnRoot", "renderRootSync", "renderRootConcurrent",
-		"workLoopSync", "workLoopConcurrent", "performUnitOfWork", "completeUnitOfWork", "beginWork", "completeWork",
-		"renderWithHooks", "renderWithHooksAgain", "updateFunctionComponent", "updateClassComponent", "updateHostComponent",
-		"flushSync", "flushSyncFromReconciler", "flushSyncWorkAcrossRoots", "flushSyncWorkAcrossRoots_impl", "flushSyncWorkOnAllRoots", "flushPassiveEffects",
-		"flushPassiveEffectsImpl", "processRootScheduleInMicrotask", "performWorkUntilDeadline", "commitRoot", "commitRootImpl",
-		"commitMutationEffects", "commitLayoutEffects", "commitPassiveMountEffects", "commitPassiveUnmountEffects",
-		"dispatchAction", "dispatchSetState", "scheduleUpdateOnFiber", "ensureRootIsScheduled", "scheduleCallback":
+	if _, found := slices.BinarySearch(react19FunctionNames[:], name); found {
 		return true
 	}
-	return strings.HasPrefix(name, "commitOnFiber") || strings.HasPrefix(name, "commitMutationEffectsOnFiber") ||
-		strings.HasPrefix(name, "commitLayoutEffectOnFiber") || strings.HasPrefix(name, "commitPassiveMountOnFiber") ||
-		(strings.HasPrefix(name, "recursivelyTraverse") && strings.Contains(name, "Effects"))
+	// WebKit captures also expose these React 19 completion labels.
+	if name == "completeRoot" || name == "completeRootWhenReady" {
+		return true
+	}
+	return strings.HasPrefix(name, "commit") || strings.HasPrefix(name, "recursivelyTraverse") ||
+		strings.HasSuffix(name, "OnFiber") || strings.HasPrefix(name, "reconcileChild") ||
+		strings.HasPrefix(name, "bailoutOn") || strings.HasPrefix(name, "setValueFor") ||
+		((strings.HasPrefix(name, "mount") || strings.HasPrefix(name, "update")) && strings.Contains(name, "Hook")) ||
+		(strings.HasPrefix(name, "flush") && strings.HasSuffix(name, "Effects"))
 }
 
-// NearestAppAncestor excludes node itself and the synthetic root.
-func NearestAppAncestor(node *Node) *Node {
+// NearestNonFrameworkAncestor excludes node itself, the synthetic root, and
+// framework, native, and GC frames. Unknown and injected ancestors are context,
+// not evidence that application code scheduled the sampled work.
+func NearestNonFrameworkAncestor(node *Node) *Node {
 	if node == nil {
 		return nil
 	}
 	for node = node.Parent; node != nil && node.Parent != nil; node = node.Parent {
-		if node.Frame.Category == CategoryApp {
+		if node.Frame.Category == CategoryApp || node.Frame.Category == CategoryUnknownBundled || node.Frame.Category == CategoryInjected {
 			return node
 		}
 	}

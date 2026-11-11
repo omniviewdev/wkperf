@@ -7,7 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/omniviewdev/wkperf/internal/flame"
+	"github.com/omniviewdev/wkperf/internal/metrics"
 	"github.com/omniviewdev/wkperf/internal/model"
+	"github.com/omniviewdev/wkperf/internal/rootcause"
 )
 
 func idleRecording() *model.Recording {
@@ -29,7 +32,7 @@ func TestIdleGapsAreNotJankOrUnattributedWork(t *testing.T) {
 		if s.Name == "Idle" {
 			idle = s.Ms
 		}
-		if s.Name == "Frame time not attributed to work" {
+		if s.Name == "Active-frame time without instrumented main-thread work" {
 			unattributed = s.Ms
 		}
 	}
@@ -117,7 +120,7 @@ func TestTriggerSamplesStayInsideIntervals(t *testing.T) {
 	r := &model.Recording{EndTime: 2, Records: []model.Record{
 		script("event-dispatched", 0.1, 0.2, "click"),
 		script("animation-frame-fired", 0.3, 0.31, ""),
-		script("microtask-fired", 0.4, 0.42, ""),
+		script("microtask-dispatched", 0.4, 0.42, ""),
 	}, Samples: []model.TargetSamples{{StackTraces: []model.StackTrace{
 		{Timestamp: 0.15, StackFrames: []model.StackFrame{{Name: "clickWork", URL: "app.js"}}},
 		{Timestamp: 0.2, StackFrames: []model.StackFrame{{Name: "outside", URL: "app.js"}}},
@@ -151,7 +154,8 @@ func TestFindingHasNumericEvidenceAndRerunContract(t *testing.T) {
 			}
 		}
 		for _, w := range f.SuggestedWindows {
-			if w.FromSec < 0 || w.ToSec <= w.FromSec || w.ToSec > 2 || len(w.Flags) < 4 || w.Flags[0] != "--from" || w.Flags[2] != "--to" {
+			whole := w.FromSec == 0 && w.ToSec == 2
+			if w.FromSec < 0 || w.ToSec <= w.FromSec || w.ToSec > 2 || (!whole && (len(w.Flags) < 4 || w.Flags[0] != "--from" || w.Flags[2] != "--to")) {
 				t.Errorf("invalid rerun window %+v", w)
 			}
 		}
@@ -237,16 +241,19 @@ func TestNativeAnimationSamplingDoesNotProveForcedLayout(t *testing.T) {
 	}
 }
 
-func TestBoundedBriefKeepsAllPrimaryHeadings(t *testing.T) {
+func TestBoundedBriefReservesFindingsBeforeDetailHeadings(t *testing.T) {
 	r := Analyze(&model.Recording{EndTime: 2, Records: []model.Record{script("timer-fired", 0.1, 0.4, "42")}}, "capture.json", Options{})
 	var b bytes.Buffer
 	if err := RenderMarkdownWithOptions(&b, r, MarkdownOptions{Brief: true, MaxBytes: 1800}); err != nil {
 		t.Fatal(err)
 	}
-	for _, heading := range []string{"## Findings", "## Hot path", "## Hot functions", "## Verification"} {
-		if !strings.Contains(b.String(), heading) {
-			t.Errorf("missing reserved heading %q: %s", heading, b.String())
+	for _, finding := range r.Findings {
+		if !strings.Contains(b.String(), finding.ID) {
+			t.Errorf("missing reserved finding %q: %s", finding.ID, b.String())
 		}
+	}
+	if !strings.Contains(b.String(), "- Source:") {
+		t.Error("bounded report dropped source identity")
 	}
 	if b.Len() > 1800 || !strings.Contains(b.String(), MarkdownTruncationMarker) {
 		t.Fatalf("invalid hard budget bytes=%d", b.Len())
@@ -281,11 +288,12 @@ func TestSparseSampleSeverityUsesAbsoluteWallImpact(t *testing.T) {
 		r.Samples = append(r.Samples, model.TargetSamples{StackTraces: []model.StackTrace{{Timestamp: float64(i) * 0.001, StackFrames: []model.StackFrame{{Name: "render", URL: "plugin.js", Line: 1, Column: 700}}}}})
 	}
 	rep := Analyze(r, "sparse.json", Options{})
-	for _, id := range []string{"hot-function", "hot-module"} {
-		f := find(rep, id)
-		if f == nil || f.Severity == SevHigh || f.Severity == SevMedium || !strings.Contains(strings.Join(f.Evidence, " "), "coverage ratio") {
-			t.Fatalf("sparse coverage must downgrade sampled concentration: %+v", f)
-		}
+	f := find(rep, "hot-function")
+	if f == nil || f.Severity == SevHigh || f.Severity == SevMedium || !strings.Contains(strings.Join(f.Evidence, " "), "coverage ratio") {
+		t.Fatalf("sparse coverage must downgrade sampled concentration: %+v", f)
+	}
+	if !containsString(f.RelatedFindings, "hot-module") || find(rep, "hot-module") != nil {
+		t.Fatalf("the same sparse samples must not promote a duplicate module lead: %+v", rep.Findings)
 	}
 }
 
@@ -350,18 +358,19 @@ func TestRootDetectorsHaveCanonicalActionableFindingMetadata(t *testing.T) {
 	r := &model.Recording{EndTime: 3}
 	ts := model.TargetSamples{}
 	for i := range 20 {
-		at := float64(i) * 0.1
+		at := float64(i) * 0.12
 		r.Records = append(r.Records, script("timer-fired", at, at+0.003, "poll"))
 		ts.StackTraces = append(ts.StackTraces, model.StackTrace{Timestamp: at + 0.001, StackFrames: []model.StackFrame{{Name: "getAnimations"}, {Name: "pollAnimations", URL: "plugin.js", Line: 1, Column: 900}}})
 		ts.Durations = append(ts.Durations, 0.003)
 	}
 	r.Samples = []model.TargetSamples{ts}
 	rep := Analyze(r, "polling.json", Options{})
-	for _, id := range []string{"suspected-layout-read", "periodic-root"} {
-		f := find(rep, id)
-		if f == nil || len(f.NumericEvidence) == 0 || len(f.MetricKeys) == 0 || len(f.Verify) == 0 || f.Confidence != "low" || len(f.SuggestedWindows) == 0 || f.Suggestion == "" {
-			t.Fatalf("root detector lacks canonical actionable metadata: %s %+v", id, f)
-		}
+	f := find(rep, "forced-style-or-layout-read")
+	if f == nil || len(f.NumericEvidence) == 0 || len(f.MetricKeys) == 0 || len(f.Verify) == 0 || f.Confidence != "low" || len(f.SuggestedWindows) == 0 || f.Suggestion == "" {
+		t.Fatalf("root detector lacks canonical actionable metadata: %+v", f)
+	}
+	if !containsString(f.RelatedFindings, "periodic-root") {
+		t.Fatalf("overlapping periodic evidence must remain a facet: %+v", f)
 	}
 	if find(rep, "forced-layout") != nil {
 		t.Fatal("native sampling must remain suspected, never explicit forced layout")
@@ -373,5 +382,270 @@ func TestPausedRecordsDoNotCreateHeavyWorkFindings(t *testing.T) {
 	rep := Analyze(r, "paused.json", Options{})
 	if len(rep.LongTasks) != 0 || find(rep, "event-handler-heavy") != nil || find(rep, "forced-layout") != nil {
 		t.Fatalf("paused records are not observed work: %+v", rep.Findings)
+	}
+}
+
+func TestWeightedSparseSamplesCannotPromoteConcentration(t *testing.T) {
+	for _, count := range []int{1, 3, 4} {
+		t.Run(string(rune('0'+count)), func(t *testing.T) {
+			rec := &model.Recording{EndTime: 1, Records: []model.Record{script("event-dispatched", 0, 0.9, "message")}}
+			target := model.TargetSamples{}
+			for i := range count {
+				target.StackTraces = append(target.StackTraces, sample(0.1+float64(i)*0.1, "render", "https://app.test/assets/main.js"))
+				target.Durations = append(target.Durations, 0.9/float64(count))
+			}
+			rec.Samples = []model.TargetSamples{target}
+			rep := Analyze(rec, "weighted-sparse.json", Options{})
+			if find(rep, "hot-function") != nil || find(rep, "hot-module") != nil {
+				t.Errorf("%d weighted samples must not assert concentration: %+v", count, rep.Findings)
+			}
+			warning := find(rep, "low-sample-coverage")
+			if warning == nil {
+				t.Fatalf("%d samples need warning despite coverage ratio %.3f", count, rep.SampleCoverage.Ratio)
+			}
+			if !strings.Contains(strings.Join(warning.Evidence, " "), "samples="+string(rune('0'+count))) {
+				t.Errorf("warning must state actual sample count: %+v", warning)
+			}
+			if count == 1 && !strings.Contains(strings.Join(warning.Evidence, " "), "one sample stands for the 900.0ms event-dispatched message event") {
+				t.Errorf("singleton event weight needs explicit caveat: %+v", warning)
+			}
+		})
+	}
+}
+
+func TestConcentrationLabelsAndModuleSampleCounts(t *testing.T) {
+	rec := &model.Recording{EndTime: 1}
+	target := model.TargetSamples{}
+	for i := range 5 {
+		target.StackTraces = append(target.StackTraces, model.StackTrace{Timestamp: 0.1 + float64(i)*0.01, StackFrames: []model.StackFrame{{URL: "https://app.test/main.js", Line: 42, Column: 9}}})
+		target.Durations = append(target.Durations, 0.02)
+	}
+	target.StackTraces = append(target.StackTraces, sample(0.2, "other", "https://app.test/main.js"))
+	target.StackTraces = append(target.StackTraces, sample(0.21, "other", "https://app.test/main.js"))
+	target.Durations = append(target.Durations, 0.01, 0.01)
+	rec.Samples = []model.TargetSamples{target}
+	rep := Analyze(rec, "anonymous.json", Options{})
+	for _, id := range []string{"hot-function", "hot-module"} {
+		f := find(rep, id)
+		if f == nil {
+			t.Fatalf("minimum supported concentration missing: %s", id)
+		}
+		count := "samples=5"
+		if id == "hot-module" {
+			count = "samples=7"
+		}
+		if !strings.Contains(f.Title, count) || !strings.Contains(strings.Join(f.Evidence, " "), count) {
+			t.Errorf("concentration must state supporting count: %+v", f)
+		}
+	}
+	if f := find(rep, "hot-function"); !strings.Contains(f.Title, "(anonymous) (https://app.test/main.js:42:9)") {
+		t.Errorf("anonymous function needs full location label: %+v", f)
+	}
+	payload, err := json.Marshal(rep.Modules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var modules []map[string]any
+	if err := json.Unmarshal(payload, &modules); err != nil {
+		t.Fatal(err)
+	}
+	if len(modules) != 1 || modules[0]["selfSamples"] != float64(7) {
+		t.Errorf("module counts must sum self samples, not function count: %s", payload)
+	}
+	values := NumericValues(rep)
+	if count, ok := values["modules.file.https:%2F%2Fapp.test%2Fmain.js.self_samples"]; !ok || count.Value != 7 {
+		t.Errorf("exact module sample count absent: %+v", values)
+	}
+}
+
+func TestSparseCoverageWithoutScriptDenominator(t *testing.T) {
+	rec := &model.Recording{EndTime: 1, Samples: []model.TargetSamples{{StackTraces: []model.StackTrace{
+		sample(0.1, "render", "https://app.test/main.js"),
+		sample(0.2, "render", "https://app.test/main.js"),
+		sample(0.3, "render", "https://app.test/main.js"),
+	}, Durations: []float64{0.1, 0.1, 0.1}}}}
+	rep := Analyze(rec, "sample-only.json", Options{})
+	f := find(rep, "low-sample-coverage")
+	if f == nil {
+		t.Fatal("three samples need warning even without measured script intervals")
+	}
+	for _, evidence := range f.NumericEvidence {
+		if evidence.MetricKey == "samples.coverage_ratio" {
+			t.Errorf("missing denominator must not become numeric zero coverage: %+v", evidence)
+		}
+	}
+	if len(f.Verify) == 0 || f.Verify[0].MetricKey != "samples.count" || f.Verify[0].Target != 20 {
+		t.Errorf("sparse-sample verification must target actual count: %+v", f.Verify)
+	}
+}
+
+func TestRootBridgeUsesTrueSampleShare(t *testing.T) {
+	rep := &Report{DurationSec: 1, Summary: &metrics.Summary{}, SampleCoverage: SampleCoverage{SampledMs: 1000, SampleCount: 200, ScriptMs: 1000, Ratio: 1, Available: true}}
+	ctx := &ruleCtx{rec: &model.Recording{EndTime: 1}, rep: rep, sum: rep.Summary, wallMs: 1000}
+	raw := rootcause.Finding{ID: "react-sync-in-trigger", Title: "Synchronous React work", Stats: []rootcause.Stat{{Key: "react.sync.self_ms", Value: 160, Unit: "ms", Basis: "sampled"}}}
+	f := bridgeRootFinding(ctx, raw)
+	if f.Severity != SevMedium {
+		t.Errorf("16%% sample share must not use placeholder 100%%: %+v", f)
+	}
+	found := false
+	for _, evidence := range f.NumericEvidence {
+		if evidence.MetricKey == "findings.react-sync-in-trigger.sampled_pct" {
+			found = true
+			if evidence.Value != 16 || evidence.Basis != "estimated" {
+				t.Errorf("sample share must use actual denominator: %+v", evidence)
+			}
+		}
+	}
+	if !found {
+		t.Error("bridge must retain true sample share as numeric evidence")
+	}
+}
+
+func TestOverlappingSampleFindingsKeepOneLeadAndFacets(t *testing.T) {
+	rec := &model.Recording{EndTime: 3}
+	target := model.TargetSamples{}
+	for i := range 6 {
+		at := float64(i) * 0.5
+		rec.Records = append(rec.Records, script("animation-frame-fired", at, at+0.01, "tick"), script("event-dispatched", at, at+0.001, "wheel"))
+		target.StackTraces = append(target.StackTraces, model.StackTrace{Timestamp: at + 0.002, StackFrames: []model.StackFrame{{Name: "getAnimations"}, {Name: "measureAnimations", URL: "https://app.test/src/animations.js", Line: 10, Column: 2}}})
+		target.Durations = append(target.Durations, 0.01)
+	}
+	rec.Samples = []model.TargetSamples{target}
+	rep := Analyze(rec, "raf.json", Options{})
+	leads := 0
+	for _, id := range []string{"hot-function", "forced-style-or-layout-read", "periodic-root"} {
+		if f := find(rep, id); f != nil {
+			leads++
+			if strings.Contains(strings.ToLower(f.Title), "background") {
+				t.Errorf("rAF evidence must not claim background work: %+v", f)
+			}
+		}
+	}
+	if leads != 1 {
+		t.Errorf("same six samples need one lead, not %d: %+v", leads, rep.Findings)
+	}
+	payload, err := json.Marshal(rep.Findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var findings []struct {
+		ID              string   `json:"id"`
+		RelatedFindings []string `json:"relatedFindings"`
+	}
+	if err := json.Unmarshal(payload, &findings); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range findings {
+		if f.ID == "forced-style-or-layout-read" {
+			related := strings.Join(f.RelatedFindings, " ")
+			if !strings.Contains(related, "hot-function") || !strings.Contains(related, "periodic-root") {
+				t.Errorf("strongest causal lead must retain overlapping facets: %s", payload)
+			}
+		}
+	}
+	for _, raw := range rep.RootCause.Findings {
+		visible := find(rep, raw.ID)
+		if visible == nil {
+			continue
+		}
+		if raw.Severity != string(visible.Severity) {
+			t.Errorf("raw severity must equal canonical severity: raw=%+v canonical=%+v", raw, visible)
+		}
+	}
+}
+
+func TestInsightsPreserveOwnershipAndReproductionRules(t *testing.T) {
+	rec := &model.Recording{EndTime: 1, Samples: []model.TargetSamples{{StackTraces: []model.StackTrace{
+		sample(0.1, "render", "https://app.test/src/app.js"),
+	}, Durations: []float64{0.05}}}}
+	var options Options
+	if err := json.Unmarshal([]byte(`{"Ownership":{"AppURLs":["https://app.test/assets/*"],"LibraryURLs":["https://app.test/src/*"]}}`), &options); err != nil {
+		t.Fatal(err)
+	}
+	rep := Analyze(rec, "owned.json", options)
+	functions := rep.FlameTree.Functions()
+	if len(functions) == 0 || functions[0].Frame.Category != flame.CategoryFramework {
+		t.Errorf("explicit library override must survive tree construction: %+v", functions)
+	}
+	payload, err := json.Marshal(rep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(payload, &output); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := output["ownership"]; !ok {
+		t.Error("report must retain effective ownership rules")
+	}
+	command := NumericCommand(rep, "samples.count")
+	if !strings.Contains(command, "--app-url 'https://app.test/assets/*'") || !strings.Contains(command, "--library-url 'https://app.test/src/*'") {
+		t.Errorf("exact commands must retain ownership rules: %s", command)
+	}
+}
+
+func TestEqualWeightedFindingsWithoutSampleOverlapRemainDistinct(t *testing.T) {
+	rec := &model.Recording{EndTime: 2}
+	target := model.TargetSamples{}
+	for i := range 6 {
+		at := float64(i) * 0.1
+		target.StackTraces = append(target.StackTraces,
+			model.StackTrace{Timestamp: at, StackFrames: []model.StackFrame{{Name: "render", URL: "https://app.test/src/app.js", Line: 10}}},
+			model.StackTrace{Timestamp: at + 0.05, StackFrames: []model.StackFrame{{Name: "getAnimations"}, {Name: "measure", URL: "https://app.test/src/app.js", Line: 20}}},
+		)
+		target.Durations = append(target.Durations, 0.01, 0.01)
+	}
+	rec.Samples = []model.TargetSamples{target}
+	rep := Analyze(rec, "distinct.json", Options{})
+	if f := find(rep, "forced-style-or-layout-read"); f == nil {
+		t.Fatal("disjoint native samples must retain their own causal finding")
+	}
+	foundConcentration := false
+	for _, id := range []string{"hot-function", "hot-module"} {
+		if find(rep, id) != nil {
+			foundConcentration = true
+		}
+	}
+	if !foundConcentration {
+		t.Fatalf("equal weight is not evidence of sample overlap: %+v", rep.Findings)
+	}
+}
+
+func TestCanonicalRootFindingPreservesQuantitativeFacets(t *testing.T) {
+	rep := &Report{DurationSec: 1, Summary: &metrics.Summary{}, SampleCoverage: SampleCoverage{SampledMs: 100, SampleCount: 20}}
+	ctx := &ruleCtx{rec: &model.Recording{EndTime: 1}, rep: rep, sum: rep.Summary, wallMs: 1000}
+	raw := rootcause.Finding{ID: "forced-style-or-layout-read", Title: "Possible style flush", Stats: []rootcause.Stat{{Key: "native_reads.self_ms", Value: 60, Unit: "ms"}}, NativeReads: []rootcause.NativeRead{{API: "getAnimations", Flush: "style", Samples: 6, SelfMs: 60, StyleSamples: 3, StyleMs: 2}}, NativeReadsTotal: 1}
+	f := bridgeRootFinding(ctx, raw)
+	payload, err := json.Marshal(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output struct {
+		NativeReads      []rootcause.NativeRead `json:"nativeReads"`
+		NativeReadsTotal int                    `json:"nativeReadsTotal"`
+	}
+	if err := json.Unmarshal(payload, &output); err != nil {
+		t.Fatal(err)
+	}
+	if len(output.NativeReads) != 1 || output.NativeReads[0].Flush != "style" || output.NativeReads[0].StyleSamples != 3 || output.NativeReadsTotal != 1 {
+		t.Errorf("canonical bridge dropped quantitative mechanism facets: %s", payload)
+	}
+}
+
+func TestFindingRelationsKeepOnlyEmittedLeadsAndMergedFacets(t *testing.T) {
+	raw := rootcause.Finding{ID: "forced-style-or-layout-read", RelatedFindings: []string{"style-recalc-heavy", "layout-heavy"}}
+	report := &Report{RootCause: &rootcause.Report{Findings: []rootcause.Finding{raw}}}
+	report.Findings = mergeSampleFindings([]Finding{
+		{ID: raw.ID, Severity: SevLow, SampleIDs: []string{"a", "b"}, RelatedFindings: append([]string{}, raw.RelatedFindings...)},
+		{ID: "hot-function", Severity: SevLow, SampleIDs: []string{"a", "b"}},
+		{ID: "style-recalc-heavy", Severity: SevLow},
+	})
+	syncRootFindingSeverities(report)
+	lead := find(report, raw.ID)
+	if lead == nil || !containsString(lead.RelatedFindings, "style-recalc-heavy") || !containsString(lead.RelatedFindings, "hot-function") {
+		t.Fatalf("retain measured leads and merged sample facets: %+v", report.Findings)
+	}
+	if containsString(lead.RelatedFindings, "layout-heavy") || containsString(report.RootCause.Findings[0].RelatedFindings, "layout-heavy") {
+		t.Fatalf("absent measured findings must not become related links: canonical=%+v raw=%+v", lead, report.RootCause.Findings[0])
 	}
 }

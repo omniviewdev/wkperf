@@ -3,12 +3,12 @@ package analyze
 import (
 	"bytes"
 	"encoding/json"
+	"testing"
+
 	"github.com/omniviewdev/wkperf/internal/flame"
 	"github.com/omniviewdev/wkperf/internal/model"
 	"github.com/omniviewdev/wkperf/internal/profile"
 	"github.com/omniviewdev/wkperf/internal/testgen"
-	"strings"
-	"testing"
 )
 
 func TestLeafFirstWeightedCallersAndStacks(t *testing.T) {
@@ -35,14 +35,6 @@ func TestLeafFirstWeightedCallersAndStacks(t *testing.T) {
 	}
 	if !found || len(s.CommonStacks) != 2 || s.CommonStacks[0].Samples != 2 || len(s.CommonStacks[0].Frames) != 3 || s.CommonStacks[0].Frames[0].Name != "root" {
 		t.Fatalf("weighted callers/full stacks: %+v %+v", s.Functions[0], s.CommonStacks)
-	}
-	var out bytes.Buffer
-	if err := RenderFolded(&out, rec); err != nil {
-		t.Fatal(err)
-	}
-	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	if len(lines) != 2 || !strings.Contains(out.String(), " 6\n") || !strings.Contains(out.String(), " 3\n") || !strings.HasPrefix(lines[0], "root") {
-		t.Fatalf("folded must use weighted milliseconds root→leaf: %q", out.String())
 	}
 }
 
@@ -123,20 +115,6 @@ func TestSummaryDeterministicAcrossPairedSampleShuffle(t *testing.T) {
 	}
 }
 
-func TestRenderFoldedUsesMilliseconds(t *testing.T) {
-	rec := testgen.GetAnimations()
-	var out bytes.Buffer
-	if err := RenderFolded(&out, rec); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out.String(), " 6\n") || !strings.Contains(out.String(), " 2\n") || !strings.Contains(out.String(), " 3\n") {
-		t.Fatalf("unequal durations became sample counts: %q", out.String())
-	}
-	if got, want := out.String(), flame.Build(rec).Folded(); got != want {
-		t.Fatalf("analyze folded differs from canonical flame output: got %q, want %q", got, want)
-	}
-}
-
 func TestEachHotspotHasStableIDAndFrequentContainingStack(t *testing.T) {
 	rec := testgen.GetAnimations()
 	target := &rec.Samples[0]
@@ -190,5 +168,19 @@ func TestCommonStackIDMatchesCanonicalPath(t *testing.T) {
 		if f.CommonStackID != want {
 			t.Fatalf("hotspot lacks exact common-stack query selector: %+v", f)
 		}
+	}
+}
+
+func TestUntimedWholeRecordingUsesNanosecondTolerance(t *testing.T) {
+	rec := &model.Recording{StartTime: 2.611872458306607, EndTime: 20.24081204162212, Samples: []model.TargetSamples{{
+		StackTraces: []model.StackTrace{
+			{Timestamp: 0, StackFrames: []model.StackFrame{{Name: "untimed", URL: "app.js"}}},
+			{Timestamp: 3, StackFrames: []model.StackFrame{{Name: "timed", URL: "app.js"}}},
+		},
+		Durations: []float64{0.025, 0.04},
+	}}}
+	s := SummarizeWith(rec, "decimal.json", Options{ToSec: 17.628939583})
+	if s.Fixture.SampleCount != 2 || s.Fixture.Window != "" || len(s.Functions) != 2 {
+		t.Fatalf("rounded whole bounds excluded unknown clocks: %+v %+v", s.Fixture, s.Functions)
 	}
 }

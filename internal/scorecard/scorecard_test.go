@@ -180,6 +180,8 @@ func TestSummaryDerivedAndMemory(t *testing.T) {
 		mem = append(mem, metrics.Point{T: float64(i * 10), V: 100 + float64(i)*5}) // 0.5MB/s = 30MB/min
 	}
 	rep := report(100,
+		metrics.Metric{Key: "frames.count", Value: 100},
+		metrics.Metric{Key: "frames.active_ms", Value: 4000},
 		metrics.Metric{Key: "frames.p95_ms", Value: 40},
 		metrics.Metric{Key: "frames.fps", Value: 25},
 		metrics.Metric{Key: "frames.jank_ratio", Value: 0.1},
@@ -197,8 +199,8 @@ func TestSummaryDerivedAndMemory(t *testing.T) {
 	if r := get(t, c, "jank-ratio"); r.Rating != NeedsImprovement {
 		t.Errorf("jank %s", r.Rating)
 	}
-	if r := get(t, c, "gc-share"); r.Value < 0.0499 || r.Value > 0.0501 {
-		t.Errorf("gc-share %v", r.Value)
+	if r := get(t, c, "gc-share"); r.Rating != Unavailable || !strings.Contains(r.Detail, "collector intervals") {
+		t.Errorf("collector time cannot rate GC pause share: %+v", r)
 	}
 	if r := get(t, c, "memory-growth"); r.Value < 29.99 || r.Value > 30.01 || r.Rating != Poor {
 		t.Errorf("memory %v %s", r.Value, r.Rating)
@@ -254,7 +256,7 @@ func TestFromValuesMissingAndRoundTrip(t *testing.T) {
 	if c.Score < want-0.01 || c.Score > want+0.01 {
 		t.Errorf("score %v want %v", c.Score, want)
 	}
-	if empty := FromValues(nil); empty.Score != 0 || empty.Grade != "F" || len(empty.Gap) != 0 {
+	if empty := FromValues(nil); empty.Score != 0 || empty.Grade != "n/a" || empty.Coverage != 0 || !empty.Partial || len(empty.Gap) != 0 {
 		t.Errorf("empty %+v", empty)
 	}
 }

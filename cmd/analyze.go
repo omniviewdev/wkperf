@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -12,9 +13,10 @@ import (
 	"github.com/spf13/viper"
 
 	"github.com/omniviewdev/wkperf/internal/ai"
-	"github.com/omniviewdev/wkperf/internal/analyze"
+	"github.com/omniviewdev/wkperf/internal/diagnostic"
+	core "github.com/omniviewdev/wkperf/internal/flame"
 	"github.com/omniviewdev/wkperf/internal/insights"
-	"github.com/omniviewdev/wkperf/internal/model"
+	flamereport "github.com/omniviewdev/wkperf/internal/report/flame"
 	"github.com/omniviewdev/wkperf/internal/report/insightshtml"
 	"github.com/omniviewdev/wkperf/internal/schema"
 	"github.com/omniviewdev/wkperf/internal/scorecard"
@@ -55,15 +57,15 @@ or --emit-prompt to get the prompt for pasting into another agent.`,
 	}
 	f := c.Flags()
 	f.String("format", "term", "output format: term|md|json|html|folded|all")
-	f.String("out", "", "output file (md/json/html/folded) or directory/prefix with --format all (default "+defaultAnalyzeBase+".html)")
-	f.Int("top", 10, "list length for hotspots, modules, slow frames and long tasks")
-	f.Float64("jank-ms", 16.7, "frame duration above which a frame is slow")
-	f.Float64("long-task-ms", 50, "script duration above which a task is long")
+	f.String("out", "", "output file (- = stdout for a single format) or directory/prefix with --format all (default "+defaultAnalyzeBase+".html)")
+	f.Int("top", 10, "list length for hotspots, modules, slow frames, input stalls and long tasks")
+	f.Float64("jank-ms", 16.7, "slow active-frame/finding threshold in ms (fixed scorecard standards remain 16.7 ms)")
+	f.Float64("long-task-ms", 50, "maximal script-task/finding threshold in ms (fixed scorecard standards remain 50 ms)")
 	f.Bool("no-color", false, "disable colored output (NO_COLOR is also respected)")
 	f.Bool("open", false, "open the HTML report after writing it")
 	f.Bool("no-scorecard", false, "skip the performance scorecard for each recording")
-	f.Bool("brief", false, "emit concise Markdown findings, hot functions and verification")
-	f.Int("max-bytes", 0, "maximum total Markdown bytes including truncation marker (0 = unlimited; JSON is never truncated)")
+	f.Bool("brief", false, "emit concise terminal/Markdown findings, hot functions and verification")
+	f.Int("max-bytes", 0, "maximum total terminal/Markdown bytes including truncation marker (0 = unlimited; JSON is never truncated)")
 	addSourceMapFlags(c)
 	addModuleGroupingFlag(c)
 	addWindowFlags(c)
@@ -87,6 +89,13 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	if err := validateMarkdownOptions(format, markdownOptions.MaxBytes, viper.GetBool("ai")); err != nil {
 		return err
 	}
+	out := viper.GetString("out")
+	if out == "-" && format == "all" {
+		return fmt.Errorf("--out - requires a single output format")
+	}
+	if out == "-" && viper.GetBool("open") {
+		return fmt.Errorf("--open cannot be combined with --out -")
+	}
 	if viper.GetBool("open") && format != "html" && format != "all" {
 		return fmt.Errorf("--open requires --format html or all")
 	}
@@ -100,14 +109,15 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		JankMs:         viper.GetFloat64("jank-ms"),
 		LongTaskMs:     viper.GetFloat64("long-task-ms"),
 		Sourcemaps:     viper.GetStringSlice("sourcemap"),
+		Ownership:      ownershipRules(),
 		ModuleGrouping: grouping,
 	}
 	var reps []*insights.Report
 	var cards []*scorecard.Scorecard
 	var sourceMaps []sourcemap.Diagnostics
-	var foldedRecordings []*model.Recording
+	var foldedCharts []flamereport.Chart
 	if format == "folded" {
-		foldedRecordings = make([]*model.Recording, 0, len(files))
+		foldedCharts = make([]flamereport.Chart, 0, len(files))
 	} else {
 		reps = make([]*insights.Report, 0, len(files))
 		cards = make([]*scorecard.Scorecard, 0, len(files))
@@ -123,11 +133,11 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		originalStart := rec.StartTime
 		rec, err = clipRecording(rec, wo)
 		if err != nil {
-			failures = append(failures, failuresFor(&inputError{File: f, Code: "window_error", Err: err})...)
+			failures = append(failures, failuresFor(diagnostic.Wrap(diagnostic.WindowError, f, err))...)
 			continue
 		}
 		if format == "folded" {
-			foldedRecordings = append(foldedRecordings, rec)
+			foldedCharts = append(foldedCharts, flamereport.Chart{Label: f, Tree: core.Build(rec, core.Options{Ownership: iopts.Ownership})})
 			continue
 		}
 		options := iopts
@@ -142,15 +152,18 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if format == "folded" {
+		if err := flamereport.WriteNotes(cmd.ErrOrStderr(), foldedCharts); err != nil {
+			return combineFailures(failures, err)
+		}
 		render := func(w io.Writer) error {
-			for _, rec := range foldedRecordings {
-				if err := analyze.RenderFolded(w, rec); err != nil {
+			for i := range foldedCharts {
+				if err := flamereport.Render(w, "folded", foldedCharts[i:i+1], flamereport.Options{}); err != nil {
 					return err
 				}
 			}
 			return nil
 		}
-		if out := viper.GetString("out"); out != "" {
+		if out != "" && out != "-" {
 			err = writeFileNote(cmd, out, render)
 		} else {
 			err = render(cmd.OutOrStdout())
@@ -169,7 +182,6 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		return combineFailures(failures, emitPrompt(stdout, cmd.ErrOrStderr(), emit, prompt))
 	}
 
-	out := viper.GetString("out")
 	var aiText string
 	runModel := func() error {
 		if !wantAI || aiText != "" {
@@ -179,23 +191,18 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		aiText, err = runAI(cmd.Context(), prompt)
 		return err
 	}
+	var documents []insights.MarkdownDocument
+	if format == "term" || format == "md" || format == "all" {
+		documents, err = analyzeMarkdownDocuments(reps, cards, markdownOptions.Brief)
+		if err != nil {
+			return err
+		}
+	}
 
 	// stdout text formats
 	if format == "term" || format == "all" {
-		color := useColor()
-		for i, r := range reps {
-			if i > 0 {
-				fmt.Fprintln(stdout, strings.Repeat("=", 60))
-			}
-			if err := insights.RenderTerm(stdout, r, color); err != nil {
-				return err
-			}
-			if cards[i] != nil {
-				fmt.Fprintln(stdout)
-				if err := scorecard.RenderTerm(stdout, cards[i], color); err != nil {
-					return err
-				}
-			}
+		if err := insights.RenderTermDocuments(stdout, documents, failureMarkdown(failures), useColor(), markdownOptions); err != nil {
+			return err
 		}
 		if err := runModel(); err != nil {
 			return err
@@ -203,8 +210,10 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		printAI(cmd, "term", aiText)
 	}
 	if format == "md" {
-		render := func(w io.Writer) error { return renderMarkdownAll(w, reps, cards, markdownOptions) }
-		if out == "" {
+		render := func(w io.Writer) error {
+			return insights.RenderMarkdownDocuments(w, documents, failureMarkdown(failures), markdownOptions)
+		}
+		if out == "" || out == "-" {
 			if err := render(stdout); err != nil {
 				return err
 			}
@@ -214,13 +223,15 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		if err := runModel(); err != nil {
 			return err
 		}
-		if out == "" {
+		if out == "" || out == "-" {
 			printAI(cmd, "md", aiText)
 		}
 	}
 	if format == "all" {
 		p := reportPathBase(out, format, ".md", defaultAnalyzeBase)
-		if err := writeFileNote(cmd, p, func(w io.Writer) error { return renderMarkdownAll(w, reps, cards, markdownOptions) }); err != nil {
+		if err := writeFileNote(cmd, p, func(w io.Writer) error {
+			return insights.RenderMarkdownDocuments(w, documents, failureMarkdown(failures), markdownOptions)
+		}); err != nil {
 			return err
 		}
 	}
@@ -230,7 +241,7 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 			if err := runModel(); err != nil {
 				return err
 			}
-			if out == "" {
+			if out == "" || out == "-" {
 				err = render(stdout)
 			} else {
 				err = writeFileNote(cmd, out, render)
@@ -247,7 +258,13 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		p := reportPathBase(out, format, ".html", defaultAnalyzeBase)
-		if err := writeFileNote(cmd, p, func(w io.Writer) error { return renderInsightsHTML(w, reps, cards, aiText) }); err != nil {
+		render := func(w io.Writer) error { return renderInsightsHTML(w, reps, cards, aiText) }
+		if out == "-" {
+			err = render(stdout)
+		} else {
+			err = writeFileNote(cmd, p, render)
+		}
+		if err != nil {
 			return err
 		}
 		if viper.GetBool("open") {
@@ -265,37 +282,9 @@ func writeFileNote(cmd *cobra.Command, path string, render func(io.Writer) error
 	if err := writeFile(path, render); err != nil {
 		return err
 	}
+	root := cmd.Root()
+	root.SetContext(context.WithValue(root.Context(), reportWrittenKey{}, true))
 	fmt.Fprintln(cmd.ErrOrStderr(), "wrote", path)
-	return nil
-}
-
-func renderMarkdownAll(w io.Writer, reps []*insights.Report, cards []*scorecard.Scorecard, options insights.MarkdownOptions) error {
-	var output bytes.Buffer
-	target := w
-	if options.MaxBytes > 0 {
-		target = &output
-	}
-	for i, r := range reps {
-		if i > 0 {
-			if _, err := io.WriteString(target, "\n---\n\n"); err != nil {
-				return err
-			}
-		}
-		if err := insights.RenderMarkdownWithOptions(target, r, options); err != nil {
-			return err
-		}
-		if cards[i] != nil && !options.Brief {
-			if _, err := io.WriteString(target, "\n"); err != nil {
-				return err
-			}
-			if err := scorecard.RenderMarkdown(target, cards[i]); err != nil {
-				return err
-			}
-		}
-	}
-	if options.MaxBytes > 0 {
-		return writeBoundedMarkdown(w, output.String(), options.MaxBytes)
-	}
 	return nil
 }
 

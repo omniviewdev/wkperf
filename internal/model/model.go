@@ -9,6 +9,8 @@ import (
 	"os"
 	"sort"
 	"strings"
+
+	"github.com/omniviewdev/wkperf/internal/diagnostic"
 )
 
 // Record type identifiers as emitted in Record.Type.
@@ -36,9 +38,21 @@ type Recording struct {
 	MemoryPressureEvents []MemoryPressure `json:"memoryPressureEvents"`
 	Samples              []TargetSamples  `json:"samples"`
 
+	// Partial clips retain untimed evidence but exclude its weight.
+	UntimedExcluded bool            `json:"-"`
+	SampleEvidence  *SampleEvidence `json:"-"`
+
 	// Legacy (pre-`samples`) fields; Load folds them into Samples.
 	SampleStackTraces []StackTrace `json:"sampleStackTraces,omitempty"`
 	SampleDurations   []float64    `json:"sampleDurations,omitempty"`
+}
+
+// SampleEvidence preserves original export order for inference-only span labels.
+// Clipped recordings share these read-only samples with their source recording.
+type SampleEvidence struct {
+	StartTime float64
+	EndTime   float64
+	Samples   []TargetSamples
 }
 
 // Discontinuity is a stopped/resumed capture interval, not observed page activity.
@@ -55,6 +69,11 @@ type Record struct {
 	StartTime float64 `json:"startTime"`           // script, layout, rendering-frame
 	EndTime   float64 `json:"endTime"`
 	Timestamp float64 `json:"timestamp"` // cpu, memory
+
+	// Original bounds retain record ownership when an analysis window clips a
+	// positive-duration span. A positive original span indicates provenance.
+	OriginalStartTime float64 `json:"-"`
+	OriginalEndTime   float64 `json:"-"`
 
 	Target  *Target         `json:"target,omitempty"`
 	Details json.RawMessage `json:"details,omitempty"` // script: string or object
@@ -219,16 +238,23 @@ func objectKeys(data []byte) string {
 	return "[" + strings.Join(keys, ", ") + "]"
 }
 
-// Load reads and decodes the recording at path.
+// Load reads and decodes the regular recording file at path.
 func Load(path string) (*Recording, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, diagnostic.Wrap(diagnostic.LoadError, path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, diagnostic.Wrap(diagnostic.InputError, path, fmt.Errorf("not a regular file"))
+	}
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, diagnostic.Wrap(diagnostic.LoadError, path, err)
 	}
 	defer f.Close()
 	rec, err := Parse(f)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, diagnostic.Wrap(diagnostic.LoadError, path, err)
 	}
 	return rec, nil
 }

@@ -13,7 +13,7 @@ const (
 	UnitBytes Unit = "bytes"
 	UnitMB    Unit = "MB"
 	UnitFPS   Unit = "fps"
-	UnitRatio Unit = "ratio" // 0..1
+	UnitRatio Unit = "ratio" // dimensionless; estimated coverage may exceed 1
 )
 
 // Direction says which way is an improvement.
@@ -143,7 +143,7 @@ type Summary struct {
 	IdleWakeups        []IdleWakeup `json:"idleWakeups,omitempty"`
 
 	// Series for HTML charts (not compared statistically).
-	FrameMs  []float64 `json:"frameMs,omitempty"`  // rendering frame durations in ms, chronological
+	FrameMs  []float64 `json:"frameMs,omitempty"`  // active rendering intervals, excluding idle gaps and input stalls
 	CPU      []Point   `json:"cpu,omitempty"`      // total cpu usage %
 	MemoryMB []Point   `json:"memoryMB,omitempty"` // total memory MB
 }

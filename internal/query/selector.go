@@ -205,7 +205,7 @@ func function(f flame.Frame) Function {
 	if f.Original != nil && f.Original.URL != "" {
 		module = f.Original.URL
 	}
-	return Function{ID: flame.FunctionID(f), Name: name, URL: f.URL, Line: f.Line, Column: f.Column, SourceID: f.SourceID, Module: module, Category: string(f.Category), Original: f.Original}
+	return Function{ID: flame.FunctionID(f), Name: name, URL: f.URL, Line: f.Line, Column: f.Column, SourceID: f.SourceID, Module: module, Category: string(f.Category), Native: f.Native, Anonymous: f.Anonymous, Original: f.Original}
 }
 
 func stack(frames []flame.Frame) []Function {

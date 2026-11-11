@@ -2,16 +2,23 @@ package flame
 
 import "slices"
 
-// Diff matches generated identities and path IDs, returning after-minus-before.
+// Diff matches generated identities and path IDs, using automatic duration
+// normalization. Raw before/after milliseconds always remain available.
 func Diff(before, after *Tree) *Comparison {
-	result := &Comparison{Functions: make([]FunctionDelta, 0)}
-	if before != nil && before.Root != nil {
-		result.BeforeTotalMs = before.Root.TotalMs
+	result, _ := DiffNormalized(before, after, DiffAuto)
+	return result
+}
+
+// DiffNormalized compares functions and contexts using one shared normalization
+// contract. Only delta fields change units; samples and raw input values do not.
+func DiffNormalized(before, after *Tree, mode DiffMode) (*Comparison, error) {
+	normalization, err := ResolveDiffNormalization(before, after, mode)
+	if err != nil {
+		return nil, err
 	}
-	if after != nil && after.Root != nil {
-		result.AfterTotalMs = after.Root.TotalMs
-	}
-	result.TotalMs = result.AfterTotalMs - result.BeforeTotalMs
+	result := &Comparison{Functions: make([]FunctionDelta, 0), Normalization: normalization,
+		BeforeTotalMs: normalization.BeforeTotalMs, AfterTotalMs: normalization.AfterTotalMs}
+	result.TotalMs = normalization.Delta(result.BeforeTotalMs, result.AfterTotalMs)
 	functions := make(map[string]FunctionDelta)
 	for _, function := range before.Functions() {
 		functions[function.ID] = FunctionDelta{ID: function.ID, Frame: function.Frame,
@@ -28,8 +35,8 @@ func Diff(before, after *Tree) *Comparison {
 		functions[function.ID] = delta
 	}
 	for _, delta := range functions {
-		delta.SelfMs = delta.AfterSelfMs - delta.BeforeSelfMs
-		delta.TotalMs = delta.AfterTotalMs - delta.BeforeTotalMs
+		delta.SelfMs = normalization.Delta(delta.BeforeSelfMs, delta.AfterSelfMs)
+		delta.TotalMs = normalization.Delta(delta.BeforeTotalMs, delta.AfterTotalMs)
 		delta.Samples = delta.AfterSamples - delta.BeforeSamples
 		result.Functions = append(result.Functions, delta)
 	}
@@ -41,7 +48,7 @@ func Diff(before, after *Tree) *Comparison {
 	if after != nil {
 		afterRoot = after.Root
 	}
-	result.Root = diffNode(beforeRoot, afterRoot)
+	result.Root = diffNode(beforeRoot, afterRoot, normalization)
 	type work struct {
 		before, after *Node
 		output        *NodeDelta
@@ -64,16 +71,16 @@ func Diff(before, after *Tree) *Comparison {
 			}
 		}
 		for _, pair := range pairs {
-			pair.output = diffNode(pair.before, pair.after)
+			pair.output = diffNode(pair.before, pair.after, normalization)
 			current.output.Children = append(current.output.Children, pair.output)
 			pending = append(pending, pair)
 		}
 		slices.SortFunc(current.output.Children, func(a, b *NodeDelta) int { return compareFrame(a.Frame, b.Frame) })
 	}
-	return result
+	return result, nil
 }
 
-func diffNode(before, after *Node) *NodeDelta {
+func diffNode(before, after *Node, normalization DiffNormalization) *NodeDelta {
 	delta := &NodeDelta{ID: "root", Frame: Frame{Name: "(root)"}, Children: make([]*NodeDelta, 0)}
 	if before != nil {
 		delta.ID, delta.Frame = before.ID, before.Frame
@@ -88,8 +95,8 @@ func diffNode(before, after *Node) *NodeDelta {
 		}
 		delta.AfterSelfMs, delta.AfterTotalMs, delta.AfterSamples = after.SelfMs, after.TotalMs, after.Samples
 	}
-	delta.SelfMs = delta.AfterSelfMs - delta.BeforeSelfMs
-	delta.TotalMs = delta.AfterTotalMs - delta.BeforeTotalMs
+	delta.SelfMs = normalization.Delta(delta.BeforeSelfMs, delta.AfterSelfMs)
+	delta.TotalMs = normalization.Delta(delta.BeforeTotalMs, delta.AfterTotalMs)
 	delta.Samples = delta.AfterSamples - delta.BeforeSamples
 	return delta
 }

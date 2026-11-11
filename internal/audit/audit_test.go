@@ -11,17 +11,9 @@ import (
 	"github.com/omniviewdev/wkperf/internal/scorecard"
 )
 
-// card builds a Scorecard literal exposing exactly the given values.
+// card builds a scorecard exposing exactly the given available values.
 func card(vals map[string]float64) *scorecard.Scorecard {
-	c := &scorecard.Scorecard{}
-	for _, std := range scorecard.Standards() {
-		r := scorecard.Result{Standard: std, Rating: scorecard.Unavailable}
-		if v, ok := vals[std.ID]; ok {
-			r.Value, r.Rating = v, scorecard.Good
-		}
-		c.Results = append(c.Results, r)
-	}
-	return c
+	return scorecard.FromValues(vals)
 }
 
 func summary(p95 float64) *metrics.Summary {

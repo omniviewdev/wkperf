@@ -206,13 +206,13 @@ func subtreeRows(tree *flame.Tree, sel selection, req Request) []Row {
 	return rows
 }
 
-func diffRows(before, after *flame.Tree, req Request) []Row {
+func diffRows(before, after *flame.Tree, req Request, normalization flame.DiffNormalization) []Row {
 	byID := map[string]*Row{}
 	for _, f := range before.Functions() {
 		if !accepts(f.Frame, req) {
 			continue
 		}
-		byID[f.ID] = &Row{Function: function(f.Frame), BaselineSelfMS: clean(f.SelfMs), BaselineTotalMS: clean(f.TotalMs), Samples: -f.Samples}
+		byID[f.ID] = &Row{Function: function(f.Frame), BaselineSelfMS: f.SelfMs, BaselineTotalMS: f.TotalMs, Samples: -f.Samples}
 	}
 	for _, f := range after.Functions() {
 		if !accepts(f.Frame, req) {
@@ -223,13 +223,15 @@ func diffRows(before, after *flame.Tree, req Request) []Row {
 			row = &Row{Function: function(f.Frame)}
 			byID[f.ID] = row
 		}
-		row.CandidateSelfMS, row.CandidateTotalMS = clean(f.SelfMs), clean(f.TotalMs)
+		row.CandidateSelfMS, row.CandidateTotalMS = f.SelfMs, f.TotalMs
 		row.Samples += f.Samples
 	}
 	rows := make([]Row, 0, len(byID))
 	for _, row := range byID {
-		row.DeltaSelfMS = clean(row.CandidateSelfMS - row.BaselineSelfMS)
-		row.DeltaTotalMS = clean(row.CandidateTotalMS - row.BaselineTotalMS)
+		row.DeltaSelfMS = clean(normalization.Delta(row.BaselineSelfMS, row.CandidateSelfMS))
+		row.DeltaTotalMS = clean(normalization.Delta(row.BaselineTotalMS, row.CandidateTotalMS))
+		row.BaselineSelfMS, row.BaselineTotalMS = clean(row.BaselineSelfMS), clean(row.BaselineTotalMS)
+		row.CandidateSelfMS, row.CandidateTotalMS = clean(row.CandidateSelfMS), clean(row.CandidateTotalMS)
 		row.SelfMS, row.TotalMS = row.DeltaSelfMS, row.DeltaTotalMS
 		rows = append(rows, *row)
 	}
