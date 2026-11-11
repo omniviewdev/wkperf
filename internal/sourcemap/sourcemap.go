@@ -254,40 +254,106 @@ type loadedMap struct {
 	mapping *Map
 }
 
-// DetectMinification recognizes distinct short-named functions on the same
-// first/second generated line, or a short name with a very large column.
+// DetectMinification uses distinct generated frames, not sample frequency.
+// Short identifiers must dominate one file and have dense low-line locations.
 func DetectMinification(rec *model.Recording) bool {
 	if rec == nil {
 		return false
 	}
-	type key struct {
-		url  string
-		line int
+	type frameKey struct {
+		name         string
+		line, column int
 	}
-	columns := map[key]map[int]bool{}
-	maxColumn := map[key]int{}
+	type fileHint struct {
+		frames map[frameKey]bool
+		short  int
+	}
+	files := map[string]*fileHint{}
 	for _, target := range rec.Samples {
 		for _, stack := range target.StackTraces {
 			for _, f := range stack.StackFrames {
-				if f.URL == "" || f.Line < 1 || f.Line > 2 || f.Column < 1 || len(f.Name) > 3 {
+				if f.URL == "" || f.Line < 1 || f.Column < 1 ||
+					strings.EqualFold(f.SourceID, "native") || f.SourceID == "4294967295" ||
+					strings.HasPrefix(f.URL, "user-script:") ||
+					f.Name == "" || f.Name == "(anonymous)" || f.Name == "(program)" {
 					continue
 				}
-				if f.Column >= 1000 {
-					return true
+				file := files[f.URL]
+				if file == nil {
+					file = &fileHint{frames: map[frameKey]bool{}}
+					files[f.URL] = file
 				}
-				k := key{f.URL, f.Line}
-				if columns[k] == nil {
-					columns[k] = map[int]bool{}
+				key := frameKey{f.Name, f.Line, f.Column}
+				if _, seen := file.frames[key]; seen {
+					continue
 				}
-				columns[k][f.Column] = true
-				maxColumn[k] = max(maxColumn[k], f.Column)
-				if len(columns[k]) >= 2 && maxColumn[k] >= 80 {
-					return true
+				short := f.Line <= 20 && shortIdentifier(f.Name)
+				file.frames[key] = short
+				if short {
+					file.short++
 				}
 			}
 		}
 	}
+	for _, file := range files {
+		if file.short < 2 || file.short*4 < len(file.frames)*3 {
+			continue
+		}
+		type location struct{ line, column int }
+		type lineHint struct {
+			names     map[string]bool
+			columns   map[int]bool
+			maxColumn int
+		}
+		var early [2]lineHint
+		names := map[string]bool{}
+		locations := map[location]bool{}
+		wide := map[location]bool{}
+		for frame, short := range file.frames {
+			if !short {
+				continue
+			}
+			names[frame.name] = true
+			loc := location{frame.line, frame.column}
+			locations[loc] = true
+			if frame.column >= 1000 {
+				wide[loc] = true
+			}
+			if frame.line <= 2 {
+				line := &early[frame.line-1]
+				if line.names == nil {
+					line.names, line.columns = map[string]bool{}, map[int]bool{}
+				}
+				line.names[frame.name] = true
+				line.columns[frame.column] = true
+				line.maxColumn = max(line.maxColumn, frame.column)
+			}
+		}
+		for _, line := range early {
+			if len(line.names) >= 2 && len(line.columns) >= 2 && line.maxColumn >= 80 {
+				return true
+			}
+		}
+		if len(names) >= 4 && len(locations) >= 4 && len(wide) >= 2 {
+			return true
+		}
+	}
 	return false
+}
+
+func shortIdentifier(name string) bool {
+	if len(name) == 0 || len(name) > 3 {
+		return false
+	}
+	for i := range len(name) {
+		b := name[i]
+		if b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b == '_' || b == '$' ||
+			i > 0 && b >= '0' && b <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // Resolve matches repeatable map files/directories and local bundle sidecars.

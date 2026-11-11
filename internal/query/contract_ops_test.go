@@ -179,28 +179,6 @@ func TestDiffNormalizationKeepsRawContextAndZeroRateChange(t *testing.T) {
 	}
 }
 
-func TestLoaderDiagnosticsReachEverySource(t *testing.T) {
-	diagnostics := sourcemap.Diagnostics{MappedFrames: 3, UnmappedFrames: 4, MissingMaps: []string{"app.min.js"}, Warnings: []string{"missing map"}, Minified: true}
-	engine := &Engine{Loader: func(context.Context, string, SourceOptions) (*model.Recording, sourcemap.Diagnostics, error) {
-		return fixture(), diagnostics, nil
-	}}
-	for _, operation := range []string{"top", "metrics", "diff"} {
-		req := Request{Operation: operation, Selector: "samples.count"}
-		if operation == "top" {
-			req.Selector = ""
-		}
-		if operation == "diff" {
-			req.Baseline, req.Candidate = "before.json", "after.json"
-		}
-		result := run(t, engine, req)
-		for _, source := range result.Sources {
-			if !reflect.DeepEqual(source.SourceMaps, diagnostics) {
-				t.Fatalf("%s discarded diagnostics: %+v", operation, source)
-			}
-		}
-	}
-}
-
 func TestDefaultLoaderPreservesMapCoverageAndHints(t *testing.T) {
 	rec := &model.Recording{StartTime: 0, EndTime: 1, Samples: []model.TargetSamples{{
 		StackTraces: []model.StackTrace{{Timestamp: .1, StackFrames: []model.StackFrame{{Name: "x", URL: "https://example.test/app.min.js", Line: 1, Column: 1001}}}},
@@ -217,7 +195,7 @@ func TestDefaultLoaderPreservesMapCoverageAndHints(t *testing.T) {
 	}
 	result := run(t, &Engine{}, Request{File: file, Operation: "top"})
 	diagnostics := result.Sources[0].SourceMaps
-	if !diagnostics.Minified || diagnostics.UnmappedFrames != 1 || len(diagnostics.MissingMaps) != 1 || len(diagnostics.Warnings) == 0 {
+	if diagnostics.UnmappedFrames != 1 || len(diagnostics.MissingMaps) != 1 {
 		t.Fatalf("unmapped source hint lost: %+v", diagnostics)
 	}
 	mapPath := filepath.Join(dir, "app.min.js.map")

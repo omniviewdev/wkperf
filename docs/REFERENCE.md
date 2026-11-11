@@ -202,6 +202,8 @@ Function identity is `(url,line,column,name)`, with `sourceID` in place of the U
 
 Pass `--sourcemap path/to/bundle.js.map` or `--sourcemap path/to/maps` repeatedly. Standard v3 mappings resolve original file, line, and column; function names use conservative declaration-oriented lookup rather than the parameter token at the profiler position. Anonymous frames do not inherit a nearby parameter name. Local bundle-adjacent maps and recording-adjacent bundle-name sidecars can be discovered without network requests. A directory scan warns and continues past unrelated unsupported maps; explicitly supplied unsupported map files still fail. Missing relocated sources retain their cleaned map-relative path with a warning rather than inventing a local absolute path. Ambiguous matches retain the generated frame with a warning.
 
+Minification diagnostics use deduplicated generated name/location evidence grouped by file URL. At least 75% of eligible named frames must be one-to-three-character ASCII identifiers on the first twenty generated lines, with additional column-density evidence. Repeated observations of one frame do not create independent evidence; native and injected frames are excluded. This remains a heuristic: sparse sampling, longer retained names, or later generated lines can produce false negatives. `minified: false` is not proof of unminified code. The flag only controls diagnostics and map hints; it does not rewrite names, identity, or ownership.
+
 Hot functions retain a stable query `id`, self and inclusive time, weighted callers and callees, and `commonStack`. The common stack is the most frequent complete containing path by sample count, with weight and lexical tie-breaks; it is distinct from the heaviest window stack. Module grouping defaults to individual file URLs without query/hash. Use `--module-grouping parent-directory` for roll-up. Inclusive time overlaps between callers and callees; never add inclusive rows as a wall-time breakdown.
 
 Trigger tables separate event names and timer/rAF/microtask dispatches. Each row has count, total, mean, p95, max, and sampled self/inclusive hotspots within its intervals. Sampling-based attribution uses timestamp overlap; missing samples are stated explicitly. A native layout-related API in a stack is a lead, not proof that it forced layout.
@@ -270,7 +272,7 @@ Differential JSON retains raw totals, active durations, per-function/context bef
 | `top --by self\|total` | hottest functions; optional module/category filters |
 | `callers FUNC`, `callees FUNC` | weighted immediate edges, samples, and share of function time |
 | `paths FUNC` | heaviest complete stacks containing a selected function |
-| `stacks PATH_ID` | retrieve an exact canonical stack, including a hotspot's `commonStackID` |
+| `stacks [NODE_ID]` | list sampled stacks or retrieve one exact canonical `n_…` ID, including a hotspot's `commonStackID`; does not accept function names |
 | `subtree FUNC --depth D --min-ms N` | bounded call subtree |
 | `hot-path --min-share 0.05 --min-samples 5 --tie-ratio 0.8` | follow supported heavy branches; expose alternatives at a near tie |
 | `by-root` | group sampled paths by root/trigger |
@@ -283,7 +285,7 @@ Differential JSON retains raw totals, active durations, per-function/context bef
 | `events` | trigger counts and timing aggregates |
 | `rootcause [KEY\|PREFIX.*\|/REGEX/]` | reproduce named root-cause measurements |
 
-Selectors accept plain names, stable IDs, `url:line:col`, or `/regex/`. If a selector is ambiguous, the command returns candidates and IDs rather than guessing. Source-mapped originals and generated locations are preserved. Native frames without URLs and anonymous frames are valid selectors through their stable IDs.
+Function selectors accept plain names, stable IDs, `url:line:col`, or `/regex/`. If a function selector is ambiguous, the command returns candidates and IDs rather than guessing. The `stacks` operation is different: its optional selector must be an exact `node_id` from `paths` or `stacks` output. Use `paths getAnimations` to search by function name, then pass a returned `node_id` to `stacks`. Display labels such as `S75` are report-local, not canonical selectors. Source-mapped originals and generated locations are preserved. Native frames without URLs and anonymous frames remain selectable through stable function IDs.
 
 Discovery can return the same key for different owning operations; use the row's `op` to choose `metrics` or `rootcause`. Function scalar keys use canonical IDs such as `functions.f_ID.self_ms`, not encoded name/URL tuples. Alias metadata names the canonical measurement as `operation:key`. For example, `recording.duration_sec` aliases `metrics:overview.duration_s`, and root-cause `samples.self_ms` aliases `metrics:samples.sampled_ms`. Aliases share the same values and nine-decimal rounding rather than recomputing competing totals.
 
@@ -376,7 +378,7 @@ Machine error codes distinguish `input_error`, `load_error`, `source_map_error`,
 
 With `--out FILE`, a successfully written complete or partial report is the machine-readable artifact; stdout does not receive a second error-only document. Failures before report rendering still emit one JSON error document on stdout when JSON is selected. Stderr remains human-readable and names each file once.
 
-For bounded agent context, use `--brief` or `--max-bytes N` with Markdown or terminal output. Priority is recording identities and errors, all finding summaries, hot path, top functions, verification, then details. The final truncation marker counts toward the limit. Repeated stacks are referenced rather than expanded at every occurrence; use their query commands to retrieve full context.
+For bounded agent context, use `--brief` or `--max-bytes N` with Markdown or terminal output. Priority is recording identities and errors, all finding summaries, hot path, top functions, verification, then details. Cut sections carry local truncation notices; dangling headings and table headers without data are not shown as if complete. Local notices and the final summary count toward the limit. A cap too small for a section notice can omit that section entirely, with omission still recorded in the final summary. Repeated stacks are referenced rather than expanded at every occurrence; remove the cap or use query commands to retrieve full context.
 
 ## Scorecard
 

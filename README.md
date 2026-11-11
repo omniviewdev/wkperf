@@ -258,9 +258,13 @@ wkperf compare baseline/ --vs candidate/ --format md --fail-on-regression
 
 Ambiguous function names produce candidate IDs instead of silently choosing a function. Use an ID or `url:line:col` to select precisely. Findings include suggested time windows and commands to reproduce their supporting measurements.
 
+Use `paths getAnimations` to find stacks by function name. `stacks` instead accepts a returned canonical `node_id` (`n_…`); omit the selector to list stacks. Labels such as `S75` are local report references, not canonical query IDs.
+
 v0.5.0 uses `wkperf-insights/v3`, `wkperf-audit/v2`, `wkperf.query.v2`, and comparison `wkperf/v2`; these contracts differ from v0.4.0. Run `wkperf schema` for the installed binary's complete contract. Untimed samples remain in whole-recording rankings but are explicitly excluded from temporal attribution. Bad files do not discard valid analyze/audit results: failures appear in `errors` and stderr, and the command exits nonzero.
 
 Use `wkperf analyze capture.json --brief --max-bytes 12000` for a bounded terminal report, or add `--format md` for Markdown. Sources, errors, and finding summaries take priority over detail. JSON stores selected frames and exact stacks once, with references, totals, and retrieval commands instead of repeated stack dumps. Use `--out -` to write a single-format analysis report to stdout.
+
+Byte-limited reports mark cut sections locally instead of presenting empty hotspot tables or blank verification lists as complete evidence. Markers count toward the cap. If a cap cannot fit even a section notice, that section is left out; the final summary still reports omitted content. Remove the cap or use targeted queries to retrieve the missing evidence.
 
 Targeted queries default to a 128 KiB output budget and 48-frame root/leaf stack previews. Their JSON is intentionally bounded, unlike complete analysis JSON. Truncation metadata records omitted rows or stack frames; use pagination or the exact-stack flags above for more detail. Query and MCP output share interned function identities, source-map diagnostics, and operation-specific rows rather than repeated empty fields.
 
@@ -269,6 +273,8 @@ Idle timer wakeups are separated from expensive frames. Function identity includ
 Long tasks now share non-overlapping task boundaries across metrics, findings, and window selection. GC collector intervals stay separate from main-thread work. Input stalls stay visible without inflating work-bound jank. Sparse or mostly idle captures receive unavailable grades rather than a misleading healthy score; frame standards require 30 active frames and one second of active-frame observation.
 
 Source maps resolve locations without borrowing parameter names for function labels. Copied sidecars keep honest relative source paths when originals are unavailable, and directory scans skip unrelated unsupported maps with warnings. MCP reports the installed tool version, rejects non-file inputs, and recovers after oversized requests.
+
+The `minified` flag is a sampled-code hint, not a source inspection or naming rule. Dense short names can identify minified bundles beyond their first two lines; sparse evidence can still miss minification. A false flag does not guarantee readable source and does not suppress source-map resolution.
 
 Flame JSON uses compact `wkperf-flame/v2` frame and node tables. Folded stacks use standard integer microseconds and load without custom escaping rules. Function focus merges all calling contexts; normalized differential views retain raw before/after measurements and warn about mismatched captures.
 
