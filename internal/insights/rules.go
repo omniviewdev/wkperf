@@ -107,6 +107,9 @@ func (c *ruleCtx) collect() *recStats {
 				scripts = append(scripts, span{r.StartTime, r.EndTime})
 			}
 		case model.TypeLayout:
+			if profile.IsStalledComposite(*r) {
+				continue
+			}
 			s := get(st.layout, r.EventType)
 			s.n++
 			s.ms += ms

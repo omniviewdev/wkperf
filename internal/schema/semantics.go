@@ -131,6 +131,12 @@ var meaningGroups = []meaningGroup{
 		"gcMs":                {"Union of observed GC collector intervals; not a measured blocking pause or exclusive main-thread work.", "ms"},
 		"gcOverlapWithWorkMs": {"GC collector interval intersection with instrumented main-thread work; overlap does not establish blocking.", "ms"},
 		"moreEvidenceCommand": {"Explicit analyze rerun with a larger top limit while preserving source, maps, window and analysis options.", ""},
+		"stalledComposites":   {"Composite records longer than the stall threshold: their late-reported spans are excluded from the breakdown, frame attribution and findings.", ""},
+	}},
+	{[]string{"metrics_StalledComposites"}, map[string]leafMeaning{
+		"thresholdMs": {"Fixed longest composite record span, in milliseconds, still counted as main-thread work; longer records are stalled.", "ms"},
+		"count":       {"Number of composite records longer than the threshold that overlap the selection; WebKit reported their end late.", "count"},
+		"totalMs":     {"Sum of stalled composite reported spans clipped to the selection; overlapping spans add separately, so it can exceed the capture length and is never main-thread work.", "ms"},
 	}},
 	{[]string{"flame_Frame", "metrics_FunctionFrame", "compare_FuncDiff"}, map[string]leafMeaning{
 		"id":        {"Stable f_ selector derived from generated function identity; source maps and ownership rules do not change it.", ""},

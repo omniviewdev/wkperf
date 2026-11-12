@@ -62,6 +62,7 @@ func Analyze(rec *model.Recording, source string, o Options) *Report {
 		Breakdown:           breakdownWithWork(rec, work),
 		GCMs:                work.GCMs,
 		GCOverlapWithWorkMs: work.GCOverlapWithWorkMs,
+		StalledComposites:   sum.StalledComposites,
 		Hotspots:            []metrics.FuncStat{},
 		InclusiveHotspots:   []metrics.FuncStat{},
 		CommonStacks:        []metrics.StackStat{},

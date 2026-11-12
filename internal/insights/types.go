@@ -239,6 +239,9 @@ type Report struct {
 	LongTasksTotal      int                  `json:"longTasksTotal"`
 	Findings            []Finding            `json:"findings"` // sorted by severity then ImpactMs desc
 	Summary             *metrics.Summary     `json:"-"`
+
+	// StalledComposites reports composite records excluded from main-thread work.
+	StalledComposites metrics.StalledComposites `json:"stalledComposites"`
 }
 
 // Options tune the analyzer.

@@ -133,8 +133,9 @@ func TestExclusiveFindingScalarsRetainInclusiveRecordTime(t *testing.T) {
 		"layout.layout.exclusive_ms":             100,
 		"layout.paint.total_ms":                  100,
 		"layout.paint.exclusive_ms":              50,
-		"layout.composite.total_ms":              400,
-		"layout.composite.exclusive_ms":          100,
+		"layout.total_ms":                        250,
+		"layout.composite.stalled_count":         1,
+		"layout.composite.stalled_ms":            400,
 		"script.timer-fired.exclusive_ms":        50,
 	} {
 		if got := val(t, s, key); !approx(got, want) {

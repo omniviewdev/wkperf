@@ -48,6 +48,20 @@ Sampling weights come from `durations[i]`, in seconds, paired with `stackTraces[
 
 Sample durations are statistical weights, not measured execution intervals. A time window selects samples by timestamp in `[from,to)` and retains each selected sample's full weight; it does not spread or proportionally clip the weight over wall time. Sampling totals can therefore differ from instrumented script totals and should not be presented as an exclusive elapsed-time breakdown.
 
+### Stalled composite records
+
+WebKit can report the end of a `composite` layout record seconds after the compositor started it, so such a span measures late reporting, not main-thread work. Real exports contain composites of 12 to 13 seconds beside ones of a few milliseconds. A composite longer than 50 ms is a *stalled composite*: it owns no exclusive work, so it adds 0 ms to the Composite breakdown slice, to frame, slow-frame and long-work attribution and to every finding impact, and its time stays idle. The `layout.composite.count`, `total_ms`, `mean_ms`, `p95_ms`, `max_ms` and `exclusive_ms` statistics cover only composites at or under the threshold; a composite of exactly 50 ms still counts.
+
+The rule uses a record's original bounds, so an analysis window cannot turn a stalled composite into short work. Stalled composites stay visible:
+
+| Metric key | Unit | Meaning |
+| --- | --- | --- |
+| `layout.composite.stalled_count` | count | stalled composite records overlapping the selection |
+| `layout.composite.stalled_ms` | ms | their reported spans clipped to the selection and summed; overlapping spans add separately, so the total can exceed the capture length; not work |
+| `layout.composite.stall_threshold_ms` | ms | the fixed 50 ms threshold |
+
+Analysis JSON carries the same facts as `stalledComposites` (`thresholdMs`, `count`, `totalMs`). Terminal and Markdown reports add a *Stalled composite records* line after the wall-time breakdown when any exist. These metrics are informational: a comparison reports their change but never rates it as an improvement or regression.
+
 ### Samples without usable timestamps
 
 When the original recording starts after zero, samples with `timestamp: 0` have an unknown position in time, not a position at the start of the recording. WebKit can export these when the sampler's stopwatch has not accumulated time. Their weights are still useful for whole-recording rankings, call trees, ownership, folded stacks, and coverage. A genuine zero-time sample in a recording starting at zero remains timed.
@@ -358,7 +372,7 @@ Numeric schema properties carry `x-unit`: a physical unit, dimensionless scale, 
 | Summary | `wkperf-summary/v1`: scalar summary output |
 | Error-only result | `wkperf-error/v1`: machine-readable command errors |
 
-An analysis report retains recording identity and active duration, exclusive time breakdown, self/inclusive hotspots, file modules, slow frames, long tasks, idle wakeups, trigger tables, findings, and root-cause evidence. Its `frames` array stores generated identity, URL/line/column, category, native/anonymous flags, and optional original location once. Hotspots use a zero-based `frame` index, retain weighted self/inclusive times and sample counts, and link caller/callee frame indices. Source-map enrichment never changes generated identity.
+An analysis report retains recording identity and active duration, exclusive time breakdown, stalled composite counts, self/inclusive hotspots, file modules, slow frames, long tasks, idle wakeups, trigger tables, findings, and root-cause evidence. Its `frames` array stores generated identity, URL/line/column, category, native/anonymous flags, and optional original location once. Hotspots use a zero-based `frame` index, retain weighted self/inclusive times and sample counts, and link caller/callee frame indices. Source-map enrichment never changes generated identity.
 
 Analysis and nested root-cause `sourceMapPaths` contain requested path strings. Source-map diagnostics are separate structured metadata describing resolution and warnings, not another path list. Query/MCP retain these diagnostics so an agent can distinguish unmapped code from a resolver failure.
 
@@ -489,7 +503,7 @@ ai:
 | overview | recording duration, record counts |
 | frames | frame count; mean/p50/p95/p99/max frame time (ms); FPS; jank counts and ratio for frames over 16.7 / 33.4 / 50 ms |
 | script | per event type (event-dispatched, timer-fired, animation-frame-fired, ...) count, total, mean, p95, max ms; total script time and busy ratio |
-| layout | per event type (layout, recalculate-styles, paint, composite, forced-layout, ...) count, total, mean, p95, max ms |
+| layout | per event type (layout, recalculate-styles, paint, composite, forced-layout, ...) count, total, mean, p95, max ms; stalled composite count, reported span and threshold (see Stalled composite records) |
 | gc | garbage collection count and total ms |
 | cpu | total CPU mean/p95/max %; main-thread mean/p95 % |
 | memory | peak, final, mean MB; per-category peak |

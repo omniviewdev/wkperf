@@ -142,6 +142,9 @@ type Summary struct {
 	PausedDurationSec  float64      `json:"pausedDurationSec"`
 	IdleWakeups        []IdleWakeup `json:"idleWakeups,omitempty"`
 
+	// StalledComposites are composite records excluded from main-thread work.
+	StalledComposites StalledComposites `json:"stalledComposites"`
+
 	// Series for HTML charts (not compared statistically).
 	FrameMs  []float64 `json:"frameMs,omitempty"`  // active rendering intervals, excluding idle gaps and input stalls
 	CPU      []Point   `json:"cpu,omitempty"`      // total cpu usage %
@@ -154,6 +157,18 @@ type IdleWakeup struct {
 	DurationMs      float64 `json:"durationMs"`
 	WorkMs          float64 `json:"workMs"`
 	DominantTrigger string  `json:"dominantTrigger"`
+}
+
+// StalledComposites counts composite records whose reported span exceeds the
+// stall threshold. WebKit can report a composite's end seconds late, so such a
+// span is not main-thread work: it is excluded from the time breakdown, from
+// frame and finding attribution and from the layout.composite.* statistics.
+type StalledComposites struct {
+	ThresholdMs float64 `json:"thresholdMs"` // longest composite span still counted as work
+	Count       int     `json:"count"`
+	// TotalMs sums the reported spans clipped to the selection. Stalled spans
+	// can overlap and each adds separately, so it may exceed the capture length.
+	TotalMs float64 `json:"totalMs"`
 }
 
 // Lookup returns the metric with key, if present.

@@ -477,6 +477,9 @@ func (v *markdownRenderer) otherDetails() string {
 		fmt.Fprintf(&b, "| %s | %.6g | %.6g | %s / %s |\n", mdEscape(s.Name), s.Ms, s.Pct, codeCell(prefix+".ms"), codeCell(prefix+".pct"))
 	}
 	fmt.Fprintf(&b, "\nCollector overlay: %.6gms; %.6gms overlaps instrumented main-thread work. Collector intervals are not necessarily main-thread time and are excluded from the exclusive breakdown. %s; %s\n", r.GCMs, r.GCOverlapWithWorkMs, numericRef("metrics", "gc.total_ms"), numericRef("metrics", "gc.overlap_with_work_ms"))
+	if stalled := r.StalledComposites; stalled.Count > 0 {
+		fmt.Fprintf(&b, "\nStalled composite records: %d longer than %.6gms (%.6gms of reported spans, summed) are excluded from the breakdown above and from frame and finding attribution; WebKit can report a composite's end late, so these spans are not main-thread work. %s; %s\n", stalled.Count, stalled.ThresholdMs, stalled.TotalMs, numericRef("metrics", "layout.composite.stalled_count"), numericRef("metrics", "layout.composite.stalled_ms"))
+	}
 	b.WriteString("\n## Top modules\n\n| File / module | Self ms | Sample share % | Metric keys |\n|---|---:|---:|---|\n")
 	grouping := r.ModuleGrouping
 	if grouping == "" {

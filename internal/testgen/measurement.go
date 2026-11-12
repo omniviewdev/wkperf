@@ -69,7 +69,8 @@ func ThresholdFrames() *model.Recording {
 }
 
 // ExclusiveFindingCosts separates inclusive rendering records from work owned
-// by nested layout and script records.
+// by nested layout and script records. The enclosing 400 ms composite is a
+// stalled composite, so it owns none of that time.
 func ExclusiveFindingCosts() *model.Recording {
 	rec := Empty()
 	rec.DisplayName = "Exclusive rendering finding costs"
