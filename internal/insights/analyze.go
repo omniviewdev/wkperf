@@ -63,6 +63,7 @@ func Analyze(rec *model.Recording, source string, o Options) *Report {
 		GCMs:                work.GCMs,
 		GCOverlapWithWorkMs: work.GCOverlapWithWorkMs,
 		StalledComposites:   sum.StalledComposites,
+		CompositeCadence:    sum.CompositeCadence,
 		Hotspots:            []metrics.FuncStat{},
 		InclusiveHotspots:   []metrics.FuncStat{},
 		CommonStacks:        []metrics.StackStat{},

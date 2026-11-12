@@ -439,6 +439,13 @@ func summarize(rec *model.Recording, source string, o Options, tree *flame.Tree)
 		b.add("frames.jank_ratio", "frames", "Jank ratio (>16.7ms)", metrics.UnitRatio, metrics.LowerBetter, float64(j16)/float64(len(ms)))
 	}
 
+	// Only a capture with no rendering-frame records gets the estimate; real
+	// frame statistics are never filled from it.
+	if !rec.HasRenderingFrames() {
+		s.CompositeCadence = compositeCadence(profile.CompositeCadence(rec, win.lo, win.hi))
+		b.addCompositeCadence(s.CompositeCadence)
+	}
+
 	var eventSet []string
 	if haveScript {
 		b.addExt("script.total_ms", "script", "Script total", metrics.UnitMs, metrics.LowerBetter, scriptTimeMs)

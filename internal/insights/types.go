@@ -242,6 +242,10 @@ type Report struct {
 
 	// StalledComposites reports composite records excluded from main-thread work.
 	StalledComposites metrics.StalledComposites `json:"stalledComposites"`
+
+	// CompositeCadence estimates cadence for captures without rendering-frame
+	// records; it is absent otherwise and never feeds frame standards or grades.
+	CompositeCadence *metrics.CompositeCadence `json:"compositeCadence,omitempty"`
 }
 
 // Options tune the analyzer.

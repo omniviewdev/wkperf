@@ -42,6 +42,10 @@ type Recording struct {
 	UntimedExcluded bool            `json:"-"`
 	SampleEvidence  *SampleEvidence `json:"-"`
 
+	// SourceHadRenderingFrames survives window clipping, which can drop every
+	// rendering-frame record from Records. Read it through HasRenderingFrames.
+	SourceHadRenderingFrames bool `json:"-"`
+
 	// Legacy (pre-`samples`) fields; Load folds them into Samples.
 	SampleStackTraces []StackTrace `json:"sampleStackTraces,omitempty"`
 	SampleDurations   []float64    `json:"sampleDurations,omitempty"`
@@ -95,6 +99,23 @@ func (r Record) Duration() float64 {
 		return r.EndTime - r.StartTime
 	}
 	return 0
+}
+
+// HasRenderingFrames reports whether the capture holds rendering-frame records,
+// including any a window clip removed from Records.
+func (r *Recording) HasRenderingFrames() bool {
+	if r == nil {
+		return false
+	}
+	if r.SourceHadRenderingFrames {
+		return true
+	}
+	for i := range r.Records {
+		if r.Records[i].Type == TypeRenderingFrame {
+			return true
+		}
+	}
+	return false
 }
 
 type Target struct {

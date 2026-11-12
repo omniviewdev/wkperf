@@ -103,8 +103,8 @@ func normalizedLabel(label string, u metrics.Unit) string {
 }
 
 var groupOrder = map[string]int{
-	"overview": 0, "frames": 1, "script": 2, "layout": 3, "gc": 4,
-	"cpu": 5, "memory": 6, "network": 7, "pressure": 8,
+	"overview": 0, "frames": 1, "cadence": 2, "script": 3, "layout": 4, "gc": 5,
+	"cpu": 6, "memory": 7, "network": 8, "pressure": 9,
 }
 
 func groupRank(g string) int {

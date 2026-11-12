@@ -10,6 +10,7 @@ import (
 	"github.com/omniviewdev/wkperf/internal/diagnostic"
 	"github.com/omniviewdev/wkperf/internal/flame"
 	"github.com/omniviewdev/wkperf/internal/insights"
+	"github.com/omniviewdev/wkperf/internal/metrics"
 	"github.com/omniviewdev/wkperf/internal/model"
 	"github.com/omniviewdev/wkperf/internal/profile"
 	"github.com/omniviewdev/wkperf/internal/rootcause"
@@ -53,7 +54,11 @@ func metricRegistry(rec *model.Recording, tree *flame.Tree, source Source, req R
 	values := map[string]Row{}
 	options := analyze.Options{FromSec: req.From, ToSec: req.To, TrimStartSec: req.TrimStart, TrimEndSec: req.TrimEnd}
 	for _, metric := range analyze.SummarizeWith(rec, req.File, options).Metrics {
-		values[metric.Key] = Row{Key: metric.Key, Value: clean(metric.Value), Unit: string(metric.Unit), Description: metric.Label, Basis: "measured", Operation: "metrics"}
+		basis := metric.Basis
+		if basis == "" {
+			basis = metrics.BasisMeasured
+		}
+		values[metric.Key] = Row{Key: metric.Key, Value: clean(metric.Value), Unit: string(metric.Unit), Description: metric.Label, Basis: basis, Operation: "metrics"}
 	}
 	clipped := profile.Clip(rec, rec.StartTime+source.From, rec.StartTime+source.To)
 	report := insights.Analyze(clipped, req.File, insights.Options{Top: MaxLimit, JankMs: req.JankMS, LongTaskMs: req.LongTaskMS, WindowStartSec: source.From, Sourcemaps: req.Sourcemaps, Ownership: req.ownership()})
