@@ -59,7 +59,7 @@ func newQueryCmd() *cobra.Command {
 			req.JankMS, _ = cmd.Flags().GetFloat64("jank-ms")
 			window := windowOpts()
 			req.TrimStart, req.TrimEnd = window.TrimStartSec, window.TrimEndSec
-			if args[1] != "window" {
+			if req.Operation != "window" {
 				req.From, req.To = window.FromSec, window.ToSec
 			} else {
 				if cmd.Flags().Changed("from") || cmd.Flags().Changed("to") {
@@ -120,7 +120,8 @@ func parseQueryArgs(args []string) (query.Request, error) {
 	}
 	req.File, req.Operation = args[0], args[1]
 	rest := args[2:]
-	if req.Operation == "window" {
+	operation := req.Operation
+	if operation == "window" {
 		if len(rest) < 2 {
 			return req, fmt.Errorf("window requires FROM TO [OP [ARGS...]]")
 		}
@@ -133,16 +134,17 @@ func parseQueryArgs(args []string) (query.Request, error) {
 		if err != nil {
 			return req, diagnostic.Wrap(diagnostic.WindowError, req.File, fmt.Errorf("invalid window TO %q: %w", rest[1], err))
 		}
-		if req.To <= req.From {
-			return req, diagnostic.Wrap(diagnostic.WindowError, req.File, fmt.Errorf("window TO must be after FROM"))
-		}
 		rest = rest[2:]
-		req.Operation = "top"
+		operation = "top"
 		if len(rest) > 0 {
-			req.Operation, rest = rest[0], rest[1:]
+			operation, rest = rest[0], rest[1:]
+			if operation == "" {
+				return req, fmt.Errorf("window query operation must not be empty")
+			}
 		}
+		req.QueryOperation = operation
 	}
-	if req.Operation == "diff" {
+	if operation == "diff" {
 		if len(rest) == 1 {
 			req.Baseline, req.Candidate = req.File, rest[0]
 			return req, nil
@@ -153,13 +155,13 @@ func parseQueryArgs(args []string) (query.Request, error) {
 		}
 		return req, fmt.Errorf("diff requires a candidate file: query BASELINE diff CANDIDATE")
 	}
-	needsSelector := req.Operation == "callers" || req.Operation == "callees" || req.Operation == "paths" || req.Operation == "subtree" || req.Operation == "find"
-	allowsSelector := needsSelector || req.Operation == "top" || req.Operation == "stacks" || req.Operation == "keys" || req.Operation == "metrics" || req.Operation == "events" || req.Operation == "rootcause"
-	if needsSelector && len(rest) != 1 {
-		return req, diagnostic.Wrap(diagnostic.SelectorError, req.File, fmt.Errorf("%s requires one selector", req.Operation))
+	needsSelector := operation == "callers" || operation == "callees" || operation == "paths" || operation == "subtree" || operation == "find"
+	allowsSelector := needsSelector || operation == "top" || operation == "stacks" || operation == "keys" || operation == "metrics" || operation == "events" || operation == "rootcause"
+	if needsSelector && (len(rest) != 1 || rest[0] == "") {
+		return req, diagnostic.Wrap(diagnostic.SelectorError, req.File, fmt.Errorf("%s requires one selector", operation))
 	}
 	if len(rest) > 1 || (len(rest) > 0 && !allowsSelector) {
-		return req, fmt.Errorf("unexpected arguments for %s", req.Operation)
+		return req, fmt.Errorf("unexpected arguments for %s", operation)
 	}
 	if len(rest) == 1 {
 		req.Selector = rest[0]

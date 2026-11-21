@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"reflect"
 	"runtime/debug"
 	"strings"
 	"testing"
@@ -26,6 +27,51 @@ func TestMCPCommandProtocolOnly(t *testing.T) {
 	}
 	if message["id"] != "ping" || stderr.Len() != 0 {
 		t.Fatalf("unexpected streams: %s / %s", out.String(), stderr.String())
+	}
+}
+
+func TestCLIAndMCPWindowReturnSameEvidence(t *testing.T) {
+	file := queryFile(t)
+	cli := newQueryCmd()
+	cli.SetArgs([]string{file, "window", "0", "0.5", "metrics", "overview.duration_s"})
+	var cliOut bytes.Buffer
+	cli.SetOut(&cliOut)
+	if err := cli.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var want map[string]any
+	if err := json.Unmarshal(cliOut.Bytes(), &want); err != nil {
+		t.Fatal(err)
+	}
+	path, err := json.Marshal(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcp := newMCPCmd()
+	mcp.SetIn(strings.NewReader(
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}` + "\n" +
+			`{"jsonrpc":"2.0","method":"notifications/initialized"}` + "\n" +
+			`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"window","arguments":{"file":` + string(path) + `,"from":0,"to":0.5,"query_operation":"metrics","selector":"overview.duration_s"}}}` + "\n"))
+	var mcpOut bytes.Buffer
+	mcp.SetOut(&mcpOut)
+	if err := mcp.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	decoder := json.NewDecoder(&mcpOut)
+	if err := decoder.Decode(new(json.RawMessage)); err != nil {
+		t.Fatal(err)
+	}
+	var response struct {
+		Result struct {
+			IsError           bool           `json:"isError"`
+			StructuredContent map[string]any `json:"structuredContent"`
+		} `json:"result"`
+	}
+	if err := decoder.Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Result.IsError || !reflect.DeepEqual(response.Result.StructuredContent, want) {
+		t.Fatalf("CLI/MCP window evidence differs:\nCLI: %s\nMCP: %v", cliOut.Bytes(), response.Result.StructuredContent)
 	}
 }
 
