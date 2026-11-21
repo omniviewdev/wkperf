@@ -64,7 +64,7 @@ Analysis JSON carries the same facts as `stalledComposites` (`thresholdMs`, `cou
 
 ### Composite cadence estimate
 
-Real WKWebView exports list `timeline-record-type-rendering-frame` in `instrumentTypes` yet contain no rendering-frame records, so frame p95, jank and the scorecard grade are unavailable. When a capture has no rendering-frame records, wkperf adds a fallback *composite cadence* **estimate**. Composite record start times are sorted; consecutive starts less than 100 ms apart form one active run (continuous animation or scrolling), and the gap between runs is not an interval. A capture pause also ends a run. Stalled composites still contribute their start, since only their reported end is unreliable. Starts come from original record bounds, so a window neither invents a start at its edge nor keeps one that began before it.
+Real WKWebView exports can list `timeline-record-type-rendering-frame` in `instrumentTypes` without containing rendering-frame records. In those captures, frame p95, jank and the scorecard grade are unavailable. wkperf adds a fallback *composite cadence* **estimate**. Consecutive composite record starts less than 100 ms apart form one active run. A longer gap or a capture pause ends a run; gaps between runs are not counted. Stalled composites still contribute their start, since only their reported end is unreliable. Starts come from original record bounds, so a window neither invents a start at its edge nor keeps one that began before it.
 
 Every cadence value carries basis `estimated`. The estimate is computed only when no rendering-frame record exists in the capture; a window that merely lacks frames still belongs to a capture that has them, so it gets no estimate. It is never used to fill `frames.*`, the jank ratio, the frame standards or the grade. No estimate exists when the selection holds no composite start.
 
@@ -74,7 +74,7 @@ Every cadence value carries basis `estimated`. The estimate is computed only whe
 | `cadence.composite.runs` | count | active runs holding at least two starts |
 | `cadence.composite.count` | count | intervals between consecutive starts of one run |
 | `cadence.composite.p50_ms`, `p95_ms`, `max_ms` | ms | interval distribution; present only when `count` is above zero |
-| `cadence.composite.missed_vsync_count` | count | intervals over 1.5 frame budgets (25.05 ms): at least one 60 Hz vsync skipped |
+| `cadence.composite.missed_vsync_count` | count | composite start intervals over 1.5 nominal frame budgets (25.05 ms); not a count of missed display refreshes |
 | `cadence.composite.missed_vsync_ratio` | ratio | `missed_vsync_count / count`; present only when `count` is above zero |
 | `cadence.composite.over_50ms_count` | count | intervals over 50 ms |
 | `cadence.composite.active_run_s` | s | sum of the intervals: seconds spanned by active runs |
@@ -212,7 +212,8 @@ Bounded text cannot be combined with a live `--ai` completion; emit the bounded 
 | `long-tasks` | script records over `--long-task-ms` blocking the main thread |
 | `forced-layout` | explicit forced-layout records or layout beginning inside a script interval; not ordinary rendering after script |
 | `layout-after-script` | layout/style follows script within a frame; a rendering-order signal, not evidence of forced synchronous layout |
-| `layout-heavy`, `style-recalc-heavy`, `paint-heavy` | large share of wall time in layout, style recalculation, paint |
+| `layout-heavy`, `style-recalc-heavy` | large exclusive share of wall time in layout or style recalculation |
+| `paint-heavy` | large exclusive share of wall time in paint, or at least three paint records with quad bounding boxes of at least 2,000,000 px² |
 | `jank` | frames over the jank budget, with the dominant cause |
 | `raf-load` | expensive requestAnimationFrame callbacks |
 | `timer-storm` | very many timer firings |
@@ -363,7 +364,7 @@ Repeat `--app-url` and `--library-url` to supply ownership rules. Matching uses 
 
 `contextAttribution` identifies the nearest captured non-framework ancestor, with its category, and charges observed framework/native self weight to that context. A context is not automatically app code. Framework-only stacks explicitly say the scheduling app frame was not captured; missing ancestry is not invented. Rows reference `frame`, replacing the old app-named field.
 
-Native API findings distinguish style reads, geometry/layout reads, and unknown flush behavior. `getAnimations` is not presented as proof of a layout flush. Timed style/layout records can corroborate nearby activity; API names, statistical weights, and temporal overlap still do not prove causation. Ordinary explicit/in-script forced-layout evidence remains a separate signal.
+Native API findings distinguish style reads, geometry/layout reads, and unknown flush behavior. `getAnimations` is not presented as proof of a layout flush. Timed samples inside `layout` or `forced-layout` records count once per API, and their covering intervals are unioned. Covering windows retain their record type. API names, statistical weights, and temporal overlap still do not prove causation. Explicit or in-script forced-layout evidence remains a separate signal.
 
 React synchronous-work findings require actual SyncLane/flushSync evidence, not `renderRootSync` alone. React's own scheduler microtasks/messages are not described as external user triggers. Render/commit estimates follow phase ancestry and remain sampled contributions, not React Profiler measurements. Deep-stack findings consolidate depth, repetition, and commit facets; ordinary React traversal is not called runaway recursion.
 
@@ -437,6 +438,8 @@ Scorecards expose `coverage` and `partial`. A recording's coverage is available 
 | Forced layouts per second | wkperf heuristic | `forced-layout-rate` | ≤ 0.5 /s | > 5 /s | 1 |
 
 Collector intervals alone leave `gc-share` unavailable. Their coverage and overlap remain visible as diagnostics, not evidence of equivalent main-thread blocking.
+
+`fcp` and `lcp` are relative to the original recording start. A window that starts later withholds these page-load standards rather than measuring from the window start.
 
 ### Findings → scorecard
 
@@ -521,14 +524,19 @@ ai:
 | --- | --- |
 | overview | recording duration, record counts |
 | frames | frame count; mean/p50/p95/p99/max frame time (ms); FPS; jank counts and ratio for frames over 16.7 / 33.4 / 50 ms |
-| cadence | estimated composite start-interval distribution, missed-vsync counts and active-run time, only for captures without rendering-frame records (see Composite cadence estimate) |
+| cadence | estimated composite start-interval distribution, spacing threshold counts and active-run time, only for captures without rendering-frame records (see Composite cadence estimate) |
 | script | per event type (event-dispatched, timer-fired, animation-frame-fired, ...) count, total, mean, p95, max ms; total script time and busy ratio |
 | layout | per event type (layout, recalculate-styles, paint, composite, forced-layout, ...) count, total, mean, p95, max ms; stalled composite count, reported span and threshold (see Stalled composite records) |
 | gc | garbage collection count and total ms |
 | cpu | total CPU mean/p95/max %; main-thread mean/p95 % |
 | memory | peak, final, mean MB; per-category peak |
-| network | request count, transferred bytes, mean/p95 request time |
+| network | request count, requests with unknown transfer bytes, total transferred bytes when complete, mean/p95 measured request time |
 | samples | per-function self and total time from the sampling profiler |
+
+Network requests count once when their span overlaps an active part of the window. For WebKit HAR records without explicit bounds, the start is `entry.startedDateTime` minus `archiveStartTime` and the end adds `entry.time` in milliseconds. A known start without valid duration is treated as an instant. Requests without usable bounds are included only for a whole-recording analysis. Request latency and transfer size are not prorated for overlaps.
+
+`network.transfer_bytes` is the total response transfer size. Each request uses its nonnegative `response._transferSize` or, when unavailable, the sum of measured `response.headersSize` and `response.bodySize`. A measured zero counts as zero; decoded content size and body size alone do not establish total transfer size. If any selected request has unknown transfer bytes, `network.transfer_unknown_requests` reports how many and `network.transfer_bytes` is omitted. Request count and measured latency remain available.
+Comparison uses only runs that report a transfer total. An omitted total is not a zero-byte observation.
 
 Verdicts: `improved`, `regressed`, `unchanged`, `noisy` (change within run-to-run noise), `info` (informational metric), `new`, `removed`. Confidence is `single-run`, `low`, or `high`.
 

@@ -10,11 +10,10 @@ import (
 // Composite cadence is an estimate from composite record start times. It is not
 // frame latency and never stands in for rendering-frame statistics.
 const (
-	// CadenceRunGapMs bounds an active run: composite starts closer than this
-	// belong to one stretch of continuous animation or scrolling.
+	// CadenceRunGapMs groups nearby composite starts into one active run.
 	CadenceRunGapMs = 100.0
-	// CadenceMissedVsyncMs is 1.5 frame budgets. A longer interval between
-	// composite starts skipped at least one 60 Hz vsync.
+	// CadenceMissedVsyncMs is a spacing threshold of 1.5 nominal frame
+	// budgets, not evidence of a missed display refresh.
 	CadenceMissedVsyncMs = FrameBudgetMs * 1.5
 	// CadenceSlowIntervalMs matches the 50 ms boundary of slow frames and long tasks.
 	CadenceSlowIntervalMs = LongTaskBudgetMs

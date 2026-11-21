@@ -170,21 +170,30 @@ func (tree *Tree) Window(from, to float64) *Tree {
 
 // InIntervals selects a union of recording-relative windows without duplication.
 func (tree *Tree) InIntervals(intervals []Interval) *Tree {
+	return tree.inIntervals(intervals, true)
+}
+
+// TimedInIntervals selects a union of recording-relative windows without
+// including untimed samples, even when the windows cover the whole recording.
+func (tree *Tree) TimedInIntervals(intervals []Interval) *Tree {
+	return tree.inIntervals(intervals, false)
+}
+
+func (tree *Tree) inIntervals(intervals []Interval, includeUntimed bool) *Tree {
 	if tree == nil {
 		return assemble(&Tree{})
 	}
 	out := *tree
 	selected := union(intervals)
-	out.active = tree.active
-	if !coversIntervals(selected, tree.recordingActive) || len(selected) == 0 {
+	whole := len(selected) != 0 && coversIntervals(selected, tree.recordingActive)
+	if !whole {
 		out.active = intersect(tree.active, selected)
 	}
-	out.Samples = selectSamples(tree.Samples, out.active)
-	out.Untimed, out.UntimedIncluded = nil, false
-	if tree.UntimedIncluded && len(selected) != 0 && coversIntervals(selected, tree.recordingActive) {
-		out.Untimed, out.UntimedIncluded = tree.Untimed, true
+	out.Samples = selectSortedSamples(tree.Samples, out.active)
+	if !includeUntimed || !whole {
+		out.Untimed, out.UntimedIncluded = nil, false
 	}
-	return assemble(&out)
+	return assembleSorted(&out)
 }
 
 // Inverted reverses presentation contexts, not canonical samples or aggregates.
@@ -464,6 +473,23 @@ func selectSamples(samples []Sample, active []Interval) []Sample {
 	return out
 }
 
+// A built tree has time-sorted samples. Search each disjoint interval and copy
+// only its members, skipping any gaps without scanning them.
+func selectSortedSamples(samples []Sample, active []Interval) []Sample {
+	var out []Sample
+	for _, span := range active {
+		start := sort.Search(len(samples), func(i int) bool { return samples[i].Timestamp >= span.Start })
+		samples = samples[start:]
+		if len(samples) == 0 {
+			break
+		}
+		end := sort.Search(len(samples), func(i int) bool { return samples[i].Timestamp >= span.End })
+		out = append(out, samples[:end]...)
+		samples = samples[end:]
+	}
+	return out
+}
+
 func union(intervals []Interval) []Interval {
 	out := make([]Interval, 0, len(intervals))
 	for _, span := range intervals {
@@ -598,11 +624,15 @@ func buildNodes(tree *Tree, inverted bool) (*Node, map[string]*Node, []string) {
 }
 
 func assemble(tree *Tree) *Tree {
+	slices.SortFunc(tree.Samples, compareSample)
+	slices.SortFunc(tree.Untimed, compareSample)
+	return assembleSorted(tree)
+}
+
+func assembleSorted(tree *Tree) *Tree {
 	if tree.Samples == nil {
 		tree.Samples = make([]Sample, 0)
 	}
-	slices.SortFunc(tree.Samples, compareSample)
-	slices.SortFunc(tree.Untimed, compareSample)
 	var duration sum
 	for _, span := range tree.active {
 		duration.add((span.End - span.Start) * 1000)

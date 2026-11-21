@@ -117,7 +117,7 @@ func primaryMetricKeys(id string) []string {
 	case "cpu-high":
 		return []string{"cpu.mean_pct", "cpu.main.mean_pct"}
 	case "network":
-		return []string{"network.requests", "network.p95_ms", "network.transfer_bytes"}
+		return []string{"network.requests", "network.p95_ms", "network.transfer_bytes", "network.transfer_unknown_requests"}
 	case "long-tasks", "low-sample-coverage":
 		return []string{"script.total_ms"}
 	}

@@ -66,9 +66,9 @@ func Standards() []Standard {
 		{ID: "long-task-rate", Name: "Long tasks per minute", Source: "wkperf heuristic", Unit: metrics.UnitCount, Good: 3, Poor: 12, Weight: 2,
 			Note: "Maximal overlapping script tasks longer than the fixed 50ms threshold (garbage collection and count-only records excluded) per minute of active recording."},
 		{ID: "fcp", Name: "First Contentful Paint", Source: "Lighthouse", Unit: metrics.UnitMs, Good: 1800, Poor: 3000, Weight: 1,
-			Note: "From the first-contentful-paint layout record relative to recording start. Page-load metric: only meaningful if the recording covers a load."},
+			Note: "From the first-contentful-paint layout record relative to the original recording start. Only meaningful if the recording covers a load; unavailable when the window excludes that start."},
 		{ID: "lcp", Name: "Largest Contentful Paint", Source: "Core Web Vitals", Unit: metrics.UnitMs, Good: 2500, Poor: 4000, Weight: 1,
-			Note: "From the largest-contentful-paint layout record relative to recording start. Page-load metric: only meaningful if the recording covers a load."},
+			Note: "From the largest-contentful-paint layout record relative to the original recording start. Only meaningful if the recording covers a load; unavailable when the window excludes that start."},
 		{ID: "main-busy", Name: "Main thread script busy", Source: "wkperf heuristic", Unit: metrics.UnitRatio, Good: 0.25, Poor: 0.5, Weight: 1,
 			Note: "Script time as a share of wall time. Thresholds are wkperf choices: a main thread busy more than half the time leaves little headroom for input and rendering."},
 		{ID: "gc-share", Name: "Main-thread GC pause share", Source: "wkperf heuristic", Unit: metrics.UnitRatio, Good: 0.03, Poor: 0.10, Weight: 1,
@@ -167,6 +167,7 @@ func deriveFromRecords(rec *model.Recording, dur float64, m map[string]measure) 
 	layouts := 0
 	forced := len(profile.ForcedLayoutRecords(rec))
 	fcp, lcp := math.Inf(1), math.Inf(1)
+	clippedStart := rec.SampleEvidence != nil && rec.StartTime > rec.SampleEvidence.StartTime
 	for _, task := range profile.Tasks(rec) {
 		d := task.Duration() * 1000
 		if d > longTaskMs {
@@ -194,20 +195,28 @@ func deriveFromRecords(rec *model.Recording, dur float64, m map[string]measure) 
 			}
 		case model.TypeLayout:
 			layouts++
-			t := (r.StartTime - rec.StartTime) * 1000
+			if clippedStart {
+				continue
+			}
+			// Paint milestones describe page load, not time since the selected interval.
 			switch r.EventType {
 			case "first-contentful-paint":
-				fcp = math.Min(fcp, t)
+				fcp = math.Min(fcp, (r.StartTime-rec.StartTime)*1000)
 			case "largest-contentful-paint":
-				lcp = math.Min(lcp, t)
+				lcp = math.Min(lcp, (r.StartTime-rec.StartTime)*1000)
 			}
 		}
 	}
-	if !math.IsInf(fcp, 1) {
-		m["fcp"] = measure{v: fcp}
-	}
-	if !math.IsInf(lcp, 1) {
-		m["lcp"] = measure{v: lcp}
+	if clippedStart {
+		unavailable := measure{v: math.NaN(), detail: "unavailable: the window excludes the original recording start"}
+		m["fcp"], m["lcp"] = unavailable, unavailable
+	} else {
+		if !math.IsInf(fcp, 1) {
+			m["fcp"] = measure{v: fcp}
+		}
+		if !math.IsInf(lcp, 1) {
+			m["lcp"] = measure{v: lcp}
+		}
 	}
 	if len(inp) > 0 {
 		sort.Float64s(inp)

@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Wails Probe Smoke</title>
+</head>
+<body>
+    <h1>Text fingerprint</h1>
+    <p><label for="text">Text to fingerprint</label></p>
+    <p><textarea id="text" rows="3" cols="40">abc</textarea></p>
+    <button id="fingerprint" disabled>Compute SHA-256</button>
+    <p><output id="result" aria-live="polite"></output></p>
+    <script type="module" src="/main.js"></script>
+</body>
+</html>

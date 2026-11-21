@@ -135,8 +135,11 @@ func TestCPUMemoryNetworkPressure(t *testing.T) {
 	if !approx(val(t, s, "memory.JS.peak_mb"), 10) || !approx(val(t, s, "memory.Images.peak_mb"), 2) {
 		t.Error("memory category")
 	}
-	if val(t, s, "network.requests") != 2 || val(t, s, "network.transfer_bytes") != 270 || !approx(val(t, s, "network.mean_ms"), 200) {
+	if val(t, s, "network.requests") != 2 || val(t, s, "network.transfer_unknown_requests") != 1 || !approx(val(t, s, "network.mean_ms"), 200) {
 		t.Error("network")
+	}
+	if _, ok := s.Lookup("network.transfer_bytes"); ok {
+		t.Error("incomplete transfer total emitted")
 	}
 	if val(t, s, "pressure.events") != 1 {
 		t.Error("pressure")

@@ -233,9 +233,8 @@ func summarize(rec *model.Recording, source string, o Options, tree *flame.Tree)
 		memTotal     []timedPoint
 		memCatPeak   = map[string]float64{}
 		netMs        []float64
-		netBytes     float64
 		netTransfers []float64
-		haveNetwork  bool
+		netCount     int
 		haveScript   bool
 		haveLayout   bool
 		nRecords     int
@@ -269,16 +268,13 @@ func summarize(rec *model.Recording, source string, o Options, tree *flame.Tree)
 		r := &rec.Records[i]
 		var start, end float64
 		var keep bool
+		var har model.HAR
 		switch r.Type {
 		case model.TypeCPU, model.TypeMemory:
 			keep = win.at(r.Timestamp)
 		case model.TypeNetwork:
-			// Network records may lack timing; keep those rather than guess.
-			if r.StartTime == 0 && r.EndTime == 0 {
-				keep = true
-			} else {
-				start, end, keep = win.span(r.StartTime, r.EndTime)
-			}
+			har = r.HAR()
+			keep = profile.NetworkInWindow(har, win.intervals, win.bounded, !win.active && !rec.UntimedExcluded)
 		default:
 			start, end, keep = win.span(r.StartTime, r.EndTime)
 		}
@@ -331,10 +327,12 @@ func summarize(rec *model.Recording, source string, o Options, tree *flame.Tree)
 			}
 			memTotal = append(memTotal, timedPoint{r.Timestamp, total})
 		case model.TypeNetwork:
-			if t, bytes, ok := parseHAR(r.Entry); ok {
-				haveNetwork = true
-				netMs = append(netMs, t)
-				netTransfers = append(netTransfers, bytes)
+			netCount++
+			if har.LatencyMS >= 0 {
+				netMs = append(netMs, har.LatencyMS)
+			}
+			if har.TransferBytes >= 0 {
+				netTransfers = append(netTransfers, har.TransferBytes)
 			}
 		}
 	}
@@ -372,8 +370,6 @@ func summarize(rec *model.Recording, source string, o Options, tree *flame.Tree)
 	})
 	sort.Float64s(cpuMain)
 	sort.Float64s(netMs)
-	sort.Float64s(netTransfers)
-	netBytes = sum(netTransfers)
 	work, costs := profile.MeasureRecords(rec, win.lo, win.hi)
 	scriptTimeMs := work.ScriptMs
 	layoutTimeMs := work.StyleMs + work.LayoutMs + work.PaintMs + work.CompositeMs
@@ -536,11 +532,18 @@ func summarize(rec *model.Recording, source string, o Options, tree *flame.Tree)
 		}
 	}
 
-	if haveNetwork {
-		b.addExt("network.requests", "network", "Requests", metrics.UnitCount, metrics.Neutral, float64(len(netMs)))
-		b.addExt("network.transfer_bytes", "network", "Transferred", metrics.UnitBytes, metrics.LowerBetter, netBytes)
-		b.add("network.mean_ms", "network", "Request time mean", metrics.UnitMs, metrics.LowerBetter, mean(netMs))
-		b.add("network.p95_ms", "network", "Request time p95", metrics.UnitMs, metrics.LowerBetter, Percentile(netMs, 95))
+	if netCount > 0 {
+		b.addExt("network.requests", "network", "Requests", metrics.UnitCount, metrics.Neutral, float64(netCount))
+		unknown := netCount - len(netTransfers)
+		b.addExt("network.transfer_unknown_requests", "network", "Requests with unknown transfer bytes", metrics.UnitCount, metrics.Neutral, float64(unknown))
+		if unknown == 0 {
+			sort.Float64s(netTransfers)
+			b.addExt("network.transfer_bytes", "network", "Transferred", metrics.UnitBytes, metrics.LowerBetter, sum(netTransfers))
+		}
+		if len(netMs) > 0 {
+			b.add("network.mean_ms", "network", "Request time mean", metrics.UnitMs, metrics.LowerBetter, mean(netMs))
+			b.add("network.p95_ms", "network", "Request time p95", metrics.UnitMs, metrics.LowerBetter, percentileSorted(netMs, 95))
+		}
 	}
 
 	if nPressure > 0 {
@@ -613,33 +616,4 @@ func markerURL(raw json.RawMessage) string {
 		return obj.URL
 	}
 	return ""
-}
-
-// parseHAR extracts time (ms) and transferred bytes from a HAR entry.
-func parseHAR(raw json.RawMessage) (timeMs, bytes float64, ok bool) {
-	if len(raw) == 0 {
-		return 0, 0, false
-	}
-	var e struct {
-		Time     float64 `json:"time"`
-		Response struct {
-			BodySize     float64 `json:"bodySize"`
-			TransferSize float64 `json:"_transferSize"`
-		} `json:"response"`
-	}
-	if json.Unmarshal(raw, &e) != nil {
-		return 0, 0, false
-	}
-	b := e.Response.TransferSize
-	if b <= 0 {
-		b = e.Response.BodySize
-	}
-	if b < 0 {
-		b = 0
-	}
-	t := e.Time
-	if t < 0 {
-		t = 0
-	}
-	return t, b, true
 }

@@ -33,16 +33,37 @@ type timelineEvent struct {
 	Children   []timelineEvent            `json:"children"`
 }
 
+type scriptSamples []model.StackTrace
+
+// WebKit can omit samples, but a present buffer must contain a stack array.
+func (s *scriptSamples) UnmarshalJSON(data []byte) error {
+	var p struct {
+		StackTraces []model.StackTrace `json:"stackTraces"`
+	}
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	if p.StackTraces == nil {
+		return fmt.Errorf("ScriptProfiler samples must contain a stackTraces array")
+	}
+	for i := range p.StackTraces {
+		trace := &p.StackTraces[i]
+		if trace.StackFrames == nil || trace.Timestamp < 0 {
+			return fmt.Errorf("invalid ScriptProfiler stack trace at index %d", i)
+		}
+	}
+	*s = p.StackTraces
+	return nil
+}
+
 func (e *evidence) event(m message) error {
 	switch m.Method {
 	case "Timeline.recordingStarted", "Timeline.recordingStopped", "ScriptProfiler.trackingStart", "ScriptProfiler.trackingComplete":
 		var p struct {
-			Start     *float64 `json:"startTime"`
-			End       *float64 `json:"endTime"`
-			Timestamp *float64 `json:"timestamp"`
-			Samples   *struct {
-				StackTraces []model.StackTrace `json:"stackTraces"`
-			} `json:"samples"`
+			Start     *float64      `json:"startTime"`
+			End       *float64      `json:"endTime"`
+			Timestamp *float64      `json:"timestamp"`
+			Samples   scriptSamples `json:"samples"`
 		}
 		if err := json.Unmarshal(m.Params, &p); err != nil {
 			return fmt.Errorf("decode %s: %w", m.Method, err)
@@ -58,10 +79,7 @@ func (e *evidence) event(m message) error {
 			dest, value = &e.scriptStart, p.Timestamp
 		case "ScriptProfiler.trackingComplete":
 			dest, value = &e.scriptEnd, p.Timestamp
-			if p.Samples == nil || p.Samples.StackTraces == nil {
-				return fmt.Errorf("WebKit ScriptProfiler did not provide its sample buffer")
-			}
-			e.stacks = p.Samples.StackTraces
+			e.stacks = p.Samples
 		}
 		if value == nil || *value < 0 || *dest != nil {
 			return fmt.Errorf("unexpected %s timestamp", m.Method)
@@ -295,12 +313,15 @@ func (e *evidence) recording(targetID string) (*model.Recording, error) {
 		Records:              withProfiler,
 		Markers:              markers,
 		MemoryPressureEvents: pressure,
-		Samples: []model.TargetSamples{{
+		Samples:              []model.TargetSamples{},
+	}
+	if e.stacks != nil {
+		recording.Samples = []model.TargetSamples{{
 			Target:      target,
 			StackTraces: e.stacks,
-		}},
+			Durations:   sampleDurations(recording, e.stacks, e.script),
+		}}
 	}
-	recording.Samples[0].Durations = sampleDurations(recording, e.stacks, e.script)
 	return recording, nil
 }
 

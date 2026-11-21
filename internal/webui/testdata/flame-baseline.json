@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "recording": {
+    "displayName": "Resize a dashboard grid · baseline",
+    "url": "https://dashboard.example/",
+    "startTime": 10,
+    "endTime": 11,
+    "records": [
+      {"type":"timeline-record-type-script","eventType":"animation-frame-fired","startTime":10.02,"endTime":10.18}
+    ],
+    "samples": [{
+      "target": {"identifier":"page", "type":"page"},
+      "durations": [0.010, 0.015, 0.035, 0.010, 0.005, 0.015, 0.005, 0.005],
+      "stackTraces": [
+        {"timestamp":10.03,"stackFrames":[
+          {"name":"m","url":"https://dashboard.example/assets/dashboard.js","line":1,"column":240,"original":{"name":"onResize","url":"src/dashboard.tsx","line":21,"column":5}}
+        ]},
+        {"timestamp":10.06,"stackFrames":[
+          {"name":"measureRows","url":"https://dashboard.example/src/grid.ts","line":52,"column":7},
+          {"name":"m","url":"https://dashboard.example/assets/dashboard.js","line":1,"column":240}
+        ]},
+        {"timestamp":10.08,"stackFrames":[
+          {"name":"getBoundingClientRect","sourceID":"native"},
+          {"name":"commitHookEffectListMount","url":"https://dashboard.example/assets/vendor.js","line":1,"column":80},
+          {"name":"measureRows","url":"https://dashboard.example/src/grid.ts","line":52,"column":7},
+          {"name":"m","url":"https://dashboard.example/assets/dashboard.js","line":1,"column":240}
+        ]},
+        {"timestamp":10.12,"stackFrames":[
+          {"name":"flushSync","url":"https://dashboard.example/assets/vendor.js","line":1,"column":110},
+          {"name":"m","url":"https://dashboard.example/assets/dashboard.js","line":1,"column":240}
+        ]},
+        {"timestamp":10.15,"stackFrames":[{"name":"(garbage collection)"}]},
+        {"stackFrames":[{"name":"decodePayload","url":"https://dashboard.example/assets/chunk-b.js","line":1,"column":90}]},
+        {"timestamp":10.16,"stackFrames":[{"name":"pluginTick","url":"user-script:2","line":1,"column":1}]},
+        {"timestamp":10.17,"stackFrames":[{"name":"nativeCallback","sourceID":34}]}
+      ]
+    }]
+  }
+}

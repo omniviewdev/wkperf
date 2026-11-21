@@ -84,7 +84,7 @@ func (p StackPreview) Reference() string {
 func FacetLabels(reads []rootcause.NativeRead, depth *rootcause.DepthFacets, related []string) []string {
 	var labels []string
 	for _, read := range reads {
-		labels = append(labels, fmt.Sprintf("%s: %s flush hypothesis; %d/%d timed samples inside recalculate-styles (%.6gms covering records), %d/%d inside layout (%.6gms covering records)", read.API, read.Flush, read.StyleSamples, read.Samples, read.StyleMs, read.LayoutSamples, read.Samples, read.LayoutMs))
+		labels = append(labels, fmt.Sprintf("%s: %s flush hypothesis; %d/%d timed samples inside recalculate-styles (%.6gms covering records), %d/%d inside layout or forced-layout (%.6gms covering records)", read.API, read.Flush, read.StyleSamples, read.Samples, read.StyleMs, read.LayoutSamples, read.Samples, read.LayoutMs))
 	}
 	if depth != nil {
 		label := fmt.Sprintf("Depth facets: max depth %d; commit frames %d; React fiber levels ~%d", depth.MaxDepth, depth.CommitFrames, depth.ReactFiberLevels)

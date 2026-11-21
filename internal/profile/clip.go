@@ -36,11 +36,7 @@ func Clip(rec *model.Recording, start, end float64) *model.Recording {
 		case model.TypeCPU, model.TypeMemory:
 			keep = Contains(active, r.Timestamp)
 		case model.TypeNetwork:
-			if r.StartTime == 0 && r.EndTime == 0 {
-				keep = true
-			} else {
-				keep = overlaps(active, r.StartTime, r.EndTime)
-			}
+			keep = NetworkInWindow(r.HAR(), active, true, false)
 		default:
 			if r.EndTime <= r.StartTime {
 				keep = Contains(active, r.StartTime)
@@ -97,6 +93,21 @@ func Clip(rec *model.Recording, start, end float64) *model.Recording {
 	}
 	out.SampleStackTraces, out.SampleDurations = nil, nil
 	return &out
+}
+
+// NetworkInWindow selects overlapping requests without prorating their metrics.
+// Requests without a clock are eligible only for whole-recording summaries.
+func NetworkInWindow(h model.HAR, active []Interval, bounded, includeUntimed bool) bool {
+	if !h.Timed {
+		return includeUntimed
+	}
+	if !bounded {
+		return true
+	}
+	if h.End <= h.Start {
+		return Contains(active, h.Start)
+	}
+	return overlaps(active, h.Start, h.End)
 }
 
 func overlaps(intervals []Interval, start, end float64) bool {

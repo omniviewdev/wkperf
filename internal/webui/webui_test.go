@@ -7,9 +7,12 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/omniviewdev/wkperf/internal/flame"
 )
 
 const (
@@ -108,7 +111,7 @@ func TestUploadOneOrTwoRecordings(t *testing.T) {
 					t.Errorf("missing %q", want)
 				}
 			}
-			for _, excluded := range []string{tc.excluded, "<img src=x", "<script"} {
+			for _, excluded := range []string{tc.excluded, "<img src=x", "<script>"} {
 				if excluded != "" && strings.Contains(body, excluded) {
 					t.Errorf("unexpected %q", excluded)
 				}
@@ -220,6 +223,9 @@ func TestMissingEvidenceIsNotZero(t *testing.T) {
 	if w.Code != http.StatusOK || strings.Contains(body, `aria-label="Sampled function changes"`) {
 		t.Fatalf("status %d; function comparison should not render without both sets of samples", w.Code)
 	}
+	if strings.Count(body, `class="flame-plot"`) != 1 || strings.Contains(body, `id="Candidate-attribution"`) {
+		t.Error("graph and attribution should render only for the sampled baseline")
+	}
 }
 
 func TestUploadRejectsExcessiveJSONStructure(t *testing.T) {
@@ -238,4 +244,99 @@ func TestUploadRejectsExcessiveJSONStructure(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFlameFixtureShowsIndependentScalesAndAttribution(t *testing.T) {
+	h, token := openUI(t)
+	fixturePart := func(role, filename string) formPart {
+		t.Helper()
+		body, err := os.ReadFile("testdata/" + filename)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return formPart{field: role, filename: filename, body: string(body)}
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, post(t, token, fixturePart("baseline", "flame-baseline.json"), fixturePart("candidate", "flame-candidate.json")))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %.500s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		`<script src="/flame.js" defer></script>`,
+		`style="--left:0%;--width:70%;--depth:0"`,
+		`style="--left:0%;--width:62.5%;--depth:0"`,
+		`style="--left:50%;--width:10%;--depth:1"`,
+		`aria-label="onResize · Application · inclusive 70 ms · self 10 ms · 4 samples"`,
+		"m · https://dashboard.example/assets/dashboard.js:1:240",
+		"src/dashboard.tsx:21:5",
+		`data-cell="category">Unresolved bundle`,
+		`data-cell="category">Injected script`,
+		`data-cell="category">Native`,
+		"Untimed samples: 1 (15 ms)",
+		"No eligible caller was captured for 5 ms",
+		`aria-label="Baseline calling-context table"`,
+		`aria-label="Candidate calling-context table"`,
+		`id="Baseline-attribution"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("response missing %q", want)
+		}
+	}
+	if strings.Contains(body, "ZgotmplZ") {
+		t.Error("HTML template rejected graph layout or metadata")
+	}
+}
+
+func TestFlameAssetIsLoopbackOnly(t *testing.T) {
+	h, _ := openUI(t)
+	for _, tc := range []struct {
+		method, host string
+		status       int
+		script       bool
+	}{
+		{http.MethodGet, testHost, http.StatusOK, true},
+		{http.MethodHead, testHost, http.StatusOK, false},
+		{http.MethodPost, testHost, http.StatusMethodNotAllowed, false},
+		{http.MethodGet, "other.example", http.StatusForbidden, false},
+	} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(tc.method, "http://"+tc.host+"/flame.js", nil))
+		if w.Code != tc.status || (w.Body.String() == flameJS) != tc.script {
+			t.Errorf("%s %s: status %d, script served %t", tc.method, tc.host, w.Code, w.Body.String() == flameJS)
+		}
+		if w.Code == http.StatusOK && w.Header().Get("Content-Type") != "text/javascript; charset=utf-8" {
+			t.Errorf("%s asset content type = %q", tc.method, w.Header().Get("Content-Type"))
+		}
+	}
+}
+
+func TestLayoutFlameCapsDepthAndWidthWithoutChangingTotals(t *testing.T) {
+	t.Run("depth", func(t *testing.T) {
+		root := &flame.Node{TotalMs: 100}
+		parent := root
+		for range 2 * maxFlameLevels {
+			child := &flame.Node{TotalMs: 100}
+			parent.Children = []*flame.Node{child}
+			parent = child
+		}
+		graph := layoutFlame(&flame.Tree{Root: root})
+		if !graph.Clipped || len(graph.Frames) != maxFlameLevels || graph.Levels != maxFlameLevels {
+			t.Fatalf("clipped=%v frames=%d levels=%d", graph.Clipped, len(graph.Frames), graph.Levels)
+		}
+		last := graph.Frames[maxFlameLevels-1]
+		if last.Share != 100 || last.Parent != maxFlameLevels-1 {
+			t.Errorf("truncated branch changed last context: %+v", last)
+		}
+	})
+	t.Run("contexts", func(t *testing.T) {
+		root := &flame.Node{TotalMs: 500}
+		for range 500 {
+			root.Children = append(root.Children, &flame.Node{TotalMs: 1})
+		}
+		graph := layoutFlame(&flame.Tree{Root: root})
+		if !graph.Clipped || len(graph.Frames) != maxFlameContexts || graph.Frames[0].Share != 0.2 {
+			t.Fatalf("clipped=%v frames=%d", graph.Clipped, len(graph.Frames))
+		}
+	})
 }

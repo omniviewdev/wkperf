@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/omniviewdev/wkperf/internal/model"
+	"github.com/omniviewdev/wkperf/internal/profile"
 	"github.com/omniviewdev/wkperf/internal/testgen"
 )
 
@@ -121,6 +122,51 @@ func TestMeasurementLayoutFindingsUseExclusiveCost(t *testing.T) {
 				t.Errorf("%s contradicts exclusive breakdown: %+v", tc.id, slice)
 			}
 		}
+	}
+}
+
+func TestSafariPaintQuadsTriggerFindingWithoutHeavyTiming(t *testing.T) {
+	rec, err := model.Parse(strings.NewReader(`{"version":1,"recording":{"startTime":100,"endTime":101,"records":[
+		{"type":"timeline-record-type-layout","eventType":"paint","startTime":100.1,"endTime":100.101,"quad":[0,0,1920,0,1920,1080,0,1080]},
+		{"type":"timeline-record-type-layout","eventType":"paint","startTime":100.2,"endTime":100.201,"quad":[-1920,-1080,0,-1080,0,0,-1920,0]},
+		{"type":"timeline-record-type-layout","eventType":"paint","startTime":100.3,"endTime":100.301,"quad":[0,0,2000,0,2000,1000,0,1000]}
+	]}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := find(Analyze(rec, "safari.json", Options{}), "paint-heavy")
+	if f == nil || f.Title != "Repeated large paint regions" || math.Abs(f.ImpactMs-3) > 1e-6 {
+		t.Fatalf("large repeated paint quads must not imply large measured cost: %+v", f)
+	}
+	if evidence := strings.Join(f.Evidence, "\n"); !strings.Contains(evidence, "2073600 px² (3 paint records at or above 2000000 px²)") {
+		t.Errorf("paint bounds or threshold count missing: %s", evidence)
+	}
+	if f := find(Analyze(profile.Clip(rec, 100, 100.25), "safari.json", Options{}), "paint-heavy"); f != nil {
+		t.Errorf("two cheap large paints must not trigger the finding: %+v", f)
+	}
+}
+
+func TestPaintQuadShapeAndLegacyFallback(t *testing.T) {
+	legacy := json.RawMessage(`{"quad":[0,0,2000,0,2000,1000,0,1000]}`)
+	for _, tc := range []struct {
+		name, raw string
+		details   json.RawMessage
+		want      float64
+	}{
+		{"legacy", "", legacy, 2_000_000},
+		{"null top-level falls back", "null", legacy, 2_000_000},
+		{"top-level wins", `[0,0,512,0,512,512,0,512]`, legacy, 262_144},
+		{"short", `[0,0,2000,0,2000,1000,0]`, nil, 0},
+		{"long", `[0,0,2000,0,2000,1000,0,1000,2]`, nil, 0},
+		{"null coordinate", `[null,0,2000,0,2000,1000,0,1000]`, nil, 0},
+		{"wrong type", `{"x":0}`, nil, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &model.Record{Quad: json.RawMessage(tc.raw), Details: tc.details}
+			if got := quadArea(r); got != tc.want {
+				t.Errorf("quad area = %g, want %g", got, tc.want)
+			}
+		})
 	}
 }
 

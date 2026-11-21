@@ -194,6 +194,32 @@ func TestA11NativeFlushSemanticsUseTimedTimelineCorroboration(t *testing.T) {
 	}
 }
 
+func TestNativeLayoutCorroborationIncludesExplicitForcedLayout(t *testing.T) {
+	r := recording()
+	r.Records = append(r.Records, model.Record{Type: model.TypeLayout, EventType: "forced-layout", StartTime: r.StartTime + .1, EndTime: r.StartTime + .15})
+	for _, at := range []float64{.105, .12, .19, .21} {
+		sample(r, at, 3, app("measure"), model.StackFrame{Name: "getBoundingClientRect"})
+	}
+	f := finding(build(r), "forced-style-or-layout-read")
+	if f == nil || len(f.NativeReads) != 1 || f.NativeReads[0].LayoutSamples != 2 {
+		t.Fatalf("explicit forced-layout overlap missing: %+v", f)
+	}
+	near(t, f.NativeReads[0].LayoutMs, 50)
+	if len(f.Windows) != 1 || f.Windows[0].Event != "forced-layout" || len(f.RelatedFindings) != 1 || f.RelatedFindings[0] != "forced-layout" {
+		t.Fatalf("explicit evidence must link to forced layout: %+v", f)
+	}
+
+	r.Records = append(r.Records, model.Record{Type: model.TypeLayout, EventType: "layout", StartTime: r.StartTime + .11, EndTime: r.StartTime + .20})
+	f = finding(build(r), "forced-style-or-layout-read")
+	if f == nil || len(f.NativeReads) != 1 || f.NativeReads[0].LayoutSamples != 3 {
+		t.Fatalf("sample overlapping both layout kinds must count once: %+v", f)
+	}
+	near(t, f.NativeReads[0].LayoutMs, 100)
+	if len(f.Windows) != 2 || f.Windows[0].Event != "layout" || f.Windows[1].Event != "forced-layout" || !strings.Contains(f.Explanation, "not proof") {
+		t.Fatalf("both record kinds must remain visible as noncausal overlap: %+v", f)
+	}
+}
+
 func TestA12PeriodicNeedsSixFiresAndTwoSecondsAndClassifiesRAF(t *testing.T) {
 	makeRAF := func(count int, period float64) *model.Recording {
 		r := recording()

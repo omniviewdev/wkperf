@@ -4,22 +4,28 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>wkperf · Recording investigator</title>
+{{if .Recordings}}<script src="/flame.js" defer></script>{{end}}
 <style>
-:root{color-scheme:light dark;--page:#edeff5;--surface:#fff;--ink:#19223a;--muted:#505c76;--line:#cbd2e1;--accent:#3449ba;--button:#3449ba;--button-text:#fff;--error:#9b2039;--success:#16634b}
-@media(prefers-color-scheme:dark){:root{--page:#141925;--surface:#1e2535;--ink:#f0f2ff;--muted:#bec8e1;--line:#485471;--accent:#bdc7ff;--button:#bdc7ff;--button-text:#151f56;--error:#ffaabb;--success:#8de2bc}}
+:root{color-scheme:light dark;--page:#eef1f6;--surface:#fff;--subtle:#f3f5fa;--ink:#19223a;--muted:#505c76;--line:#cbd2e1;--accent:#3449ba;--button:#3449ba;--button-text:#fff;--error:#9b2039;--success:#16634b}
+@media(prefers-color-scheme:dark){:root{--page:#121722;--surface:#1b2231;--subtle:#151b29;--ink:#f0f2ff;--muted:#bec8e1;--line:#485471;--accent:#bdc7ff;--button:#bdc7ff;--button-text:#151f56;--error:#ffaabb;--success:#8de2bc}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--page);color:var(--ink);font:1rem/1.5 system-ui,sans-serif}
-main{max-width:68rem;margin:auto;padding:clamp(1rem,4vw,3.5rem)}
+main{max-width:86rem;margin:auto;padding:clamp(1rem,4vw,3rem)}
 header{margin-bottom:1.5rem}h1,h2,h3,h4,p{margin:0 0 .65rem}h1{font-size:clamp(1.9rem,6vw,3.2rem);line-height:1.12;letter-spacing:-.04em}h2{font-size:1.4rem}h3{font-size:1.15rem}h4{font-size:1rem}
 .kicker{font-size:.84rem;letter-spacing:.12em;text-transform:uppercase;font-weight:750;color:var(--accent)}
 .muted,small{color:var(--muted)}
 a{color:var(--accent);text-underline-offset:.2em}
 .panel{background:var(--surface);border:1px solid var(--line);border-radius:.9rem;padding:clamp(1rem,3vw,1.5rem);margin:0 0 1rem;overflow-wrap:anywhere}
+.masthead{display:flex;justify-content:space-between;align-items:center;gap:.5rem 1rem;flex-wrap:wrap;margin-bottom:.8rem}
+.local{font-size:.8rem;color:var(--muted);background:var(--surface);border:1px solid var(--line);border-radius:1rem;padding:.2rem .65rem}
+.file-field{background:var(--subtle);padding:.8rem;border-radius:.55rem;min-width:0}
 .fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,18rem),1fr));gap:1rem;margin:1rem 0}
 label{display:block;font-weight:700;margin-bottom:.25rem}
 input[type=file]{display:block;width:100%;padding:.5rem;border:1px solid var(--line);border-radius:.4rem;font:inherit}
 input::file-selector-button,button{font:inherit;font-weight:650;cursor:pointer;border:1px solid var(--line);border-radius:.35rem;padding:.4rem .65rem}
 button{background:var(--button);color:var(--button-text);padding:.53rem 1.1rem;border-color:transparent}
+[hidden]{display:none!important}
+button:disabled{cursor:default}button:not(.flame-frame):disabled{opacity:.65}
 :focus-visible{outline:3px solid var(--accent);outline-offset:3px}
 .error{border-color:var(--error);color:var(--error)}.regressed{color:var(--error)}.improved{color:var(--success)}
 .jump{display:flex;flex-wrap:wrap;gap:.5rem 1.2rem;margin:.6rem 0 1rem}
@@ -27,12 +33,42 @@ button{background:var(--button);color:var(--button-text);padding:.53rem 1.1rem;b
 details{border-top:1px solid var(--line);padding:.75rem 0}details:last-child{padding-bottom:0}summary{cursor:pointer;font-weight:700}details>summary+*{margin-top:.65rem}
 .scroll{overflow:auto}table{width:100%;border-collapse:collapse}caption{text-align:left;font-weight:700;margin:.45rem 0}th,td{text-align:left;vertical-align:top;border-bottom:1px solid var(--line);padding:.45rem .55rem}thead th{font-size:.84rem;color:var(--muted)}tbody th{font-weight:550}.num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
 .stack{margin:.45rem 0 .8rem;padding-left:1.5rem}.stack li{padding:.12rem 0}.list{padding-left:1.4rem}.list li{margin:.4rem 0}.loc{display:block;font-size:.8rem;color:var(--muted)}
+.recording-nav{display:flex;gap:.4rem 1rem;flex-wrap:wrap;font-size:.9rem;margin:0 0 .85rem}
+.profile-section{border-top:1px solid var(--line);padding:1rem 0}
+.profile-section h4{font-size:1.14rem}
+.profile-copy{max-width:72ch}
+.legend{display:flex;flex-wrap:wrap;gap:.35rem 1rem;padding:0;margin:.8rem 0;list-style:none;font-size:.84rem}
+.swatch{display:inline-flex;align-items:center;gap:.4rem}
+.swatch::before{content:"";width:.75rem;height:.75rem;flex:none;background:var(--frame,#a5aeba);border:1px solid #34415b;border-radius:.2rem}
+.cat-app{--frame:#60a5fa}.cat-framework{--frame:#a78bfa}.cat-native{--frame:#b6c3d6}.cat-gc{--frame:#fbbf24}.cat-unknown-bundled{--frame:#a5aeba}.cat-injected{--frame:#47cdb5}
+.flame-layout{display:grid;grid-template-columns:minmax(0,1fr);gap:.8rem;align-items:start}
+.flame-layout[data-ready]{grid-template-columns:minmax(0,2.5fr) minmax(16rem,1fr)}
+@media(max-width:50rem){.flame-layout[data-ready]{grid-template-columns:minmax(0,1fr)}}
+.flame-viewport{border:1px solid var(--line);border-radius:.55rem;background:var(--subtle);overflow:hidden}
+.flame-scale{display:flex;justify-content:space-between;border-bottom:1px solid var(--line);padding:.35rem .25rem;color:var(--muted);font-size:.75rem;font-variant-numeric:tabular-nums;overflow:hidden;scrollbar-gutter:stable}
+.flame-scroll{max-height:22rem;overflow:auto;scrollbar-gutter:stable}
+.flame-plot{position:relative;--row:1.8rem;height:calc(var(--levels) * var(--row) + .2rem);margin:.2rem .25rem 0}
+.flame-frame{position:absolute;inset-block-start:calc(var(--depth) * var(--row));left:var(--left);width:var(--width);height:calc(var(--row) - .15rem);overflow:hidden;white-space:nowrap;text-overflow:ellipsis;border:0;border-radius:.22rem;box-shadow:inset 0 0 0 1px #34415b;background:var(--frame,#a5aeba);color:#121a29;min-width:0;padding:0;text-align:left;font:600 .79rem/1 ui-monospace,monospace}
+.flame-frame span{display:block;overflow:hidden;text-overflow:ellipsis;padding-inline:.45rem}
+.flame-frame[aria-pressed=true]{box-shadow:inset 0 0 0 2px #172337,inset 0 0 0 4px #fff}
+.flame-frame:not(:disabled):hover,.flame-frame:focus-visible{outline:2px solid #121a29;outline-offset:-2px;z-index:1}
+.flame-frame:focus-visible{box-shadow:inset 0 0 0 4px #fff}
+.flame-readout{background:var(--subtle);border:1px solid var(--line);padding:.75rem;border-radius:.55rem;font-size:.86rem;min-width:0}
+.flame-readout strong{font-size:1rem}
+.flame-readout dl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:.25rem .65rem;margin:.55rem 0}
+.flame-readout dt{color:var(--muted)}.flame-readout dd{margin:0}
+.flame-readout button,.frame-table-action{font-size:.83rem;padding:.3rem .55rem}
+.flame-controls{display:flex;gap:.45rem;flex-wrap:wrap;margin:.65rem 0 0}
+.flame-table th:first-child{min-width:10rem}.flame-table td:nth-child(3){min-width:12rem}
+.frame-table-action{display:block;margin-top:.35rem;background:var(--subtle);border-color:var(--line);color:var(--accent)}
+.attribution{margin:.75rem 0}.attribution-meter{width:4rem;max-width:100%;accent-color:var(--accent);vertical-align:middle}
+@media(forced-colors:active){.flame-frame{box-shadow:none;outline:1px solid ButtonText;outline-offset:-1px}.swatch::before{border:1px solid ButtonText}.flame-frame[aria-pressed=true],.flame-frame:focus-visible{outline:2px solid Highlight;outline-offset:-2px}}
 </style>
 </head>
 <body>
 <main>
 <header>
-<p class="kicker">wkperf / Local workspace</p>
+<div class="masthead"><span class="kicker">wkperf / Local workspace</span><span class="local">Offline analysis</span></div>
 <h1>Recording investigator</h1>
 <p class="muted">Inspect Web Inspector Timelines or compare a baseline with a candidate.</p>
 </header>
@@ -42,8 +78,8 @@ details{border-top:1px solid var(--line);padding:.75rem 0}details:last-child{pad
 <input type="hidden" name="token" value="{{.Token}}">
 <p id="upload-hint" class="muted">Upload Web Inspector recording JSON files, up to {{.LimitMiB}} MiB each. Files stay on this computer.</p>
 <div class="fields">
-<div><label for="baseline">Baseline recording</label><input id="baseline" name="baseline" type="file" accept=".json,application/json" aria-describedby="upload-hint" required></div>
-<div><label for="candidate">Candidate recording <small>(optional)</small></label><input id="candidate" name="candidate" type="file" accept=".json,application/json" aria-describedby="upload-hint"></div>
+<div class="file-field"><label for="baseline">Baseline recording</label><input id="baseline" name="baseline" type="file" accept=".json,application/json" aria-describedby="upload-hint" required></div>
+<div class="file-field"><label for="candidate">Candidate recording <small>(optional)</small></label><input id="candidate" name="candidate" type="file" accept=".json,application/json" aria-describedby="upload-hint"></div>
 </div>
 <button type="submit">Analyze recordings</button>
 </form>
@@ -62,7 +98,7 @@ details{border-top:1px solid var(--line);padding:.75rem 0}details:last-child{pad
 <p class="muted">One recording per side. Repeat matching runs to confirm changes.</p>
 {{if .Comparability.Normalized}}<p>Duration differs: totals and counts are normalized per second.</p>{{end}}
 {{with .Comparability.Warnings}}<ul class="list">{{range .}}<li>{{.Message}}</li>{{end}}</ul>{{end}}
-<details open><summary>Metric changes</summary>
+<details><summary>Metric changes ({{len .Metrics}})</summary>
 <div class="scroll" role="region" aria-label="Metric comparison table" tabindex="0">
 <table>
 <thead><tr><th scope="col">Metric</th><th scope="col" class="num">Baseline</th><th scope="col" class="num">Candidate</th><th scope="col" class="num">Change</th><th scope="col">Verdict</th></tr></thead>
@@ -84,25 +120,28 @@ details{border-top:1px solid var(--line);padding:.75rem 0}details:last-child{pad
 <article class="panel" id="{{.Role}}" aria-labelledby="{{.Role}}-heading">
 <p class="kicker">{{.Role}} recording</p>
 <h3 id="{{.Role}}-heading">{{.Filename}}</h3>
-{{if .Name}}<p class="muted">{{.Name}}</p>{{end}}
+{{if .Name}}<p class="muted">{{boundedText .Name 512}}</p>{{end}}
 <dl class="stats"><div><dt>Active duration</dt><dd>{{number .DurationSec}} s</dd></div><div><dt>Slow frames</dt><dd>{{if .Summary.FrameMs}}{{.SlowFramesTotal}}{{else}}—{{end}}</dd></div><div><dt>Long tasks</dt><dd>{{if .HasTaskEvidence}}{{.LongTasksTotal}}{{else}}Unavailable{{end}}</dd></div><div><dt>Stack samples</dt><dd>{{.SampleCoverage.SampleCount}}</dd></div></dl>
-<details open><summary>Hot paths and functions</summary>
+<nav class="recording-nav" aria-label="{{.Role}} evidence"><a href="#{{.Role}}-flame">Flame graph</a>{{if .Graph.Frames}}<a href="#{{.Role}}-attribution">Attribution</a>{{end}}<a href="#{{.Role}}-hotspots">Hot functions</a><a href="#{{.Role}}-metrics">Metrics</a><a href="#{{.Role}}-findings">Findings</a></nav>
+{{template "flame-graph" .}}
+{{if .Graph.Frames}}{{template "attribution" .}}{{end}}
+<details id="{{.Role}}-hotspots"><summary>Hot paths and functions</summary>
 {{if or .Hotspots .InclusiveHotspots .CommonStacks}}
 <p class="muted">Sample weights estimate execution time. Self time counts the executing function; inclusive time also counts its callees.</p>
 {{template "functions" .Hotspots}}
 {{with .InclusiveHotspots}}<details><summary>Rank by inclusive time</summary>{{template "functions" .}}</details>{{end}}
 {{with .CommonStacks}}<details open><summary>Common sampled stacks</summary>
 <ol class="list">{{range .}}<li><details><summary>{{number .WeightMs}} ms · {{.Samples}} samples · {{name (leaf .Frames)}}</summary>
-<ol class="stack" aria-label="Stack frames, root to leaf">{{range .Frames}}<li>{{name .Name}}<span class="loc">{{.Location}}</span></li>{{end}}</ol></details></li>{{end}}</ol>
+<ol class="stack" aria-label="Stack frames, root to leaf">{{range .Frames}}<li>{{name .Name}}<span class="loc">{{boundedText .Location 768}}</span></li>{{end}}</ol></details></li>{{end}}</ol>
 </details>{{end}}
 {{else}}<p>No weighted call stacks found. Export with script profiling enabled to see hot paths.</p>{{end}}
 </details>
-<details {{if not $.Comparison}}open{{end}}><summary>Recording metrics</summary>
+<details id="{{.Role}}-metrics" {{if not .Graph.Frames}}open{{end}}><summary>Recording metrics</summary>
 <div class="scroll" role="region" aria-label="{{.Role}} metrics table" tabindex="0"><table>
 <thead><tr><th scope="col">Metric</th><th scope="col">Group</th><th scope="col" class="num">Value</th></tr></thead>
 <tbody>{{range .Summary.Metrics}}<tr><th scope="row">{{.Label}}{{if eq .Basis "estimated"}} <small>(estimated)</small>{{end}}</th><td>{{.Group}}</td><td class="num">{{number .Value}} {{.Unit}}</td></tr>{{else}}<tr><td colspan="3">No measurable timeline activity found.</td></tr>{{end}}</tbody>
 </table></div></details>
-<details><summary>Findings ({{len .Findings}})</summary>
+<details id="{{.Role}}-findings"><summary>Findings ({{len .Findings}})</summary>
 {{if .Findings}}<ul class="list">{{range .Findings}}<li><strong>{{.Title}}</strong> <small>({{.Severity}})</small>{{with .Suggestion}}<div>{{.}}</div>{{end}}</li>{{end}}</ul>{{else}}<p>No findings for this recording.</p>{{end}}
 </details>
 </article>
@@ -115,10 +154,98 @@ details{border-top:1px solid var(--line);padding:.75rem 0}details:last-child{pad
 {{define "functions"}}{{if .}}
 <div class="scroll" role="region" aria-label="Sampled function timings" tabindex="0"><table>
 <thead><tr><th scope="col">Function</th><th scope="col" class="num">Self (ms)</th><th scope="col" class="num">Inclusive (ms)</th><th scope="col" class="num">Self samples</th></tr></thead>
-<tbody>{{range .}}<tr><th scope="row">{{name .Name}}<span class="loc">{{.Location}}</span></th><td class="num">{{number .SelfMs}}</td><td class="num">{{number .TotalMs}}</td><td class="num">{{.SelfSamples}}</td></tr>{{end}}</tbody>
+<tbody>{{range .}}<tr><th scope="row">{{name .Name}}<span class="loc">{{boundedText .Location 768}}</span></th><td class="num">{{number .SelfMs}}</td><td class="num">{{number .TotalMs}}</td><td class="num">{{.SelfSamples}}</td></tr>{{end}}</tbody>
 </table></div>{{end}}{{end}}
 {{define "function-changes"}}{{if .}}
 <div class="scroll" role="region" aria-label="Sampled function changes" tabindex="0"><table>
 <thead><tr><th scope="col">Function</th><th scope="col" class="num">Baseline</th><th scope="col" class="num">Candidate</th><th scope="col" class="num">Change</th><th scope="col">Verdict</th></tr></thead>
-<tbody>{{range .}}<tr><th scope="row">{{name .Name}}<span class="loc">{{.Location}}</span></th><td class="num">{{number .BaseSelf}}</td><td class="num">{{number .CandSelf}}</td><td class="num">{{printf "%+.4g" .Delta}}</td><td class="{{.Verdict}}">{{.Verdict}}</td></tr>{{end}}</tbody>
+<tbody>{{range .}}<tr><th scope="row">{{name .Name}}<span class="loc">{{boundedText .Location 768}}</span></th><td class="num">{{number .BaseSelf}}</td><td class="num">{{number .CandSelf}}</td><td class="num">{{printf "%+.4g" .Delta}}</td><td class="{{.Verdict}}">{{.Verdict}}</td></tr>{{end}}</tbody>
 </table></div>{{end}}{{end}}
+{{define "flame-graph"}}
+<section class="profile-section" id="{{.Role}}-flame" aria-labelledby="{{.Role}}-flame-heading" data-flame>
+<h4 id="{{.Role}}-flame-heading">Sampled flame graph</h4>
+{{if .Graph.Frames}}
+{{$role := .Role}}{{$frames := .Graph.Frames}}
+<p class="muted profile-copy">{{number .SampleCoverage.SampledMs}} ms of estimated weight · {{.SampleCoverage.SampleCount}} samples. Wider frames carry more inclusive weight. Callers are above callees; horizontal position is not time. Each recording has its own scale.</p>
+{{if .SampleCoverage.UntimedSampleCount}}<p class="muted">Untimed samples: {{.SampleCoverage.UntimedSampleCount}} ({{number .SampleCoverage.UntimedMs}} ms). They contribute to whole-recording rankings but cannot be placed on a timeline.</p>{{end}}
+<ul class="legend" role="list" aria-label="Frame categories">{{range .RootCause.Owners}}<li class="swatch cat-{{.Category}}">{{categoryLabel .Category}}</li>{{end}}</ul>
+<p class="muted" data-help hidden id="{{$role}}-flame-help">Hover or focus to preview. Select to pin details. Use Up and Down for caller or callee, and Left and Right for adjacent frames.</p>
+<p class="muted" data-scale-label hidden role="status">Scale: full recording</p>
+<div class="flame-layout">
+<div class="flame-viewport">
+<div class="flame-scale" aria-hidden="true"><span>0%</span><span>25%</span><span>50%</span><span>75%</span><span>100%</span></div>
+<div class="flame-scroll">
+<div class="flame-plot" role="group" aria-label="{{$role}} calling contexts" aria-describedby="{{$role}}-flame-help" style="--levels:{{.Graph.Levels}}">
+{{range $frames}}{{$frame := .Node.Frame}}{{$category := categoryLabel (printf "%s" $frame.Category)}}
+<button type="button" class="flame-frame cat-{{$frame.Category}}" data-index="{{.Index}}" data-parent="{{.Parent}}" data-depth="{{.Depth}}"
+style="--left:{{printf "%.10g" .Offset}}%;--width:{{printf "%.10g" .Share}}%;--depth:{{.Depth}}"
+aria-label="{{frameName $frame}} · {{$category}} · inclusive {{number .Node.TotalMs}} ms · self {{number .Node.SelfMs}} ms · {{.Node.Samples}} samples"
+aria-describedby="{{$role}}-source-{{.Index}}" aria-pressed="false" disabled><span>{{frameName $frame}}</span></button>
+{{end}}
+</div></div></div>
+<div class="flame-readout" data-readout hidden>
+<p><span class="kicker" data-mode>Selected frame</span><br><strong data-value="name"></strong></p>
+<dl>
+<dt>Category</dt><dd data-value="category"></dd>
+<dt>Inclusive</dt><dd><span data-value="inclusive"></span> ms · <span data-value="share"></span> of recording samples by weight</dd>
+<dt>Self</dt><dd><span data-value="self"></span> ms</dd>
+<dt>Samples</dt><dd data-value="samples"></dd>
+<dt>Generated</dt><dd data-value="generated"></dd>
+<dt>Original</dt><dd data-value="original"></dd>
+<dt>Call path</dt><dd data-value="path"></dd>
+</dl>
+<div class="flame-controls"><button type="button" data-zoom>Zoom to selected</button><button type="button" data-reset>Reset zoom</button></div>
+</div>
+</div>
+{{if .Graph.Clipped}}<p class="muted"><small>Preview omits very narrow, deeper, or excess branches. The remaining widths and all totals keep the full sample denominator.</small></p>{{end}}
+<details>
+<summary>Calling-context table ({{len $frames}} shown)</summary>
+<p class="muted">Self weight stops in the frame; inclusive weight also counts calls below it. The same function can appear in different contexts.</p>
+<div class="scroll" role="region" aria-label="{{$role}} calling-context table" tabindex="0"><table class="flame-table">
+<thead><tr><th scope="col">Frame and caller</th><th scope="col">Category</th><th scope="col">Source</th><th scope="col" class="num">Inclusive (ms)</th><th scope="col" class="num">Self (ms)</th><th scope="col" class="num">Sample weight</th><th scope="col" class="num">Samples</th></tr></thead>
+<tbody>
+{{range $frames}}{{$frame := .Node.Frame}}
+<tr data-context="{{.Index}}">
+<th scope="row"><span data-cell="name">{{frameName $frame}}</span>
+{{if .Parent}}{{$caller := index $frames (subtractOne .Parent)}}<small class="loc">Level {{addOne .Depth}} · called by {{frameName $caller.Node.Frame}}</small>{{else}}<small class="loc">Level 1 · root caller</small>{{end}}
+<button type="button" class="frame-table-action" data-inspect aria-label="Inspect {{frameName $frame}} at level {{addOne .Depth}}" hidden>Inspect</button></th>
+<td data-cell="category">{{categoryLabel (printf "%s" $frame.Category)}}</td>
+<td id="{{$role}}-source-{{.Index}}">
+<span class="loc">Generated: <span data-cell="generated">{{if ne (frameName $frame) (generatedName $frame)}}{{generatedName $frame}} · {{end}}{{generatedLocation $frame}}</span></span>
+{{with originalLocation $frame.Original}}<span class="loc">Original: <span data-cell="original">{{.}}</span></span>{{end}}</td>
+<td class="num" data-cell="inclusive">{{number .Node.TotalMs}}</td><td class="num" data-cell="self">{{number .Node.SelfMs}}</td><td class="num" data-cell="share">{{number .Share}}%</td><td class="num" data-cell="samples">{{.Node.Samples}}</td>
+</tr>
+{{end}}
+</tbody></table></div>
+</details>
+{{else}}<p>No weighted call stacks found. Export with script profiling enabled to see hot paths.</p>{{end}}
+</section>
+{{end}}
+{{define "attribution"}}
+<section class="profile-section" id="{{.Role}}-attribution" aria-labelledby="{{.Role}}-attribution-heading">
+<h4 id="{{.Role}}-attribution-heading">Sample attribution</h4>
+<p class="muted profile-copy">Each sample is counted once, under its executing frame. Categories use source and name heuristics; unresolved bundles may contain both application and library code.</p>
+<div class="scroll attribution" role="region" aria-label="{{.Role}} sampled self weight by category" tabindex="0"><table>
+<thead><tr><th scope="col">Executing frame category</th><th scope="col" class="num">Self (ms)</th><th scope="col" class="num">Sample weight</th><th scope="col" class="num">Self samples</th></tr></thead>
+<tbody>{{range .RootCause.Owners}}{{if .Samples}}<tr>
+<th scope="row"><span class="swatch cat-{{.Category}}">{{categoryLabel .Category}}</span></th>
+<td class="num">{{number .SelfMs}}</td><td class="num"><meter class="attribution-meter" aria-hidden="true" max="100" value="{{.Pct}}"></meter> {{number .Pct}}%</td><td class="num">{{.Samples}}</td>
+</tr>{{end}}{{end}}</tbody></table></div>
+{{with .RootCause}}
+{{if or .ContextAttribution .ContextUnavailable.Samples}}
+<details>
+<summary>Caller context for framework and native work</summary>
+<p class="muted profile-copy">Framework and native self weight is also associated with the nearest application, unresolved bundle, or injected frame in the sampled stack. This view overlaps the owner totals. A captured caller does not prove causation or application ownership.</p>
+{{if .ContextAttribution}}
+{{if gt .ContextAttributionTotal (len .ContextAttribution)}}<p>Showing {{len .ContextAttribution}} of {{.ContextAttributionTotal}} contexts.</p>{{end}}
+<div class="scroll" role="region" aria-label="Nearest caller attribution table" tabindex="0"><table>
+<thead><tr><th scope="col">Context frame</th><th scope="col" class="num">Context self (ms)</th><th scope="col" class="num">Framework (ms)</th><th scope="col" class="num">Native (ms)</th></tr></thead>
+<tbody>{{range .ContextAttribution}}<tr><th scope="row">{{frameName .Frame}}<span class="loc">{{categoryLabel (printf "%s" .Frame.Category)}} · {{generatedLocation .Frame}}{{with originalLocation .Frame.Original}} → {{.}}{{end}}</span></th>
+<td class="num">{{number .SelfMs}}</td><td class="num">{{number .FrameworkMs}}</td><td class="num">{{number .NativeMs}}</td></tr>{{end}}</tbody></table></div>
+{{end}}
+{{with .ContextUnavailable}}{{if .Samples}}<p>No eligible caller was captured for {{number .SelfMs}} ms of framework or native work ({{.Samples}} samples).</p>{{end}}{{end}}
+</details>
+{{end}}
+{{end}}
+</section>
+{{end}}

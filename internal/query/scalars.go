@@ -25,14 +25,19 @@ func scalarRows(rec *model.Recording, tree *flame.Tree, source Source, operation
 			active += interval.End - interval.Start
 		}
 		unbounded := rec.EndTime <= rec.StartTime && len(rec.Discontinuities) == 0 && source.From == 0 && source.To == 0
+		includeUntimed := !rec.UntimedExcluded && profile.CoversRecording(rec, source.From, source.To)
 		for _, record := range rec.Records {
 			keep := unbounded
+			if record.Type == model.TypeNetwork {
+				if profile.NetworkInWindow(record.HAR(), activeIntervals, !unbounded, includeUntimed) {
+					recordCount++
+				}
+				continue
+			}
 			if !unbounded {
 				switch record.Type {
 				case model.TypeCPU, model.TypeMemory:
 					keep = profile.Contains(activeIntervals, record.Timestamp)
-				case model.TypeNetwork:
-					keep = record.StartTime == 0 && record.EndTime == 0
 				}
 			}
 			if record.Type != model.TypeCPU && record.Type != model.TypeMemory && !keep {

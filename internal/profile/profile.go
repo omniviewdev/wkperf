@@ -424,24 +424,27 @@ func Observed(rec *model.Recording, r model.Record) bool {
 	if rec == nil {
 		return false
 	}
-	timestamp := r.StartTime
+	start, end := r.StartTime, r.EndTime
+	timestamp := start
 	switch r.Type {
 	case model.TypeCPU, model.TypeMemory:
 		timestamp = r.Timestamp
 	case model.TypeNetwork:
-		if r.StartTime == 0 && r.EndTime == 0 {
-			return true
+		h := r.HAR()
+		if !h.Timed {
+			return !rec.UntimedExcluded
 		}
+		start, end, timestamp = h.Start, h.End, h.Start
 	}
 	if r.Type != model.TypeCPU && r.Type != model.TypeMemory {
-		if !finite(r.StartTime) || !finite(r.EndTime) {
+		if !finite(start) || !finite(end) {
 			return false
 		}
-		if r.EndTime > r.StartTime {
+		if end > start {
 			if len(rec.Discontinuities) == 0 {
-				return rec.EndTime <= rec.StartTime || (r.EndTime > rec.StartTime && r.StartTime < rec.EndTime)
+				return rec.EndTime <= rec.StartTime || (end > rec.StartTime && start < rec.EndTime)
 			}
-			return ActiveDuration(rec, r.StartTime, r.EndTime) > 0
+			return ActiveDuration(rec, start, end) > 0
 		}
 	}
 	if !finite(timestamp) || (rec.EndTime > rec.StartTime && (timestamp < rec.StartTime || timestamp >= rec.EndTime)) {

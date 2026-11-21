@@ -470,7 +470,7 @@ func (v *markdownRenderer) cadence() string {
 	}
 	var b strings.Builder
 	b.WriteString("\n## Composite cadence (estimate)\n\n")
-	fmt.Fprintf(&b, "Basis: %s. This capture has no rendering-frame records, so frame p95, jank and the grade are unavailable. The estimate times composite record starts less than %.6gms apart, one active run of animation or scrolling. It is not measured frame latency and never fills the frame standards or the grade.\n\n", mdEscape(c.Basis), profile.CadenceRunGapMs)
+	fmt.Fprintf(&b, "Basis: %s. This capture has no rendering-frame records, so frame p95, jank and the grade are unavailable. Consecutive composite starts less than %.6gms apart form one active run. Start spacing is not measured frame latency, does not prove missed display vsyncs, and never fills the frame standards or the grade.\n\n", mdEscape(c.Basis), profile.CadenceRunGapMs)
 	fmt.Fprintf(&b, "- Composite starts: %d; %d intervals within %d active runs spanning %.6gs. %s; %s; %s; %s\n", c.Starts, c.Count, c.Runs, c.ActiveRunSec,
 		numericRef("metrics", "cadence.composite.starts"), numericRef("metrics", "cadence.composite.count"), numericRef("metrics", "cadence.composite.runs"), numericRef("metrics", "cadence.composite.active_run_s"))
 	if c.Count == 0 {
@@ -479,7 +479,7 @@ func (v *markdownRenderer) cadence() string {
 	}
 	fmt.Fprintf(&b, "- Interval p50 %.6gms, p95 %.6gms, max %.6gms. %s; %s; %s\n", c.P50Ms, c.P95Ms, c.MaxMs,
 		numericRef("metrics", "cadence.composite.p50_ms"), numericRef("metrics", "cadence.composite.p95_ms"), numericRef("metrics", "cadence.composite.max_ms"))
-	fmt.Fprintf(&b, "- Intervals over %.6gms, which skip at least one 60 Hz vsync: %d of %d (%.6g%%). %s; %s\n", profile.CadenceMissedVsyncMs, c.MissedVsyncCount, c.Count, c.MissedVsyncRatio*100,
+	fmt.Fprintf(&b, "- Intervals over %.6gms (1.5 nominal 60 Hz frame budgets): %d of %d (%.6g%%). %s; %s\n", profile.CadenceMissedVsyncMs, c.MissedVsyncCount, c.Count, c.MissedVsyncRatio*100,
 		numericRef("metrics", "cadence.composite.missed_vsync_count"), numericRef("metrics", "cadence.composite.missed_vsync_ratio"))
 	fmt.Fprintf(&b, "- Intervals over %.6gms: %d. %s\n", profile.CadenceSlowIntervalMs, c.Over50MsCount, numericRef("metrics", "cadence.composite.over_50ms_count"))
 	return b.String()

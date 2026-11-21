@@ -9,6 +9,7 @@ import (
 	"github.com/omniviewdev/wkperf/internal/insights"
 	"github.com/omniviewdev/wkperf/internal/metrics"
 	"github.com/omniviewdev/wkperf/internal/model"
+	"github.com/omniviewdev/wkperf/internal/profile"
 )
 
 func get(t *testing.T, c *Scorecard, id string) Result {
@@ -170,6 +171,32 @@ func TestFCPLCP(t *testing.T) {
 	for _, id := range []string{"fcp", "lcp", "forced-layout-rate"} {
 		if get(t, c, id).Rating != Unavailable {
 			t.Errorf("%s must be unavailable", id)
+		}
+	}
+}
+
+func TestPaintMilestonesRequireOriginalRecordingStart(t *testing.T) {
+	rec := &model.Recording{StartTime: 100, EndTime: 110, Records: []model.Record{
+		layout("first-contentful-paint", 104),
+		layout("largest-contentful-paint", 105),
+	}}
+	prefix := profile.Clip(rec, 100, 106)
+	c := Evaluate(prefix, nil)
+	for id, want := range map[string]float64{"fcp": 4000, "lcp": 5000} {
+		got := get(t, c, id)
+		if got.Rating != Poor || got.Value != want {
+			t.Errorf("a shorter window with the original start changed %s: %+v", id, got)
+		}
+	}
+	clipped := profile.Clip(prefix, 103, 106)
+	if len(clipped.Records) != 2 {
+		t.Fatalf("fixture lost paint milestones: %+v", clipped.Records)
+	}
+	c = Evaluate(clipped, nil)
+	for _, id := range []string{"fcp", "lcp"} {
+		got := get(t, c, id)
+		if got.Rating != Unavailable || !strings.Contains(got.Detail, "original recording start") {
+			t.Errorf("window cannot substitute its start as %s origin: %+v", id, got)
 		}
 	}
 }

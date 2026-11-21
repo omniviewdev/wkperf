@@ -25,8 +25,19 @@ import (
 //go:embed page.html
 var pageHTML string
 
+//go:embed flame.js
+var flameJS string
+
 var page = template.Must(template.New("ui").Funcs(template.FuncMap{
-	"percent": func(n float64) float64 { return 100 * n },
+	"boundedText":       boundedText,
+	"categoryLabel":     categoryLabel,
+	"frameName":         frameName,
+	"generatedName":     generatedName,
+	"generatedLocation": generatedLocation,
+	"originalLocation":  originalLocation,
+	"addOne":            func(n int) int { return n + 1 },
+	"subtractOne":       func(n int) int { return n - 1 },
+	"percent":           func(n float64) float64 { return 100 * n },
 	"leaf": func(frames []metrics.FunctionFrame) string {
 		if len(frames) == 0 {
 			return ""
@@ -43,12 +54,13 @@ var page = template.Must(template.New("ui").Funcs(template.FuncMap{
 		if s == "" {
 			return "(anonymous)"
 		}
-		return s
+		return boundedText(s, 160)
 	},
 }).Parse(pageHTML))
 
 type recording struct {
 	Role, Filename string
+	Graph          flameGraph
 	*insights.Report
 }
 
@@ -76,12 +88,24 @@ func New(host string, maxFileMiB int) http.Handler {
 	origin := http.NewCrossOriginProtection()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
-		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("Cache-Control", "no-store")
 		if r.Host != host {
 			http.Error(w, "Use the loopback URL printed by wkperf ui.", http.StatusForbidden)
+			return
+		}
+		if r.URL.Path == "/flame.js" {
+			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+				h.Set("Allow", "GET, HEAD")
+				http.Error(w, "Method not allowed.", http.StatusMethodNotAllowed)
+				return
+			}
+			h.Set("Content-Type", "text/javascript; charset=utf-8")
+			if r.Method == http.MethodGet {
+				_, _ = io.WriteString(w, flameJS)
+			}
 			return
 		}
 		if r.URL.Path != "/" {
@@ -127,7 +151,7 @@ func New(host string, maxFileMiB int) http.Handler {
 				return
 			}
 			report := insights.Analyze(f.rec, f.name, insights.Options{})
-			data.Recordings = append(data.Recordings, recording{Role: f.role, Filename: f.name, Report: report})
+			data.Recordings = append(data.Recordings, recording{Role: f.role, Filename: f.name, Graph: layoutFlame(report.FlameTree), Report: report})
 		}
 		if len(data.Recordings) == 2 {
 			base, cand := data.Recordings[0].Summary, data.Recordings[1].Summary
