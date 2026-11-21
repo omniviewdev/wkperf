@@ -21,12 +21,12 @@ func (e *ExitError) Error() string { return e.Msg }
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "wkperf",
-		Short:         "Compare and analyze WebKit Web Inspector Timelines exports",
-		Long:          "wkperf compares two groups of WebKit Web Inspector Timelines exports (baseline vs candidate) and reports regressions and improvements.",
+		Short:         "Record and analyze WebKit Web Inspector Timelines",
+		Long:          "wkperf records WebKit Web Inspector Timelines and analyzes or compares recording exports.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(newCompareCmd(), newAnalyzeCmd(), newAuditCmd(), newSummaryCmd(), newSampleCmd(), newVersionCmd(), newSchemaCmd(), newFlameCmd(), newQueryCmd(), newMCPCmd())
+	root.AddCommand(newTargetsCmd(), newRecordCmd(), newExperimentCmd(), newCompareCmd(), newAnalyzeCmd(), newAuditCmd(), newSummaryCmd(), newSampleCmd(), newVersionCmd(), newSchemaCmd(), newFlameCmd(), newQueryCmd(), newMCPCmd(), newUICmd())
 	return root
 }
 

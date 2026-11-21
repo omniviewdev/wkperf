@@ -1,0 +1,7 @@
+# Blind WebKit investigation check
+
+An agent received eight anonymized WebKitGTK 2.54.0 Inspector recordings of a real page, the `wkperf` binary, and the [agent skill](../skills/wkperf/SKILL.md). It did not receive the page source, workload scripts, timings, or variant assignments. The harness alternated order across four pairs. Both variants updated the same elements; one interleaved geometry reads with writes, while the other batched them.
+
+Through the stdio MCP server, the agent independently identified the batched variant in all four pairs. `metrics` showed 12 versus 1,152 forced layouts, despite identical script task and layout invalidation counts. Total forced-layout time was 26.9–27.5 ms versus 120.2–126.8 ms. `window` located a burst with one versus 96 forced layouts; `top` identified the sampled workload function. Per-layout p95 alone pointed in the wrong direction because the slower variant performed many shorter layouts. The agent recommended batching geometry access without seeing the implementation.
+
+A subsequent capture with the stricter protocol lifecycle and clock validation reproduced the counts across four more pairs. This verifies evidence navigation and a specific code-level hypothesis for this workload, not production frame delivery, visual equivalence, or a general speedup. Raw captures stay local. Follow [the skill](../skills/wkperf/SKILL.md) to run your own controlled experiment.

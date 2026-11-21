@@ -1,6 +1,7 @@
 package query
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"sort"
@@ -16,7 +17,7 @@ import (
 	"github.com/omniviewdev/wkperf/internal/rootcause"
 )
 
-func keyRows(rec *model.Recording, tree *flame.Tree, source Source, req Request) ([]Row, error) {
+func keyRows(ctx context.Context, rec *model.Recording, tree *flame.Tree, source Source, req Request) ([]Row, error) {
 	match, err := keyMatcher(req.Selector, req.Operation == "keys")
 	if err != nil {
 		return nil, diagnostic.Wrap(diagnostic.SelectorError, req.File, err)
@@ -32,6 +33,9 @@ func keyRows(rec *model.Recording, tree *flame.Tree, source Source, req Request)
 			registry = append(registry, rootRegistry(rec, tree, source, req)...)
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	sort.Slice(registry, func(i, j int) bool {
 		if registry[i].Key != registry[j].Key {
 			return registry[i].Key < registry[j].Key
@@ -45,7 +49,16 @@ func keyRows(rec *model.Recording, tree *flame.Tree, source Source, req Request)
 		}
 	}
 	if len(rows) == 0 && req.Selector != "" {
-		return nil, &diagnostic.Error{File: req.File, Code: diagnostic.UnknownKey, Err: fmt.Errorf("unknown %s key selector %q", req.Operation, req.Selector), Candidates: nearestKeys(req.Selector, registry)}
+		candidates, err := nearestKeys(ctx, req.Selector, registry)
+		if err != nil {
+			return nil, err
+		}
+		selector, suffix := req.Selector, ""
+		if len(selector) > maxKeySuggestionBytes {
+			selector, suffix = selector[:maxKeySuggestionBytes], " (truncated)"
+		}
+		message := fmt.Errorf("unknown %s key selector %q%s", req.Operation, selector, suffix)
+		return nil, &diagnostic.Error{File: req.File, Code: diagnostic.UnknownKey, Err: message, Candidates: candidates}
 	}
 	return rows, nil
 }
@@ -62,7 +75,11 @@ func metricRegistry(rec *model.Recording, tree *flame.Tree, source Source, req R
 	}
 	clipped := profile.Clip(rec, rec.StartTime+source.From, rec.StartTime+source.To)
 	report := insights.Analyze(clipped, req.File, insights.Options{Top: MaxLimit, JankMs: req.JankMS, LongTaskMs: req.LongTaskMS, WindowStartSec: source.From, Sourcemaps: req.Sourcemaps, Ownership: req.ownership()})
+	_, haveGC := values["gc.count"]
 	for key, value := range insights.NumericValues(report) {
+		if !haveGC && (strings.HasPrefix(key, "gc.") || strings.HasSuffix(key, ".gc_ms") || strings.HasSuffix(key, ".gc_overlap_with_work_ms")) {
+			continue
+		}
 		if _, exists := values[key]; !exists {
 			values[key] = Row{Key: key, Value: clean(value.Value), Unit: string(value.Unit), Description: value.Description, Basis: metricBasis(key), Operation: "metrics"}
 		}
@@ -136,15 +153,23 @@ type keyCandidate struct {
 	distance int
 }
 
+const maxKeySuggestionBytes = 256
+
 // nearestKeys ranks the longest shared prefix first, then edit distance and key.
-// Registry order and map iteration never affect the bounded suggestion list.
-func nearestKeys(selector string, registry []Row) []string {
+// Longer selectors or keys do not participate in edit-distance suggestions.
+func nearestKeys(ctx context.Context, selector string, registry []Row) ([]string, error) {
 	selector = strings.TrimSuffix(selector, ".*")
+	if len(selector) > maxKeySuggestionBytes {
+		return nil, ctx.Err()
+	}
 	seen := make(map[string]bool, len(registry))
 	candidates := make([]keyCandidate, 0, len(registry))
 	previous, current := make([]int, len(selector)+1), make([]int, len(selector)+1)
 	for _, row := range registry {
-		if seen[row.Key] {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if len(row.Key) > maxKeySuggestionBytes || seen[row.Key] {
 			continue
 		}
 		seen[row.Key] = true
@@ -181,5 +206,5 @@ func nearestKeys(selector string, registry []Row) []string {
 	for i := range out {
 		out[i] = candidates[i].key
 	}
-	return out
+	return out, ctx.Err()
 }

@@ -2,7 +2,8 @@ version: 2
 project_name: wkperf
 
 builds:
-  - main: .
+  - id: wkperf
+    main: .
     binary: wkperf
     env:
       - CGO_ENABLED=0

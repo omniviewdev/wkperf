@@ -55,10 +55,28 @@ func TestProtocolConversationInMemory(t *testing.T) {
 	if len(tools) != len(query.Operations) {
 		t.Fatalf("tool operations differ: %d != %d", len(tools), len(query.Operations))
 	}
+	if len(lines[1]) > 512<<10 {
+		t.Fatalf("tool discovery repeated unused schema branches: %d bytes", len(lines[1]))
+	}
 	for _, value := range tools {
 		tool := value.(map[string]any)
 		if tool["inputSchema"] == nil || tool["outputSchema"] == nil {
 			t.Fatalf("missing schemas: %v", tool)
+		}
+		name := tool["name"].(string)
+		branches := tool["outputSchema"].(map[string]any)["oneOf"].([]any)
+		want := 2
+		if name == "window" {
+			want = len(query.Operations)
+		}
+		if len(branches) != want {
+			t.Fatalf("%s advertises %d result shapes, want %d", name, len(branches), want)
+		}
+		if name != "window" {
+			operation := branches[0].(map[string]any)["properties"].(map[string]any)["operation"].(map[string]any)["const"]
+			if operation != name {
+				t.Fatalf("%s advertises rows for %v", name, operation)
+			}
 		}
 	}
 	result := call["result"].(map[string]any)

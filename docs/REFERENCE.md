@@ -464,8 +464,8 @@ Collector intervals alone leave `gc-share` unavailable. Their coverage and overl
 | `--ai-base-url` | provider default | API base URL |
 | `--ai-max-tokens` | `4096` | answer limit |
 | `--ai-timeout` | `180s` | request timeout |
-| `--app-name` | `Omniview` | application name in the prompt |
-| `--app-context` | | extra context; platform defaults to "macOS WKWebView (Wails)", framework to React |
+| `--app-name` | `WebKit application` | application name in the prompt |
+| `--app-context` | | supply known application, platform, or framework details; no framework is assumed |
 | `--ai-notes` | | free-form notes for the model |
 | `--emit-prompt [FILE\|-]` | | write the prompt and exit |
 

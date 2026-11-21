@@ -30,6 +30,14 @@
 
 Output is a terminal report, a single self-contained HTML file you can share, or JSON for CI.
 
+### Capture from a running application
+
+- [WebKit recording](docs/RECORD.md): `wkperf record` connects to an Inspector protocol endpoint. An inspectable Apple WKWebView is not itself a WebSocket endpoint.
+- [Interactive UI](docs/UI.md): run `wkperf ui` to inspect local WebKit recordings in a browser.
+- [Paired experiments](docs/EXPERIMENT.md): `wkperf experiment` alternates baseline and candidate workloads and preserves individual recordings.
+- [Agent skill](skills/wkperf/SKILL.md): investigate a recording using the CLI or `wkperf mcp` over stdio.
+- Go integrations can call [`inspector.Capture`](pkg/inspector) with a context, target endpoint, workload options, and output writer. [`model.Parse`](pkg/model) reads the resulting recording or a Safari Timelines export. Neither package requires a specific application framework.
+
 ## Install
 
 ### Install with Go

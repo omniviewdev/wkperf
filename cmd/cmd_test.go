@@ -98,9 +98,6 @@ func TestEmitPromptAnalyze(t *testing.T) {
 	if !strings.Contains(out, "# Instructions (system prompt)") || !strings.Contains(out, "# Data (user prompt)") {
 		t.Fatalf("prompt sections missing:\n%.300s", out)
 	}
-	if !strings.Contains(out, "Omniview") {
-		t.Error("default app name missing")
-	}
 }
 
 func TestEmitPromptCompareToFile(t *testing.T) {

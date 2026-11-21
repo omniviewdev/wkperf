@@ -1,6 +1,7 @@
 package insights
 
 import (
+	"encoding/json"
 	"math"
 	"sort"
 
@@ -35,6 +36,14 @@ func triggerKind(event string) string {
 }
 
 func triggerName(r *model.Record) string {
+	if r.EventType == "timer-fired" || r.EventType == "animation-frame-fired" {
+		if details := r.Details; len(details) > 0 && (details[0] == '-' || details[0] >= '0' && details[0] <= '9') {
+			var id json.Number
+			if json.Unmarshal(details, &id) == nil {
+				return id.String()
+			}
+		}
+	}
 	if name := detailString(r); name != "" {
 		return name
 	}

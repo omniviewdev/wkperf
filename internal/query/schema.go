@@ -14,6 +14,18 @@ var errorCodes = []string{"input_error", "load_error", "source_map_error", "wind
 // ResultSchema describes the v2 wire document, not the internal row union.
 // Each operation selects exactly one concrete sparse row shape.
 func ResultSchema() map[string]any {
+	return resultSchema("")
+}
+
+// ToolResultSchema describes just the row shapes the named MCP tool returns.
+func ToolResultSchema(operation string) map[string]any {
+	if operation == "window" {
+		return ResultSchema()
+	}
+	return resultSchema(operation)
+}
+
+func resultSchema(selected string) map[string]any {
 	out := objectSchema(reflect.TypeFor[Document]())
 	out["$schema"] = "https://json-schema.org/draft/2020-12/schema"
 	out["title"] = Schema
@@ -30,11 +42,16 @@ func ResultSchema() map[string]any {
 		properties[key].(map[string]any)["minimum"] = 0
 	}
 	properties["truncated_by"].(map[string]any)["items"].(map[string]any)["enum"] = []string{"limit", "bytes", "stack_frames"}
-	branches := make([]any, 0, len(Operations))
+	capacity := 2
+	if selected == "" {
+		capacity = len(Operations)
+	}
+	branches := make([]any, 0, capacity)
 	for _, operation := range Operations {
-		if operation == "window" {
+		// Window results name the selected underlying operation.
+		if operation == "window" || selected != "" && operation != selected {
 			continue
-		} // Window results name the selected underlying operation.
+		}
 		branch := map[string]any{"properties": map[string]any{
 			"operation": map[string]any{"const": operation, "description": "Executed operation selecting this concrete sparse row shape."},
 			"status":    map[string]any{"enum": []string{"ok", "ambiguous"}, "description": "Successful query or function-selection ambiguity; failures use the error branch."},
@@ -88,7 +105,13 @@ func RequestSchema(operation string) map[string]any {
 	delete(properties, "operation")
 	out["required"] = []string{"file"}
 	if operation == "diff" {
-		out["required"] = []string{"file", "candidate"}
+		out["required"] = []string{"candidate"}
+		out["anyOf"] = []any{
+			map[string]any{"required": []string{"file"}},
+			map[string]any{"required": []string{"baseline"}},
+		}
+		properties["baseline"].(map[string]any)["minLength"] = 1
+		properties["candidate"].(map[string]any)["minLength"] = 1
 	}
 	if operation == "callers" || operation == "callees" || operation == "paths" || operation == "subtree" || operation == "find" {
 		out["required"] = []string{"file", "selector"}

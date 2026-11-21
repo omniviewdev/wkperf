@@ -170,7 +170,7 @@ func (s *Server) Serve(ctx context.Context, input io.Reader, output io.Writer) e
 			}
 			tools := make([]tool, 0, len(query.Operations))
 			for _, op := range query.Operations {
-				tools = append(tools, tool{Name: op, Description: description(op), InputSchema: query.RequestSchema(op), OutputSchema: query.ResultSchema(), Annotations: map[string]bool{"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}})
+				tools = append(tools, tool{Name: op, Description: description(op), InputSchema: query.RequestSchema(op), OutputSchema: query.ToolResultSchema(op), Annotations: map[string]bool{"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}})
 			}
 			result = struct {
 				Tools []tool `json:"tools"`
@@ -195,11 +195,13 @@ func (s *Server) Serve(ctx context.Context, input io.Reader, output io.Writer) e
 			var queryRequest query.Request
 			arguments := struct {
 				*query.Request
-				MinShare       *float64 `json:"min_share"`
-				Depth          *int     `json:"depth"`
-				MinSamples     *int     `json:"min_samples"`
-				TieRatio       *float64 `json:"tie_ratio"`
-				MaxStackFrames *int     `json:"max_stack_frames"`
+				Operation      json.RawMessage `json:"operation"`
+				QueryOperation json.RawMessage `json:"query_operation"`
+				MinShare       *float64        `json:"min_share"`
+				Depth          *int            `json:"depth"`
+				MinSamples     *int            `json:"min_samples"`
+				TieRatio       *float64        `json:"tie_ratio"`
+				MaxStackFrames *int            `json:"max_stack_frames"`
 			}{Request: &queryRequest}
 			decoder := json.NewDecoder(bytes.NewReader(params.Arguments))
 			decoder.DisallowUnknownFields()
@@ -207,9 +209,19 @@ func (s *Server) Serve(ctx context.Context, input io.Reader, output io.Writer) e
 				result = failedCall(params.Name, diagnostic.Wrap(diagnostic.UsageError, "", fmt.Errorf("invalid tool arguments: %w", err)))
 				break
 			}
-			if queryRequest.Operation != "" {
+			if arguments.Operation != nil {
 				result = failedCall(params.Name, diagnostic.Wrap(diagnostic.UsageError, "", fmt.Errorf("operation is selected by the tool name")))
 				break
+			}
+			if arguments.QueryOperation != nil {
+				if params.Name != "window" {
+					result = failedCall(params.Name, diagnostic.Wrap(diagnostic.UsageError, "", fmt.Errorf("query_operation is only accepted by window")))
+					break
+				}
+				if arguments.QueryOperation[0] != '"' || json.Unmarshal(arguments.QueryOperation, &queryRequest.QueryOperation) != nil {
+					result = failedCall(params.Name, diagnostic.Wrap(diagnostic.UsageError, "", fmt.Errorf("query_operation must be a string")))
+					break
+				}
 			}
 			if arguments.MinShare != nil {
 				queryRequest.MinShare, queryRequest.MinShareSet = *arguments.MinShare, true
