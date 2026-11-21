@@ -82,8 +82,8 @@ func addAIFlags(c *cobra.Command) {
 	f.String("ai-base-url", "", "API base URL, e.g. http://localhost:11434/v1 for Ollama")
 	f.Int("ai-max-tokens", 4096, "maximum tokens in the answer")
 	f.Duration("ai-timeout", 180*time.Second, "timeout for the LLM request")
-	f.String("app-name", "Omniview", "application name given to the model")
-	f.String("app-context", "", "extra application context (e.g. 'Wails app, WKWebView, React 18')")
+	f.String("app-name", "WebKit application", "application name given to the model")
+	f.String("app-context", "", "extra application context (e.g. 'Safari, React 18')")
 	f.String("ai-notes", "", "free-form notes for the model (what you are trying to fix)")
 	f.String("emit-prompt", "", "write the LLM prompt as Markdown to FILE (or '-' for stdout) and exit; no network or key needed")
 	f.Lookup("emit-prompt").NoOptDefVal = "-"
@@ -92,14 +92,13 @@ func addAIFlags(c *cobra.Command) {
 // aiContext builds the prompt context from flags/config.
 func aiContext(top int) ai.Context {
 	c := ai.Context{
-		AppName:   viper.GetString("app-name"),
-		Platform:  "macOS WKWebView (Wails)",
-		Framework: "React",
-		Notes:     viper.GetString("ai-notes"),
-		TopN:      top,
+		AppName:  viper.GetString("app-name"),
+		Platform: "WebKit",
+		Notes:    viper.GetString("ai-notes"),
+		TopN:     top,
 	}
 	if c.AppName == "" {
-		c.AppName = "Omniview"
+		c.AppName = "WebKit application"
 	}
 	if extra := strings.TrimSpace(viper.GetString("app-context")); extra != "" {
 		if c.Notes != "" {

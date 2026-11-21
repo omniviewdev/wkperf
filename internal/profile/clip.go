@@ -18,6 +18,7 @@ func Clip(rec *model.Recording, start, end float64) *model.Recording {
 	}
 	out := *rec
 	out.UntimedExcluded = true
+	out.SourceHadRenderingFrames = rec.HasRenderingFrames()
 	if out.SampleEvidence == nil {
 		out.SampleEvidence = &model.SampleEvidence{StartTime: rec.StartTime, EndTime: rec.EndTime, Samples: rec.Samples}
 	}

@@ -223,4 +223,55 @@ func TestAnonymousNativeAmbiguity(t *testing.T) {
 			t.Fatalf("native ID did not resolve: %+v", exact)
 		}
 	}
+	functions := Wire(result).Functions
+	for id, frame := range functions {
+		if !frame.Anonymous || frame.Name != "" || flame.FunctionID(frame) != id {
+			t.Errorf("wire frame lost raw anonymous identity: %+v", frame)
+		}
+	}
+	if len(functions) != 2 {
+		t.Fatal("wire document lost anonymous candidates")
+	}
+	var display strings.Builder
+	if err := Render(&display, result, "md"); err != nil || !strings.Contains(display.String(), "(anonymous)") {
+		t.Fatalf("missing human-readable anonymous name: %v, %s", err, &display)
+	}
+}
+
+func TestTopExactNodeHonorsFilters(t *testing.T) {
+	engine := engineFor(fixture())
+	path := run(t, engine, Request{Operation: "paths", Selector: "leaf"})
+	id := path.Rows[0].NodeID
+	for _, req := range []Request{
+		{Operation: "top", Selector: id, Module: "other.js"},
+		{Operation: "top", Selector: id, Category: "native"},
+	} {
+		if rows := run(t, engine, req).Rows; len(rows) != 0 {
+			t.Errorf("filtered node returned: %+v", rows)
+		}
+	}
+	if rows := run(t, engine, Request{Operation: "top", Selector: id, Module: "app.js"}).Rows; len(rows) != 1 {
+		t.Errorf("matching node missing: %+v", rows)
+	}
+}
+
+func TestSubtreeRecursiveMatchesEachGetDepthAllowance(t *testing.T) {
+	a := model.StackFrame{Name: "A", URL: "app.js", Line: 1}
+	b := model.StackFrame{Name: "B", URL: "app.js", Line: 2}
+	rec := &model.Recording{StartTime: 1, EndTime: 2, Samples: []model.TargetSamples{{
+		StackTraces: []model.StackTrace{
+			{Timestamp: 1.1, StackFrames: []model.StackFrame{a}},
+			{Timestamp: 1.2, StackFrames: []model.StackFrame{b, a, a}},
+		},
+		Durations: []float64{.01, .02},
+	}}}
+	result := run(t, engineFor(rec), Request{Operation: "subtree", Selector: "A", Depth: 1})
+	if len(result.Rows) != 3 {
+		t.Fatalf("expected A, recursive A, and its child B: %+v", result.Rows)
+	}
+	for _, row := range result.Rows {
+		if row.Name == "A" && row.Depth != 0 || row.Name == "B" && row.Depth != 1 {
+			t.Errorf("unexpected depth for %s: %d", row.Name, row.Depth)
+		}
+	}
 }

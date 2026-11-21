@@ -226,6 +226,7 @@ func summarize(rec *model.Recording, source string, o Options, tree *flame.Tree)
 		scriptCount  = map[string]int{}
 		layoutMs     = map[string][]float64{}
 		layoutCount  = map[string]int{}
+		stalled      = metrics.StalledComposites{ThresholdMs: profile.CompositeStallThresholdMs}
 		gcCount      int
 		cpuTotal     []timedPoint
 		cpuMain      []float64
@@ -303,6 +304,12 @@ func summarize(rec *model.Recording, source string, o Options, tree *flame.Tree)
 			}
 		case model.TypeLayout:
 			haveLayout = true
+			if profile.IsStalledComposite(*r) {
+				// Not main-thread work: reported apart from the layout.composite.* statistics.
+				stalled.Count++
+				stalled.TotalMs += clipped * 1000
+				continue
+			}
 			layoutCount[r.EventType]++
 			ms := clipped * 1000
 			layoutMs[r.EventType] = append(layoutMs[r.EventType], ms)
@@ -432,6 +439,13 @@ func summarize(rec *model.Recording, source string, o Options, tree *flame.Tree)
 		b.add("frames.jank_ratio", "frames", "Jank ratio (>16.7ms)", metrics.UnitRatio, metrics.LowerBetter, float64(j16)/float64(len(ms)))
 	}
 
+	// Only a capture with no rendering-frame records gets the estimate; real
+	// frame statistics are never filled from it.
+	if !rec.HasRenderingFrames() {
+		s.CompositeCadence = compositeCadence(profile.CompositeCadence(rec, win.lo, win.hi))
+		b.addCompositeCadence(s.CompositeCadence)
+	}
+
 	var eventSet []string
 	if haveScript {
 		b.addExt("script.total_ms", "script", "Script total", metrics.UnitMs, metrics.LowerBetter, scriptTimeMs)
@@ -482,6 +496,9 @@ func summarize(rec *model.Recording, source string, o Options, tree *flame.Tree)
 			b.timeStats("layout."+et, "layout", et+" (inclusive record time)", layoutMs[et], false)
 			b.addExt("layout."+et+".exclusive_ms", "layout", et+" exclusive main-thread work", metrics.UnitMs, metrics.LowerBetter, layoutExclusive[et])
 		}
+		b.add("layout.composite.stall_threshold_ms", "layout", "Fixed stalled-composite threshold", metrics.UnitMs, metrics.Neutral, stalled.ThresholdMs)
+		b.addExt("layout.composite.stalled_count", "layout", "Stalled composite records (not main-thread work)", metrics.UnitCount, metrics.Neutral, float64(stalled.Count))
+		b.addExt("layout.composite.stalled_ms", "layout", "Stalled composite reported spans, summed (not main-thread work)", metrics.UnitMs, metrics.Neutral, stalled.TotalMs)
 	}
 
 	if gcCount > 0 {
@@ -531,6 +548,7 @@ func summarize(rec *model.Recording, source string, o Options, tree *flame.Tree)
 	}
 
 	s.Metrics = b.m
+	s.StalledComposites = stalled
 	if tree == nil {
 		if win.active {
 			tree = flame.Build(rec, flame.Options{Intervals: relativeIntervals(rec, win.intervals)})

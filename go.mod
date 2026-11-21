@@ -3,6 +3,7 @@ module github.com/omniviewdev/wkperf
 go 1.26.1
 
 require (
+	github.com/coder/websocket v1.8.15
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
 )

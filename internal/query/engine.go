@@ -209,12 +209,15 @@ func (e *Engine) Run(ctx context.Context, request Request) (*Result, error) {
 		case "depth":
 			result.Rows, result.DeepestStack = depthRows(tree)
 		case "metrics", "rootcause", "keys":
-			result.Rows, err = keyRows(rec, tree, source, req)
+			result.Rows, err = keyRows(ctx, rec, tree, source, req)
 		case "events":
 			clipped := profile.Clip(rec, rec.StartTime+source.From, rec.StartTime+source.To)
 			result.Rows = triggerRows(clipped, len(tree.Functions()), req)
 		}
 		if err != nil {
+			if canceled := ctx.Err(); canceled != nil {
+				return nil, canceled
+			}
 			var ambiguous *AmbiguousError
 			if !errors.As(err, &ambiguous) {
 				return nil, diagnostic.Wrap(diagnostic.SelectorError, req.File, err)

@@ -83,6 +83,65 @@ func TestUnknownKeyCandidatesAreBoundedAndDeterministic(t *testing.T) {
 	}
 }
 
+func TestNearestKeySuggestionsHonorBoundsAndCancellation(t *testing.T) {
+	longKey := strings.Repeat("x", maxKeySuggestionBytes+1)
+	registry := []Row{{Key: longKey}, {Key: "samples.count"}}
+	if got, err := nearestKeys(context.Background(), longKey, registry); len(got) != 0 || err != nil {
+		t.Fatalf("long selector should skip suggestions: %v, %v", got, err)
+	}
+	if got, err := nearestKeys(context.Background(), "samples.coun", registry); !reflect.DeepEqual(got, []string{"samples.count"}) || err != nil {
+		t.Fatalf("long key not excluded: %v, %v", got, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := nearestKeys(ctx, "samples.coun", registry); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ranking ignored cancellation: %v", err)
+	}
+}
+
+func TestGCMetricsRequireObservedCollectorEvidence(t *testing.T) {
+	rec := fixture()
+	rec.Records = []model.Record{{Type: model.TypeScript, StartTime: 10.1, EndTime: 10.2}}
+	engine := engineFor(rec)
+	for _, operation := range []string{"keys", "metrics"} {
+		_, err := engine.Run(context.Background(), Request{File: "sample.json", Operation: operation, Selector: "gc.total_ms"})
+		var detail *diagnostic.Error
+		if !errors.As(err, &detail) || detail.Code != diagnostic.UnknownKey {
+			t.Fatalf("%s reported GC without collector evidence: %v", operation, err)
+		}
+	}
+	rec.Records = append(rec.Records, model.Record{Type: model.TypeScript, StartTime: 10.12, EndTime: 10.14, Details: json.RawMessage(`{"__type":"GarbageCollection"}`)})
+	metric := run(t, engine, Request{Operation: "metrics", Selector: "gc.total_ms"})
+	if len(metric.Rows) != 1 || metric.Rows[0].Value != 20 {
+		t.Fatalf("observed GC lost: %+v", metric.Rows)
+	}
+}
+
+func TestEventsKeepNumericTriggerIDsDistinct(t *testing.T) {
+	rec := fixture()
+	for i, event := range []struct{ kind, id string }{
+		{"timer-fired", "41"}, {"timer-fired", "42"}, {"timer-fired", "41"},
+		{"animation-frame-fired", "41"}, {"animation-frame-fired", "9007199254740993"},
+	} {
+		start := 10 + float64(i)/10
+		rec.Records = append(rec.Records, model.Record{Type: model.TypeScript, EventType: event.kind, Details: json.RawMessage(event.id), StartTime: start, EndTime: start + .03})
+	}
+	engine := engineFor(rec)
+	result := run(t, engine, Request{Operation: "events"})
+	counts := map[string]int{}
+	for _, row := range result.Rows {
+		counts[row.Kind+"/"+row.Name] = row.Count
+	}
+	want := map[string]int{"timer/41": 2, "timer/42": 1, "rAF/41": 1, "rAF/9007199254740993": 1}
+	if !reflect.DeepEqual(counts, want) {
+		t.Fatalf("numeric IDs were lost or merged: %v, want %v", counts, want)
+	}
+	filtered := run(t, engine, Request{Operation: "events", Selector: "timer/41"})
+	if len(filtered.Rows) != 1 || filtered.Rows[0].Count != 2 {
+		t.Fatalf("numeric ID did not round trip as selector: %+v", filtered.Rows)
+	}
+}
+
 func TestScalarAliasesAndCanonicalFunctionKeys(t *testing.T) {
 	rec := fixture()
 	rec.Samples[0].Durations[0] = .040000000123456

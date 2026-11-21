@@ -30,6 +30,14 @@
 
 Output is a terminal report, a single self-contained HTML file you can share, or JSON for CI.
 
+### Capture from a running application
+
+- [WebKit recording](docs/RECORD.md): `wkperf record` connects to an Inspector protocol endpoint. An inspectable Apple WKWebView is not itself a WebSocket endpoint.
+- [Interactive UI](docs/UI.md): run `wkperf ui` to inspect local WebKit recordings in a browser.
+- [Paired experiments](docs/EXPERIMENT.md): `wkperf experiment` alternates baseline and candidate workloads and preserves individual recordings.
+- [Agent skill](skills/wkperf/SKILL.md): investigate a recording using the CLI or `wkperf mcp` over stdio.
+- Go integrations can call [`inspector.Capture`](pkg/inspector) with a context, target endpoint, workload options, and output writer. [`model.Parse`](pkg/model) reads the resulting recording or a Safari Timelines export. Neither package requires a specific application framework.
+
 ## Install
 
 ### Install with Go
@@ -270,7 +278,7 @@ Targeted queries default to a 128 KiB output budget and 48-frame root/leaf stack
 
 Idle timer wakeups are separated from expensive frames. Function identity includes columns, so minified same-line functions stay distinct. Source maps show original and generated locations together; file-level module grouping keeps plugin bundles separate. Use `--module-grouping parent-directory` only when you want a directory roll-up.
 
-Long tasks now share non-overlapping task boundaries across metrics, findings, and window selection. GC collector intervals stay separate from main-thread work. Input stalls stay visible without inflating work-bound jank. Sparse or mostly idle captures receive unavailable grades rather than a misleading healthy score; frame standards require 30 active frames and one second of active-frame observation.
+Long tasks now share non-overlapping task boundaries across metrics, findings, and window selection. GC collector intervals stay separate from main-thread work. Input stalls stay visible without inflating work-bound jank. Sparse or mostly idle captures receive unavailable grades rather than a misleading healthy score; frame standards require 30 active frames and one second of active-frame observation. Composite records stalled for more than 50 ms are excluded from the time breakdown, and captures with no rendering-frame records get an explicitly estimated composite cadence that never fills frame statistics or the grade.
 
 Source maps resolve locations without borrowing parameter names for function labels. Copied sidecars keep honest relative source paths when originals are unavailable, and directory scans skip unrelated unsupported maps with warnings. MCP reports the installed tool version, rejects non-file inputs, and recovers after oversized requests.
 

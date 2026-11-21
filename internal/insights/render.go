@@ -10,6 +10,7 @@ import (
 
 	"github.com/omniviewdev/wkperf/internal/flame"
 	"github.com/omniviewdev/wkperf/internal/metrics"
+	"github.com/omniviewdev/wkperf/internal/profile"
 	"github.com/omniviewdev/wkperf/internal/rootcause"
 )
 
@@ -460,6 +461,30 @@ func (v *markdownRenderer) rootDetails() string {
 	return b.String()
 }
 
+// cadence renders the composite cadence estimate. The estimate exists only for
+// captures without rendering-frame records, and says so wherever it appears.
+func (v *markdownRenderer) cadence() string {
+	c := v.r.CompositeCadence
+	if c == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n## Composite cadence (estimate)\n\n")
+	fmt.Fprintf(&b, "Basis: %s. This capture has no rendering-frame records, so frame p95, jank and the grade are unavailable. The estimate times composite record starts less than %.6gms apart, one active run of animation or scrolling. It is not measured frame latency and never fills the frame standards or the grade.\n\n", mdEscape(c.Basis), profile.CadenceRunGapMs)
+	fmt.Fprintf(&b, "- Composite starts: %d; %d intervals within %d active runs spanning %.6gs. %s; %s; %s; %s\n", c.Starts, c.Count, c.Runs, c.ActiveRunSec,
+		numericRef("metrics", "cadence.composite.starts"), numericRef("metrics", "cadence.composite.count"), numericRef("metrics", "cadence.composite.runs"), numericRef("metrics", "cadence.composite.active_run_s"))
+	if c.Count == 0 {
+		fmt.Fprintf(&b, "- No two composite starts were less than %.6gms apart, so there is no cadence to estimate.\n", profile.CadenceRunGapMs)
+		return b.String()
+	}
+	fmt.Fprintf(&b, "- Interval p50 %.6gms, p95 %.6gms, max %.6gms. %s; %s; %s\n", c.P50Ms, c.P95Ms, c.MaxMs,
+		numericRef("metrics", "cadence.composite.p50_ms"), numericRef("metrics", "cadence.composite.p95_ms"), numericRef("metrics", "cadence.composite.max_ms"))
+	fmt.Fprintf(&b, "- Intervals over %.6gms, which skip at least one 60 Hz vsync: %d of %d (%.6g%%). %s; %s\n", profile.CadenceMissedVsyncMs, c.MissedVsyncCount, c.Count, c.MissedVsyncRatio*100,
+		numericRef("metrics", "cadence.composite.missed_vsync_count"), numericRef("metrics", "cadence.composite.missed_vsync_ratio"))
+	fmt.Fprintf(&b, "- Intervals over %.6gms: %d. %s\n", profile.CadenceSlowIntervalMs, c.Over50MsCount, numericRef("metrics", "cadence.composite.over_50ms_count"))
+	return b.String()
+}
+
 func (v *markdownRenderer) otherDetails() string {
 	r := v.r
 	var b strings.Builder
@@ -477,6 +502,10 @@ func (v *markdownRenderer) otherDetails() string {
 		fmt.Fprintf(&b, "| %s | %.6g | %.6g | %s / %s |\n", mdEscape(s.Name), s.Ms, s.Pct, codeCell(prefix+".ms"), codeCell(prefix+".pct"))
 	}
 	fmt.Fprintf(&b, "\nCollector overlay: %.6gms; %.6gms overlaps instrumented main-thread work. Collector intervals are not necessarily main-thread time and are excluded from the exclusive breakdown. %s; %s\n", r.GCMs, r.GCOverlapWithWorkMs, numericRef("metrics", "gc.total_ms"), numericRef("metrics", "gc.overlap_with_work_ms"))
+	if stalled := r.StalledComposites; stalled.Count > 0 {
+		fmt.Fprintf(&b, "\nStalled composite records: %d longer than %.6gms (%.6gms of reported spans, summed) are excluded from the breakdown above and from frame and finding attribution; WebKit can report a composite's end late, so these spans are not main-thread work. %s; %s\n", stalled.Count, stalled.ThresholdMs, stalled.TotalMs, numericRef("metrics", "layout.composite.stalled_count"), numericRef("metrics", "layout.composite.stalled_ms"))
+	}
+	b.WriteString(v.cadence())
 	b.WriteString("\n## Top modules\n\n| File / module | Self ms | Sample share % | Metric keys |\n|---|---:|---:|---|\n")
 	grouping := r.ModuleGrouping
 	if grouping == "" {

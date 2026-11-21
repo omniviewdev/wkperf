@@ -135,6 +135,8 @@ func CountOnly(eventType string) bool {
 	return false
 }
 
+// category classifies a record's main-thread work. GC, count-only and stalled
+// composite records own no work: their spans do not measure occupancy.
 func category(r model.Record) (int, bool) {
 	if IsGC(r) {
 		return 0, false
@@ -150,8 +152,8 @@ func category(r model.Record) (int, bool) {
 		return kindStyle, true
 	case "paint":
 		return kindPaint, true
-	case "composite":
-		return kindComposite, true
+	case EventComposite:
+		return kindComposite, !IsStalledComposite(r)
 	default:
 		return kindLayout, true
 	}

@@ -131,6 +131,26 @@ var meaningGroups = []meaningGroup{
 		"gcMs":                {"Union of observed GC collector intervals; not a measured blocking pause or exclusive main-thread work.", "ms"},
 		"gcOverlapWithWorkMs": {"GC collector interval intersection with instrumented main-thread work; overlap does not establish blocking.", "ms"},
 		"moreEvidenceCommand": {"Explicit analyze rerun with a larger top limit while preserving source, maps, window and analysis options.", ""},
+		"stalledComposites":   {"Composite records longer than the stall threshold: their late-reported spans are excluded from the breakdown, frame attribution and findings.", ""},
+		"compositeCadence":    {"Estimated rendering cadence from composite start spacing, present only when the capture has no rendering-frame records; it never fills frame standards or grades.", ""},
+	}},
+	{[]string{"metrics_StalledComposites"}, map[string]leafMeaning{
+		"thresholdMs": {"Fixed longest composite record span, in milliseconds, still counted as main-thread work; longer records are stalled.", "ms"},
+		"count":       {"Number of composite records longer than the threshold that overlap the selection; WebKit reported their end late.", "count"},
+		"totalMs":     {"Sum of stalled composite reported spans clipped to the selection; overlapping spans add separately, so it can exceed the capture length and is never main-thread work.", "ms"},
+	}},
+	{[]string{"metrics_CompositeCadence"}, map[string]leafMeaning{
+		"basis":            {"Evidence basis, always estimated: derived from composite start spacing, not measured rendering-frame latency.", ""},
+		"starts":           {"Composite record start times inside the selection; stalled composites count because only their reported end is unreliable.", "count"},
+		"runs":             {"Active runs holding at least two composite starts; starts less than 100 ms apart share one run.", "count"},
+		"count":            {"Intervals between consecutive composite starts within one active run; the gap between runs is not an interval.", "count"},
+		"p50Ms":            {"Median composite start interval within active runs; zero when there are no intervals.", "ms"},
+		"p95Ms":            {"95th percentile composite start interval within active runs; zero when there are no intervals.", "ms"},
+		"maxMs":            {"Longest composite start interval within active runs; zero when there are no intervals.", "ms"},
+		"missedVsyncCount": {"Intervals longer than 1.5 frame budgets (25.05 ms), which skip at least one 60 Hz vsync.", "count"},
+		"missedVsyncRatio": {"Share of intervals that skip at least one 60 Hz vsync; zero when there are no intervals.", "ratio"},
+		"over50MsCount":    {"Intervals longer than 50 ms between consecutive composite starts within active runs.", "count"},
+		"activeRunSec":     {"Sum of the intervals: seconds spanned by active runs, excluding the gaps between runs.", "s"},
 	}},
 	{[]string{"flame_Frame", "metrics_FunctionFrame", "compare_FuncDiff"}, map[string]leafMeaning{
 		"id":        {"Stable f_ selector derived from generated function identity; source maps and ownership rules do not change it.", ""},
@@ -395,6 +415,7 @@ var meaningGroups = []meaningGroup{
 		"dir":       {"Improvement direction: zero means lower is better, one means higher is better, two means neutral information.", "enum"},
 		"value":     {"Exact scalar magnitude expressed in the sibling unit; duration normalization applies only where the comparison declares it.", "unit"},
 		"extensive": {"True when this total or count scales with capture activity and may be normalized per active second in comparisons.", ""},
+		"basis":     {"Evidence basis when not an instrumented measurement: estimated marks a value inferred from other records; absent means measured.", ""},
 	}},
 	{[]string{"compare_Side"}, map[string]leafMeaning{
 		"label": {"Human-readable comparison side label, normally baseline or candidate.", ""},
@@ -617,6 +638,8 @@ func applyFieldVocabularies(definitions map[string]any) {
 		{[]string{"compare_Warning", "flame_DiffWarning"}, "level", []string{"warn", "info"}},
 		{[]string{"compare_Warning"}, "code", []string{"window-empty", "duration-mismatch", "frame-count-mismatch", "url-mismatch", "instrument-mismatch", "workload-mismatch", "sample-sparse", "run-variance"}},
 		{[]string{"flame_DiffWarning"}, "code", []string{"normalization-unavailable", "duration-unavailable", "duration-mismatch", "sample-sparse"}},
+		{[]string{"metrics_Metric"}, "basis", []string{"measured", "estimated"}},
+		{[]string{"metrics_CompositeCadence"}, "basis", []string{"estimated"}},
 		{[]string{"report_flame_SpeedscopeProfile"}, "type", []string{"sampled"}},
 		{[]string{"report_flame_SpeedscopeProfile"}, "unit", []string{"milliseconds"}},
 	} {

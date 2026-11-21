@@ -239,6 +239,13 @@ type Report struct {
 	LongTasksTotal      int                  `json:"longTasksTotal"`
 	Findings            []Finding            `json:"findings"` // sorted by severity then ImpactMs desc
 	Summary             *metrics.Summary     `json:"-"`
+
+	// StalledComposites reports composite records excluded from main-thread work.
+	StalledComposites metrics.StalledComposites `json:"stalledComposites"`
+
+	// CompositeCadence estimates cadence for captures without rendering-frame
+	// records; it is absent otherwise and never feeds frame standards or grades.
+	CompositeCadence *metrics.CompositeCadence `json:"compositeCadence,omitempty"`
 }
 
 // Options tune the analyzer.

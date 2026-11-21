@@ -88,6 +88,8 @@ func TestDocumentValidatesRealPipelineOutputs(t *testing.T) {
 		{"native", testgen.GetAnimations},
 		{"react", testgen.React},
 		{"periodic", testgen.Periodic},
+		{"stalled", testgen.StalledComposites},
+		{"cadence", testgen.CompositeCadenceRuns},
 	} {
 		t.Run(fixture.name, func(t *testing.T) {
 			rec := fixture.generate()

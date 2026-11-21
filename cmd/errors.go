@@ -69,6 +69,9 @@ func partialError(failures []schema.Error) error {
 func requestedJSON(root *cobra.Command, args []string) bool {
 	format := viper.GetString("format")
 	if selected, _, err := root.Find(args); err == nil {
+		if selected.Name() == "mcp" {
+			return false
+		}
 		if flag := selected.Flags().Lookup("format"); flag != nil && flag.DefValue == "json" {
 			format = "json"
 		}

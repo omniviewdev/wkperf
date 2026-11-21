@@ -25,11 +25,18 @@ const (
 	Neutral // informational; never flagged as regression/improvement
 )
 
+// Evidence bases of a scalar. An empty Metric.Basis means BasisMeasured; the
+// query registry, finding evidence and the composite cadence share the labels.
+const (
+	BasisMeasured  = "measured"
+	BasisEstimated = "estimated"
+)
+
 // Metric is one flat scalar. Key is stable and dotted, e.g.
 // "frames.p95_ms", "script.event-dispatched.total_ms", "cpu.main.mean_pct".
 type Metric struct {
 	Key   string    `json:"key"`
-	Group string    `json:"group"` // "overview","frames","script","layout","cpu","memory","network","gc"
+	Group string    `json:"group"` // "overview","frames","cadence","script","layout","cpu","memory","network","gc"
 	Label string    `json:"label"` // human label
 	Unit  Unit      `json:"unit"`
 	Dir   Direction `json:"dir"`
@@ -38,6 +45,9 @@ type Metric struct {
 	// and total_ms sums). Compare normalizes these per second when fixtures
 	// differ in duration. Percentiles, means, maxima, ratios are intensive.
 	Extensive bool `json:"extensive,omitempty"`
+	// Basis is empty for an instrumented measurement. BasisEstimated marks a
+	// value inferred from other records, such as the composite cadence.
+	Basis string `json:"basis,omitempty"`
 }
 
 // FuncStat aggregates weighted samples. Generated URL, line, column and name
@@ -142,6 +152,13 @@ type Summary struct {
 	PausedDurationSec  float64      `json:"pausedDurationSec"`
 	IdleWakeups        []IdleWakeup `json:"idleWakeups,omitempty"`
 
+	// StalledComposites are composite records excluded from main-thread work.
+	StalledComposites StalledComposites `json:"stalledComposites"`
+
+	// CompositeCadence estimates cadence when the capture has no rendering-frame
+	// records; nil otherwise, and nil when there is no composite start to use.
+	CompositeCadence *CompositeCadence `json:"compositeCadence,omitempty"`
+
 	// Series for HTML charts (not compared statistically).
 	FrameMs  []float64 `json:"frameMs,omitempty"`  // active rendering intervals, excluding idle gaps and input stalls
 	CPU      []Point   `json:"cpu,omitempty"`      // total cpu usage %
@@ -154,6 +171,37 @@ type IdleWakeup struct {
 	DurationMs      float64 `json:"durationMs"`
 	WorkMs          float64 `json:"workMs"`
 	DominantTrigger string  `json:"dominantTrigger"`
+}
+
+// StalledComposites counts composite records whose reported span exceeds the
+// stall threshold. WebKit can report a composite's end seconds late, so such a
+// span is not main-thread work: it is excluded from the time breakdown, from
+// frame and finding attribution and from the layout.composite.* statistics.
+type StalledComposites struct {
+	ThresholdMs float64 `json:"thresholdMs"` // longest composite span still counted as work
+	Count       int     `json:"count"`
+	// TotalMs sums the reported spans clipped to the selection. Stalled spans
+	// can overlap and each adds separately, so it may exceed the capture length.
+	TotalMs float64 `json:"totalMs"`
+}
+
+// CompositeCadence is a fallback estimate of rendering cadence for captures
+// without rendering-frame records. It describes the spacing of composite record
+// START times within active runs: starts less than 100 ms apart form one run,
+// and the gap between runs is not an interval. It is not frame latency and
+// never feeds the real frame statistics, jank ratio or the grade.
+type CompositeCadence struct {
+	Basis            string  `json:"basis"`            // always BasisEstimated
+	Starts           int     `json:"starts"`           // composite record starts in the selection
+	Runs             int     `json:"runs"`             // active runs holding at least two starts
+	Count            int     `json:"count"`            // intervals between consecutive starts of one run
+	P50Ms            float64 `json:"p50Ms"`            // zero when Count is zero
+	P95Ms            float64 `json:"p95Ms"`            // zero when Count is zero
+	MaxMs            float64 `json:"maxMs"`            // zero when Count is zero
+	MissedVsyncCount int     `json:"missedVsyncCount"` // intervals over 1.5 frame budgets (25.05 ms)
+	MissedVsyncRatio float64 `json:"missedVsyncRatio"` // MissedVsyncCount / Count; zero when Count is zero
+	Over50MsCount    int     `json:"over50MsCount"`    // intervals over 50 ms
+	ActiveRunSec     float64 `json:"activeRunSec"`     // sum of the intervals: time spanned by active runs
 }
 
 // Lookup returns the metric with key, if present.

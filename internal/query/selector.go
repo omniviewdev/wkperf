@@ -20,7 +20,7 @@ type AmbiguousError struct{ Candidates []Function }
 func (e *AmbiguousError) Error() string {
 	var labels []string
 	for _, f := range e.Candidates {
-		labels = append(labels, fmt.Sprintf("%s %s %s:%d:%d", f.ID, f.Name, f.URL, f.Line, f.Column))
+		labels = append(labels, fmt.Sprintf("%s %s %s:%d:%d", f.ID, functionName(f), f.URL, f.Line, f.Column))
 	}
 	return "ambiguous selector; choose a function or node ID: " + strings.Join(labels, "; ")
 }
@@ -196,16 +196,15 @@ func frameLess(a, b flame.Frame) bool {
 	return a.SourceID < b.SourceID
 }
 
-func function(f flame.Frame) Function {
-	name := f.Name
-	if name == "" {
-		name = "(anonymous)"
-	}
-	module := f.URL
+func functionModule(f flame.Frame) string {
 	if f.Original != nil && f.Original.URL != "" {
-		module = f.Original.URL
+		return f.Original.URL
 	}
-	return Function{ID: flame.FunctionID(f), Name: name, URL: f.URL, Line: f.Line, Column: f.Column, SourceID: f.SourceID, Module: module, Category: string(f.Category), Native: f.Native, Anonymous: f.Anonymous, Original: f.Original}
+	return f.URL
+}
+
+func function(f flame.Frame) Function {
+	return Function{ID: flame.FunctionID(f), Name: f.Name, URL: f.URL, Line: f.Line, Column: f.Column, SourceID: f.SourceID, Module: functionModule(f), Category: string(f.Category), Native: f.Native, Anonymous: f.Anonymous, Original: f.Original}
 }
 
 func stack(frames []flame.Frame) []Function {

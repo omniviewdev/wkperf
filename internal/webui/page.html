@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wkperf · Recording investigator</title>
+<style>
+:root{color-scheme:light dark;--page:#edeff5;--surface:#fff;--ink:#19223a;--muted:#505c76;--line:#cbd2e1;--accent:#3449ba;--button:#3449ba;--button-text:#fff;--error:#9b2039;--success:#16634b}
+@media(prefers-color-scheme:dark){:root{--page:#141925;--surface:#1e2535;--ink:#f0f2ff;--muted:#bec8e1;--line:#485471;--accent:#bdc7ff;--button:#bdc7ff;--button-text:#151f56;--error:#ffaabb;--success:#8de2bc}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--page);color:var(--ink);font:1rem/1.5 system-ui,sans-serif}
+main{max-width:68rem;margin:auto;padding:clamp(1rem,4vw,3.5rem)}
+header{margin-bottom:1.5rem}h1,h2,h3,h4,p{margin:0 0 .65rem}h1{font-size:clamp(1.9rem,6vw,3.2rem);line-height:1.12;letter-spacing:-.04em}h2{font-size:1.4rem}h3{font-size:1.15rem}h4{font-size:1rem}
+.kicker{font-size:.84rem;letter-spacing:.12em;text-transform:uppercase;font-weight:750;color:var(--accent)}
+.muted,small{color:var(--muted)}
+a{color:var(--accent);text-underline-offset:.2em}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:.9rem;padding:clamp(1rem,3vw,1.5rem);margin:0 0 1rem;overflow-wrap:anywhere}
+.fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,18rem),1fr));gap:1rem;margin:1rem 0}
+label{display:block;font-weight:700;margin-bottom:.25rem}
+input[type=file]{display:block;width:100%;padding:.5rem;border:1px solid var(--line);border-radius:.4rem;font:inherit}
+input::file-selector-button,button{font:inherit;font-weight:650;cursor:pointer;border:1px solid var(--line);border-radius:.35rem;padding:.4rem .65rem}
+button{background:var(--button);color:var(--button-text);padding:.53rem 1.1rem;border-color:transparent}
+:focus-visible{outline:3px solid var(--accent);outline-offset:3px}
+.error{border-color:var(--error);color:var(--error)}.regressed{color:var(--error)}.improved{color:var(--success)}
+.jump{display:flex;flex-wrap:wrap;gap:.5rem 1.2rem;margin:.6rem 0 1rem}
+.stats{display:flex;flex-wrap:wrap;gap:.65rem 1.3rem;margin:1rem 0}.stats div{min-width:8rem;border-left:2px solid var(--accent);padding-left:.65rem}.stats dt{font-size:.85rem;color:var(--muted)}.stats dd{margin:0;font-size:1.15rem;font-weight:650;font-variant-numeric:tabular-nums}
+details{border-top:1px solid var(--line);padding:.75rem 0}details:last-child{padding-bottom:0}summary{cursor:pointer;font-weight:700}details>summary+*{margin-top:.65rem}
+.scroll{overflow:auto}table{width:100%;border-collapse:collapse}caption{text-align:left;font-weight:700;margin:.45rem 0}th,td{text-align:left;vertical-align:top;border-bottom:1px solid var(--line);padding:.45rem .55rem}thead th{font-size:.84rem;color:var(--muted)}tbody th{font-weight:550}.num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+.stack{margin:.45rem 0 .8rem;padding-left:1.5rem}.stack li{padding:.12rem 0}.list{padding-left:1.4rem}.list li{margin:.4rem 0}.loc{display:block;font-size:.8rem;color:var(--muted)}
+</style>
+</head>
+<body>
+<main>
+<header>
+<p class="kicker">wkperf / Local workspace</p>
+<h1>Recording investigator</h1>
+<p class="muted">Inspect Web Inspector Timelines or compare a baseline with a candidate.</p>
+</header>
+<section class="panel" aria-labelledby="upload-heading">
+<h2 id="upload-heading">Choose recordings</h2>
+<form action="/#results" method="post" enctype="multipart/form-data">
+<input type="hidden" name="token" value="{{.Token}}">
+<p id="upload-hint" class="muted">Upload Web Inspector recording JSON files, up to {{.LimitMiB}} MiB each. Files stay on this computer.</p>
+<div class="fields">
+<div><label for="baseline">Baseline recording</label><input id="baseline" name="baseline" type="file" accept=".json,application/json" aria-describedby="upload-hint" required></div>
+<div><label for="candidate">Candidate recording <small>(optional)</small></label><input id="candidate" name="candidate" type="file" accept=".json,application/json" aria-describedby="upload-hint"></div>
+</div>
+<button type="submit">Analyze recordings</button>
+</form>
+</section>
+{{if .Error}}<section class="panel error" id="results" aria-labelledby="error-heading"><h2 id="error-heading">Upload failed</h2><p role="alert">{{.Error}}</p><a href="#baseline">Back to file selection</a></section>{{end}}
+{{if .Recordings}}
+<section id="results" aria-labelledby="results-heading">
+<h2 id="results-heading">Results</h2>
+<nav class="jump" aria-label="Result sections">{{if .Comparison}}<a href="#comparison">Comparison</a>{{end}}{{range .Recordings}}<a href="#{{.Role}}">{{.Role}} recording</a>{{end}}</nav>
+{{with .Comparison}}
+<article class="panel" id="comparison" aria-labelledby="comparison-heading">
+<h3 id="comparison-heading">Baseline vs candidate</h3>
+<dl class="stats">
+<div><dt>Regressed</dt><dd class="regressed">{{.Counts.Regressed}}</dd></div><div><dt>Improved</dt><dd class="improved">{{.Counts.Improved}}</dd></div><div><dt>Unchanged</dt><dd>{{.Counts.Unchanged}}</dd></div>
+</dl>
+<p class="muted">One recording per side. Repeat matching runs to confirm changes.</p>
+{{if .Comparability.Normalized}}<p>Duration differs: totals and counts are normalized per second.</p>{{end}}
+{{with .Comparability.Warnings}}<ul class="list">{{range .}}<li>{{.Message}}</li>{{end}}</ul>{{end}}
+<details open><summary>Metric changes</summary>
+<div class="scroll" role="region" aria-label="Metric comparison table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Metric</th><th scope="col" class="num">Baseline</th><th scope="col" class="num">Candidate</th><th scope="col" class="num">Change</th><th scope="col">Verdict</th></tr></thead>
+<tbody>{{range .Metrics}}<tr>
+<th scope="row">{{.Metric.Label}} <small>{{if not (and $.Comparison.Comparability.Normalized .Metric.Extensive)}}({{.Metric.Unit}}){{end}}{{if eq .Metric.Basis "estimated"}} · estimated{{end}}</small></th>
+<td class="num">{{if .BaseRuns}}{{number .Base}}{{else}}—{{end}}</td><td class="num">{{if .CandRuns}}{{number .Cand}}{{else}}—{{end}}</td>
+<td class="num">{{if and .BaseRuns .CandRuns .Base}}{{printf "%+.1f%%" (percent .Pct)}}{{else}}—{{end}}</td><td class="{{.Verdict}}">{{.Verdict}}</td>
+</tr>{{end}}</tbody></table>
+</div></details>
+<details><summary>Changes in sampled function self time</summary>
+{{if $.CompareSamples}}
+<p class="muted">Values are in {{if .Comparability.Normalized}}milliseconds per second{{else}}milliseconds{{end}}.</p>
+{{if or .FuncRegressed .FuncImproved}}{{template "function-changes" .FuncRegressed}}{{template "function-changes" .FuncImproved}}{{else}}<p>No notable sampled function changes.</p>{{end}}
+{{else}}<p>Function comparison unavailable: both recordings need weighted call stacks.</p>{{end}}
+</details>
+</article>
+{{end}}
+{{range .Recordings}}
+<article class="panel" id="{{.Role}}" aria-labelledby="{{.Role}}-heading">
+<p class="kicker">{{.Role}} recording</p>
+<h3 id="{{.Role}}-heading">{{.Filename}}</h3>
+{{if .Name}}<p class="muted">{{.Name}}</p>{{end}}
+<dl class="stats"><div><dt>Active duration</dt><dd>{{number .DurationSec}} s</dd></div><div><dt>Slow frames</dt><dd>{{if .Summary.FrameMs}}{{.SlowFramesTotal}}{{else}}—{{end}}</dd></div><div><dt>Long tasks</dt><dd>{{if .HasTaskEvidence}}{{.LongTasksTotal}}{{else}}Unavailable{{end}}</dd></div><div><dt>Stack samples</dt><dd>{{.SampleCoverage.SampleCount}}</dd></div></dl>
+<details open><summary>Hot paths and functions</summary>
+{{if or .Hotspots .InclusiveHotspots .CommonStacks}}
+<p class="muted">Sample weights estimate execution time. Self time counts the executing function; inclusive time also counts its callees.</p>
+{{template "functions" .Hotspots}}
+{{with .InclusiveHotspots}}<details><summary>Rank by inclusive time</summary>{{template "functions" .}}</details>{{end}}
+{{with .CommonStacks}}<details open><summary>Common sampled stacks</summary>
+<ol class="list">{{range .}}<li><details><summary>{{number .WeightMs}} ms · {{.Samples}} samples · {{name (leaf .Frames)}}</summary>
+<ol class="stack" aria-label="Stack frames, root to leaf">{{range .Frames}}<li>{{name .Name}}<span class="loc">{{.Location}}</span></li>{{end}}</ol></details></li>{{end}}</ol>
+</details>{{end}}
+{{else}}<p>No weighted call stacks found. Export with script profiling enabled to see hot paths.</p>{{end}}
+</details>
+<details {{if not $.Comparison}}open{{end}}><summary>Recording metrics</summary>
+<div class="scroll" role="region" aria-label="{{.Role}} metrics table" tabindex="0"><table>
+<thead><tr><th scope="col">Metric</th><th scope="col">Group</th><th scope="col" class="num">Value</th></tr></thead>
+<tbody>{{range .Summary.Metrics}}<tr><th scope="row">{{.Label}}{{if eq .Basis "estimated"}} <small>(estimated)</small>{{end}}</th><td>{{.Group}}</td><td class="num">{{number .Value}} {{.Unit}}</td></tr>{{else}}<tr><td colspan="3">No measurable timeline activity found.</td></tr>{{end}}</tbody>
+</table></div></details>
+<details><summary>Findings ({{len .Findings}})</summary>
+{{if .Findings}}<ul class="list">{{range .Findings}}<li><strong>{{.Title}}</strong> <small>({{.Severity}})</small>{{with .Suggestion}}<div>{{.}}</div>{{end}}</li>{{end}}</ul>{{else}}<p>No findings for this recording.</p>{{end}}
+</details>
+</article>
+{{end}}
+</section>
+{{end}}
+</main>
+</body>
+</html>
+{{define "functions"}}{{if .}}
+<div class="scroll" role="region" aria-label="Sampled function timings" tabindex="0"><table>
+<thead><tr><th scope="col">Function</th><th scope="col" class="num">Self (ms)</th><th scope="col" class="num">Inclusive (ms)</th><th scope="col" class="num">Self samples</th></tr></thead>
+<tbody>{{range .}}<tr><th scope="row">{{name .Name}}<span class="loc">{{.Location}}</span></th><td class="num">{{number .SelfMs}}</td><td class="num">{{number .TotalMs}}</td><td class="num">{{.SelfSamples}}</td></tr>{{end}}</tbody>
+</table></div>{{end}}{{end}}
+{{define "function-changes"}}{{if .}}
+<div class="scroll" role="region" aria-label="Sampled function changes" tabindex="0"><table>
+<thead><tr><th scope="col">Function</th><th scope="col" class="num">Baseline</th><th scope="col" class="num">Candidate</th><th scope="col" class="num">Change</th><th scope="col">Verdict</th></tr></thead>
+<tbody>{{range .}}<tr><th scope="row">{{name .Name}}<span class="loc">{{.Location}}</span></th><td class="num">{{number .BaseSelf}}</td><td class="num">{{number .CandSelf}}</td><td class="num">{{printf "%+.4g" .Delta}}</td><td class="{{.Verdict}}">{{.Verdict}}</td></tr>{{end}}</tbody>
+</table></div>{{end}}{{end}}

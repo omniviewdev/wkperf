@@ -10,8 +10,8 @@ import (
 )
 
 func accepts(f flame.Frame, req Request) bool {
-	ref := function(f)
-	return (req.Module == "" || strings.Contains(ref.Module, req.Module)) && (req.Category == "" || req.Category == ref.Category)
+	return (req.Category == "" || req.Category == string(f.Category)) &&
+		(req.Module == "" || strings.Contains(functionModule(f), req.Module))
 }
 
 func functionRows(tree *flame.Tree, req Request) ([]Row, error) {
@@ -23,7 +23,11 @@ func functionRows(tree *flame.Tree, req Request) ([]Row, error) {
 			return nil, err
 		}
 		if sel.exactNode {
-			return []Row{nodeRow(sel.nodes[0], tree.Root.TotalMs)}, nil
+			node := sel.nodes[0]
+			if !accepts(node.Frame, req) {
+				return nil, nil
+			}
+			return []Row{nodeRow(node, tree.Root.TotalMs)}, nil
 		}
 		selected = map[string]bool{}
 		for _, f := range sel.functions {
@@ -178,13 +182,26 @@ func subtreeRows(tree *flame.Tree, sel selection, req Request) []Row {
 		return roots[i].ID < roots[j].ID
 	})
 	rows := []Row{}
-	seen := map[string]bool{}
+	const (
+		selectedRoot uint8 = iota + 1
+		visited
+	)
+	state := make(map[*flame.Node]uint8, len(roots))
+	for _, root := range roots {
+		state[root] = selectedRoot
+	}
 	var visit func(*flame.Node, int)
 	visit = func(n *flame.Node, depth int) {
-		if seen[n.ID] || depth > req.Depth || n.TotalMs < req.MinMS {
+		switch state[n] {
+		case visited:
+			return
+		case selectedRoot:
+			depth = 0
+		}
+		if depth > req.Depth || n.TotalMs < req.MinMS {
 			return
 		}
-		seen[n.ID] = true
+		state[n] = visited
 		row := nodeRow(n, tree.Root.TotalMs)
 		row.Depth = depth
 		row.Stack = stack(nodeFrames(n))
