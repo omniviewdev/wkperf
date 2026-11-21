@@ -42,8 +42,10 @@ named <scene>-<n>.json or <scene>_<n>.json are grouped into one scene.
 Every recording is analyzed and rated against the scorecard standards, then
 aggregated: per-scene scores, an overall grade, cross-scene priorities
 ("fix first"), merged hot functions and a time breakdown. A grade requires
-sufficient observations in every contributing run and scene. --min-score exits
-4 when the overall grade is unavailable or the supported score is below N.`,
+sufficient observations in every contributing run and scene. A window that
+excludes the recording start withholds first and largest contentful paint.
+--min-score exits 4 when the overall grade is unavailable or the supported
+score is below N.`,
 		Example: `  wkperf audit scenes/
   wkperf audit scenes/ --format html --out audit.html --open
   wkperf audit scenes/ --min-score 70          # exit 4 below 70 or with no supported grade

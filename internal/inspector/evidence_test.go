@@ -110,6 +110,41 @@ func TestRecordingValidatesProfilerClockOrder(t *testing.T) {
 	}
 }
 
+func TestScriptProfilerSampleBuffer(t *testing.T) {
+	for _, tc := range []struct {
+		name, samples string
+		valid         bool
+	}{
+		{"empty array", `{"stackTraces":[]}`, true},
+		{"untimed empty stack", `{"stackTraces":[{"timestamp":0,"stackFrames":[]}]}`, true},
+		{"null buffer", `null`, false},
+		{"array buffer", `[]`, false},
+		{"missing stack array", `{}`, false},
+		{"null stack array", `{"stackTraces":null}`, false},
+		{"float stack array", `{"stackTraces":0.1}`, false},
+		{"null trace", `{"stackTraces":[null]}`, false},
+		{"missing frames", `{"stackTraces":[{"timestamp":0}]}`, false},
+		{"bad timestamp", `{"stackTraces":[{"timestamp":"late","stackFrames":[]}]}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var e evidence
+			err := e.event(message{
+				Method: "ScriptProfiler.trackingComplete",
+				Params: json.RawMessage(`{"timestamp":3,"samples":` + tc.samples + `}`),
+			})
+			if (err == nil) != tc.valid {
+				t.Fatalf("valid=%t, got %v", tc.valid, err)
+			}
+			if tc.valid && (e.scriptEnd == nil || *e.scriptEnd != 3 || e.stacks == nil) {
+				t.Fatalf("incomplete script evidence: %+v", e)
+			}
+			if !tc.valid && e.scriptEnd != nil {
+				t.Fatal("malformed buffer completed script tracking")
+			}
+		})
+	}
+}
+
 func TestResourceEvidenceUsesHalfOpenBounds(t *testing.T) {
 	e := testEvidence(1, 1, 2, 2)
 	e.resources = [2]resourceTracker{

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -19,19 +20,20 @@ import (
 )
 
 func TestCapture(t *testing.T) {
-	for _, routed := range []bool{false, true} {
-		t.Run(fmt.Sprintf("routed=%t", routed), func(t *testing.T) {
-			endpoint := fixtureEndpoint(t, routed, "")
+	for _, tc := range []struct {
+		name                string
+		routed, omitSamples bool
+	}{
+		{name: "direct"},
+		{name: "routed", routed: true},
+		{name: "routed without sampling", routed: true, omitSamples: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			endpoint := fixtureEndpoint(t, tc.routed, "", tc.omitSamples)
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			var out bytes.Buffer
 			if err := Capture(ctx, Options{Endpoint: endpoint, Duration: time.Millisecond}, &out); err != nil {
-				t.Fatal(err)
-			}
-			var evidence struct {
-				Capabilities map[string]string `json:"captureCapabilities"`
-			}
-			if err := json.Unmarshal(out.Bytes(), &evidence); err != nil {
 				t.Fatal(err)
 			}
 			r, err := model.Parse(&out)
@@ -39,11 +41,11 @@ func TestCapture(t *testing.T) {
 				t.Fatal(err)
 			}
 			wantRecords, wantStatus := 3, "unsupported"
-			if routed {
+			if tc.routed {
 				wantRecords, wantStatus = 5, "captured"
 			}
-			if evidence.Capabilities["CPUProfiler"] != wantStatus || evidence.Capabilities["Memory"] != wantStatus {
-				t.Fatalf("unexpected resource capabilities: %+v", evidence.Capabilities)
+			if r.CaptureCapabilities["CPUProfiler"] != wantStatus || r.CaptureCapabilities["Memory"] != wantStatus {
+				t.Fatalf("unexpected resource capabilities: %+v", r.CaptureCapabilities)
 			}
 			if r.StartTime != 2 || r.EndTime != 3 || len(r.Records) != wantRecords || r.Records[0].Type != model.TypeRenderingFrame {
 				t.Fatalf("unexpected recording: %+v", r)
@@ -51,11 +53,17 @@ func TestCapture(t *testing.T) {
 			if r.Records[1].EventType != "event-dispatched" || string(r.Records[1].Details) != `"click"` || r.Records[2].EventType != "paint" {
 				t.Fatalf("unexpected records: %+v", r.Records)
 			}
-			if routed && (r.Records[3].Usage != 17 || r.Records[4].Categories[0].Size != 1024 || len(r.MemoryPressureEvents) != 1) {
+			if tc.routed && (r.Records[3].Usage != 17 || r.Records[4].Categories[0].Size != 1024 || len(r.MemoryPressureEvents) != 1) {
 				t.Fatalf("unexpected resource evidence: %+v", r)
 			}
 			if len(r.Markers) != 1 || r.Markers[0].Type != "timestamp" || r.Markers[0].Time != 2.625 || string(r.Markers[0].Details) != `"wkperf.clock.fixture"` {
 				t.Fatalf("unexpected clock markers: %+v", r.Markers)
+			}
+			if tc.omitSamples {
+				if r.Samples == nil || len(r.Samples) != 0 {
+					t.Fatalf("unexpected samples: %+v", r.Samples)
+				}
+				return
 			}
 			samples := r.Samples[0]
 			if samples.StackTraces[1].StackFrames[0].Name != "leaf" || samples.Durations[0] != 0.001 || samples.Durations[1] != 0.25 {
@@ -66,7 +74,7 @@ func TestCapture(t *testing.T) {
 }
 
 func TestCaptureWorkload(t *testing.T) {
-	endpoint := fixtureEndpoint(t, false, "")
+	endpoint := fixtureEndpoint(t, false, "", false)
 	binary, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -99,12 +107,16 @@ func TestFixtureWorkload(t *testing.T) {
 }
 
 func TestCaptureCancellation(t *testing.T) {
-	endpoint := fixtureEndpoint(t, false, "")
+	endpoint := fixtureEndpoint(t, false, "", false) + "/private-target?token=private-query"
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	var out bytes.Buffer
-	if err := Capture(ctx, Options{Endpoint: endpoint, Duration: time.Hour}, &out); err == nil || out.Len() != 0 {
+	err := Capture(ctx, Options{Endpoint: endpoint, Duration: time.Hour}, &out)
+	if !errors.Is(err, context.Canceled) || out.Len() != 0 {
 		t.Fatalf("canceled capture: err=%v output=%q", err, out.Bytes())
+	}
+	if strings.Contains(err.Error(), "private-target") || strings.Contains(err.Error(), "private-query") {
+		t.Fatalf("canceled dial exposed the endpoint: %v", err)
 	}
 }
 
@@ -121,9 +133,9 @@ func TestCaptureRejectsRedirect(t *testing.T) {
 	defer source.Close()
 
 	var out bytes.Buffer
-	endpoint := "ws" + strings.TrimPrefix(source.URL, "http")
+	endpoint := "ws" + strings.TrimPrefix(source.URL, "http") + "/private-target?token=private-query"
 	err := Capture(context.Background(), Options{Endpoint: endpoint, Duration: time.Millisecond}, &out)
-	if err == nil || out.Len() != 0 {
+	if err == nil || !strings.Contains(err.Error(), "HTTP 302") || out.Len() != 0 {
 		t.Fatalf("redirected capture: err=%v output=%q", err, out.Bytes())
 	}
 	select {
@@ -133,10 +145,59 @@ func TestCaptureRejectsRedirect(t *testing.T) {
 	}
 }
 
+func TestCaptureRedactsHandshakeErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name, reason string
+		status       int
+	}{
+		{"unauthorized", "HTTP 401", http.StatusUnauthorized},
+		{"invalid upgrade", "Upgrade header", http.StatusSwitchingProtocols},
+		{"invalid redirect", "Location header", http.StatusFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch tc.status {
+				case http.StatusSwitchingProtocols:
+					conn, rw, err := http.NewResponseController(w).Hijack()
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					defer conn.Close()
+					fmt.Fprintf(rw, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: ws://%s%s\r\n\r\n", r.Host, r.URL.RequestURI())
+					if err := rw.Flush(); err != nil {
+						t.Error(err)
+					}
+				case http.StatusFound:
+					w.Header().Set("Location", "ws://user:private-redirect@example.invalid/%bad%")
+					w.WriteHeader(tc.status)
+				default:
+					w.WriteHeader(tc.status)
+					fmt.Fprint(w, r.URL.RequestURI())
+				}
+			}))
+			defer srv.Close()
+			endpoint := "ws" + strings.TrimPrefix(srv.URL, "http") + "/private-target?token=private-query"
+			var out bytes.Buffer
+			err := Capture(context.Background(), Options{Endpoint: endpoint}, &out)
+			if err == nil || !strings.Contains(err.Error(), tc.reason) || out.Len() != 0 {
+				t.Fatalf("handshake error: err=%v output=%q", err, out.Bytes())
+			}
+			for cause := err; cause != nil; cause = errors.Unwrap(cause) {
+				for _, secret := range []string{"private-target", "private-query", "private-redirect", srv.URL} {
+					if strings.Contains(cause.Error(), secret) {
+						t.Fatalf("handshake error exposed the endpoint or redirect: %v", cause)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestCaptureScript(t *testing.T) {
 	for _, mode := range []string{"resolve", "reject", "Timeline.recordingStopped", "ScriptProfiler.trackingComplete", "CPUProfiler.trackingComplete", "Memory.trackingComplete"} {
 		t.Run(mode, func(t *testing.T) {
-			endpoint := fixtureEndpoint(t, true, mode)
+			endpoint := fixtureEndpoint(t, true, mode, false)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			path := filepath.Join(t.TempDir(), "workload.js")
@@ -170,7 +231,7 @@ func TestCaptureScript(t *testing.T) {
 	}
 }
 
-func fixtureEndpoint(t *testing.T, routed bool, scriptMode string) string {
+func fixtureEndpoint(t *testing.T, routed bool, scriptMode string, omitSamples bool) string {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ws, err := websocket.Accept(w, r, nil)
@@ -312,8 +373,12 @@ func fixtureEndpoint(t *testing.T, routed bool, scriptMode string) string {
 					return
 				}
 			case "ScriptProfiler.stopTracking":
+				completion := `{"method":"ScriptProfiler.trackingComplete","params":{"timestamp":3}}`
+				if !omitSamples {
+					completion = `{"method":"ScriptProfiler.trackingComplete","params":{"timestamp":3,"samples":{"stackTraces":[{"timestamp":0,"stackFrames":[]},{"timestamp":2.375,"stackFrames":[{"name":"leaf"},{"name":"caller"}]}]}}}`
+				}
 				if !send(`{"method":"ScriptProfiler.trackingUpdate","params":{"event":{"type":"Other","startTime":2.25,"endTime":2.5}}}`) ||
-					!send(`{"method":"ScriptProfiler.trackingComplete","params":{"timestamp":3,"samples":{"stackTraces":[{"timestamp":0,"stackFrames":[]},{"timestamp":2.375,"stackFrames":[{"name":"leaf"},{"name":"caller"}]}]}}}`) {
+					!send(completion) {
 					return
 				}
 			}

@@ -23,6 +23,12 @@ func TestSchemaDocumentsCompositeCadence(t *testing.T) {
 		if property["x-unit"] != unit {
 			t.Errorf("%s unit = %v, want %s", field, property["x-unit"], unit)
 		}
+		if strings.HasPrefix(field, "missedVsync") {
+			description, _ := property["description"].(string)
+			if !strings.Contains(description, "25.05 ms") || strings.Contains(description, "skip") {
+				t.Errorf("%s must describe the spacing threshold: %q", field, description)
+			}
+		}
 	}
 	basis := properties["basis"].(map[string]any)
 	if values, _ := basis["enum"].([]string); len(values) != 1 || values[0] != "estimated" {

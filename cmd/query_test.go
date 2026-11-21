@@ -58,6 +58,23 @@ func TestQueryCommandFlagsAnywhereAndWindow(t *testing.T) {
 	}
 }
 
+func TestQueryWindowRequiresDistinctBoundsAndOneOperation(t *testing.T) {
+	file := queryFile(t)
+	for _, args := range [][]string{
+		{file, "window", "0", "0"},
+		{file, "window", "0", "0.5", "window"},
+		{file, "window", "0", "0.5", "find", ""},
+	} {
+		command := newQueryCmd()
+		command.SetArgs(args)
+		command.SetOut(&bytes.Buffer{})
+		command.SetErr(&bytes.Buffer{})
+		if err := command.Execute(); err == nil {
+			t.Fatalf("accepted invalid window %q", args)
+		}
+	}
+}
+
 func TestQueryCommandSelectorsFormatsAndValidation(t *testing.T) {
 	file := queryFile(t)
 	for _, args := range [][]string{{file, "callers", "leaf", "--format", "md"}, {file, "stacks", "--format", "tsv"}, {file, "depth"}} {

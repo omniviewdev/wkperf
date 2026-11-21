@@ -140,25 +140,49 @@ type nativeReadEvidence struct {
 	lastSample int
 	style      []flame.Interval
 	layout     []flame.Interval
+	forced     []flame.Interval
 	styleSeen  map[flame.Interval]bool
 	layoutSeen map[flame.Interval]bool
+	forcedSeen map[flame.Interval]bool
 }
 
-func (b builder) flushEvents() (style, layout []rootEvent) {
+func addCoveringIntervals(dst, covering []flame.Interval, seen *map[flame.Interval]bool) []flame.Interval {
+	if len(covering) == 0 {
+		return dst
+	}
+	if *seen == nil {
+		*seen = make(map[flame.Interval]bool)
+	}
+	for _, w := range covering {
+		if !(*seen)[w] {
+			(*seen)[w] = true
+			dst = append(dst, w)
+		}
+	}
+	return dst
+}
+
+func (b builder) flushEvents() (style, layout, forced []rootEvent) {
 	for _, r := range b.rec.Records {
-		if r.Type != model.TypeLayout || r.EventType != "recalculate-styles" && r.EventType != "layout" {
+		if r.Type != model.TypeLayout {
+			continue
+		}
+		var events *[]rootEvent
+		switch r.EventType {
+		case "recalculate-styles":
+			events = &style
+		case "layout":
+			events = &layout
+		case "forced-layout":
+			events = &forced
+		default:
 			continue
 		}
 		for _, part := range b.active(r.StartTime-b.rec.StartTime, r.EndTime-b.rec.StartTime) {
-			e := rootEvent{from: part.Start, to: part.End}
-			if r.EventType == "layout" {
-				layout = append(layout, e)
-			} else {
-				style = append(style, e)
-			}
+			*events = append(*events, rootEvent{from: part.Start, to: part.End})
 		}
 	}
-	for _, events := range [][]rootEvent{style, layout} {
+	for _, events := range [][]rootEvent{style, layout, forced} {
 		sort.Slice(events, func(i, j int) bool {
 			if events[i].from != events[j].from {
 				return events[i].from < events[j].from
@@ -172,7 +196,7 @@ func (b builder) flushEvents() (style, layout []rootEvent) {
 			}
 		}
 	}
-	return style, layout
+	return style, layout, forced
 }
 
 func coveringFlushes(at float64, events []rootEvent) []flame.Interval {
@@ -200,10 +224,10 @@ func (b builder) nativeReadFinding() *Finding {
 	var ms float64
 	// Untimed samples cannot corroborate a timeline flush and remain visible
 	// only in recording-wide owner/function/stack aggregates.
-	styleEvents, layoutEvents := b.flushEvents()
+	styleEvents, layoutEvents, forcedEvents := b.flushEvents()
 	for index, s := range b.tree.Samples {
 		found := false
-		var style, layout []flame.Interval
+		var style, layout, forced []flame.Interval
 		for _, frame := range s.Frames {
 			api, flush := nativeFlush(frame)
 			if api == "" {
@@ -211,7 +235,7 @@ func (b builder) nativeReadFinding() *Finding {
 			}
 			e := apis[api]
 			if e == nil {
-				e = &nativeReadEvidence{read: NativeRead{API: api, Flush: flush}, styleSeen: map[flame.Interval]bool{}, layoutSeen: map[flame.Interval]bool{}}
+				e = &nativeReadEvidence{read: NativeRead{API: api, Flush: flush}}
 				apis[api] = e
 			}
 			if e.lastSample == index+1 {
@@ -219,28 +243,21 @@ func (b builder) nativeReadFinding() *Finding {
 			}
 			e.lastSample = index + 1
 			if !found {
-				style, layout = coveringFlushes(s.Timestamp, styleEvents), coveringFlushes(s.Timestamp, layoutEvents)
+				style = coveringFlushes(s.Timestamp, styleEvents)
+				layout = coveringFlushes(s.Timestamp, layoutEvents)
+				forced = coveringFlushes(s.Timestamp, forcedEvents)
 				found = true
 			}
 			e.read.Samples++
 			e.read.SelfMs += s.WeightMs
 			if len(style) > 0 {
 				e.read.StyleSamples++
-				for _, w := range style {
-					if !e.styleSeen[w] {
-						e.styleSeen[w] = true
-						e.style = append(e.style, w)
-					}
-				}
+				e.style = addCoveringIntervals(e.style, style, &e.styleSeen)
 			}
-			if len(layout) > 0 {
+			if len(layout) > 0 || len(forced) > 0 {
 				e.read.LayoutSamples++
-				for _, w := range layout {
-					if !e.layoutSeen[w] {
-						e.layoutSeen[w] = true
-						e.layout = append(e.layout, w)
-					}
-				}
+				e.layout = addCoveringIntervals(e.layout, layout, &e.layoutSeen)
+				e.forced = addCoveringIntervals(e.forced, forced, &e.forcedSeen)
 			}
 		}
 		if found {
@@ -256,23 +273,25 @@ func (b builder) nativeReadFinding() *Finding {
 		b.stat("native_reads.samples", "Timed samples containing native flush-capable APIs", float64(len(samples)), "count", sampledBasis),
 	}, Evidence: b.stacks(samples, "native_reads"), SampleIDs: b.sampleIDs(samples), Command: b.query("rootcause", b.from, b.to)}
 	var explanations []string
-	var allStyle, allLayout []flame.Interval
+	var allStyle, allLayout, allForced []flame.Interval
 	for _, e := range apis {
-		e.style, e.layout = union(e.style), union(e.layout)
+		e.style = union(e.style)
+		allStyle = append(allStyle, e.style...)
+		allLayout = append(allLayout, e.layout...)
+		allForced = append(allForced, e.forced...)
 		e.read.SelfMs = number(e.read.SelfMs)
-		e.read.StyleMs, e.read.LayoutMs = intervalMs(e.style), intervalMs(e.layout)
+		e.read.StyleMs, e.read.LayoutMs = intervalMs(e.style), intervalMs(union(append(e.layout, e.forced...)))
 		key := "native_reads." + e.read.API
 		e.read.Stats = []Stat{
 			b.stat(key+".self_ms", "Sampled self time on stacks containing "+e.read.API, e.read.SelfMs, "ms", sampledBasis),
 			b.stat(key+".samples", "Timed samples containing "+e.read.API, float64(e.read.Samples), "count", sampledBasis),
 			b.stat(key+".style_samples", "Samples inside recalculate-styles records", float64(e.read.StyleSamples), "count", timelineBasis),
-			b.stat(key+".layout_samples", "Samples inside layout records", float64(e.read.LayoutSamples), "count", timelineBasis),
+			b.stat(key+".layout_samples", "Samples inside layout or forced-layout records", float64(e.read.LayoutSamples), "count", timelineBasis),
 			b.stat(key+".style_ms", "Union of covering recalculate-styles record intervals", e.read.StyleMs, "ms", timelineBasis),
-			b.stat(key+".layout_ms", "Union of covering layout record intervals", e.read.LayoutMs, "ms", timelineBasis),
+			b.stat(key+".layout_ms", "Union of covering layout and forced-layout record intervals", e.read.LayoutMs, "ms", timelineBasis),
 		}
 		f.NativeReads = append(f.NativeReads, e.read)
-		allStyle, allLayout = append(allStyle, e.style...), append(allLayout, e.layout...)
-		explanations = append(explanations, fmt.Sprintf("%s (flush: %s): %d/%d samples inside recalculate-styles records (%.6g ms); %d/%d inside layout records (%.6g ms).", e.read.API, e.read.Flush, e.read.StyleSamples, e.read.Samples, e.read.StyleMs, e.read.LayoutSamples, e.read.Samples, e.read.LayoutMs))
+		explanations = append(explanations, fmt.Sprintf("%s (flush: %s): %d/%d samples inside recalculate-styles records (%.6g ms); %d/%d inside layout or forced-layout records (%.6g ms).", e.read.API, e.read.Flush, e.read.StyleSamples, e.read.Samples, e.read.StyleMs, e.read.LayoutSamples, e.read.Samples, e.read.LayoutMs))
 	}
 	sort.Slice(f.NativeReads, func(i, j int) bool { return f.NativeReads[i].API < f.NativeReads[j].API })
 	sort.Strings(explanations)
@@ -294,6 +313,7 @@ func (b builder) nativeReadFinding() *Finding {
 	}{
 		{union(allStyle), "recalculate-styles", "style-recalc-heavy"},
 		{union(allLayout), "layout", "layout-heavy"},
+		{union(allForced), "forced-layout", "forced-layout"},
 	} {
 		if len(item.intervals) > 0 {
 			f.RelatedFindings = append(f.RelatedFindings, item.related)

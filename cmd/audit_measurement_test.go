@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/omniviewdev/wkperf/internal/model"
+	"github.com/omniviewdev/wkperf/internal/scorecard"
 	"github.com/omniviewdev/wkperf/internal/testgen"
 )
 
@@ -59,9 +61,10 @@ func TestAuditMinimumCannotBypassUnavailableGradeWithPrompt(t *testing.T) {
 }
 
 type auditMeasurementCard struct {
-	Grade    string  `json:"grade"`
-	Partial  bool    `json:"partial"`
-	Coverage float64 `json:"coverage"`
+	Grade    string             `json:"grade"`
+	Partial  bool               `json:"partial"`
+	Coverage float64            `json:"coverage"`
+	Results  []scorecard.Result `json:"results"`
 }
 
 type auditMeasurementOutput struct {
@@ -154,5 +157,56 @@ func TestAuditAllFailedRunsRemainUnobserved(t *testing.T) {
 	}
 	if s := doc.Report.Scenes[0]; s.Runs != 0 || s.Card.Grade != "n/a" || s.Card.Coverage != 0 || !s.Card.Partial {
 		t.Fatalf("failed scene must not impute parsed runs or observed standards: %+v", s)
+	}
+}
+
+func TestAuditWindowDoesNotResetPaintMilestones(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "load.json")
+	writeFlameJSON(t, file, &model.Recording{StartTime: 100, EndTime: 110, Records: []model.Record{
+		{Type: model.TypeLayout, EventType: "first-contentful-paint", StartTime: 104, EndTime: 104},
+		{Type: model.TypeLayout, EventType: "largest-contentful-paint", StartTime: 105, EndTime: 105},
+	}})
+	for _, tc := range []struct {
+		name, from string
+		want       scorecard.Rating
+	}{
+		{"original start", "0", scorecard.Poor},
+		{"clipped start", "3", scorecard.Unavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := run(t, "audit", file, "--format", "json", "--from", tc.from, "--to", "6")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var doc auditMeasurementOutput
+			if err := json.Unmarshal([]byte(out), &doc); err != nil {
+				t.Fatal(err)
+			}
+			if len(doc.Report.Scenes) != 1 {
+				t.Fatalf("expected one scene: %s", out)
+			}
+			for _, card := range []auditMeasurementCard{doc.Report.Scenes[0].Card, doc.Report.Overall} {
+				want := map[string]float64{"fcp": 4000, "lcp": 5000}
+				for _, got := range card.Results {
+					v, ok := want[got.ID]
+					if !ok {
+						continue
+					}
+					delete(want, got.ID)
+					if got.Rating != tc.want {
+						t.Errorf("%s rating = %s, want %s", got.ID, got.Rating, tc.want)
+					}
+					if tc.want == scorecard.Unavailable && !strings.Contains(got.Detail, "original recording start") {
+						t.Errorf("%s must explain unavailable origin: %+v", got.ID, got)
+					}
+					if tc.want != scorecard.Unavailable && got.Value != v {
+						t.Errorf("%s = %g, want %g", got.ID, got.Value, v)
+					}
+				}
+				if len(want) > 0 {
+					t.Errorf("missing milestone standards: %v", want)
+				}
+			}
+		})
 	}
 }

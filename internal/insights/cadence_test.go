@@ -32,10 +32,11 @@ func TestCompositeCadenceSectionLabelsTheEstimate(t *testing.T) {
 		for _, want := range []string{
 			"Composite cadence (estimate)",
 			"Basis: estimated. This capture has no rendering-frame records, so frame p95, jank and the grade are unavailable.",
+			"does not prove missed display vsyncs",
 			"never fills the frame standards or the grade",
 			"Composite starts: 23; 20 intervals within 2 active runs spanning 0.5s.",
 			"Interval p50 17ms, p95 61.5ms, max 90ms.",
-			"Intervals over 25.05ms, which skip at least one 60 Hz vsync: 5 of 20 (25%).",
+			"Intervals over 25.05ms (1.5 nominal 60 Hz frame budgets): 5 of 20 (25%).",
 			"Intervals over 50ms: 2.",
 		} {
 			if !strings.Contains(text, want) {

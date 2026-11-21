@@ -69,12 +69,24 @@ await new Promise(requestAnimationFrame);
 list.replaceChildren();
 await new Promise(requestAnimationFrame);
 JS
-  wkperf record --endpoint "$WS" --script "$D/render-$rows.js" --out "$D/rows-$rows.json"
 done
-wkperf compare "$D/rows-300.json" "$D/rows-80.json"
-wkperf query "$D/rows-300.json" keys 'layout.*' --limit 30
-wkperf query "$D/rows-300.json" metrics layout.recalculate-styles.p95_ms
+jq -n --arg endpoint "$WS" --arg baseline "$D/render-300.js" --arg candidate "$D/render-80.js" '
+  def capture($script): ["wkperf", "record", "--endpoint", $endpoint, "--script", $script, "--out", "{recording}"];
+  {
+    pairs: 3,
+    metrics: ["layout.recalculate-styles.p95_ms", "overview.duration_s"],
+    baseline: capture($baseline),
+    candidate: capture($candidate),
+    conditions: {scenario: "12 render batches", baseline_rows: "300", candidate_rows: "80"}
+  }' > "$D/plan.json"
+wkperf experiment "$D/plan.json" --out "$D/experiment" &&
+  jq '.changes' "$D/experiment/experiment.json"
+CAPTURE="$D/experiment/0001-baseline/recording.json"
+wkperf query "$CAPTURE" keys 'layout.*' --limit 30
+wkperf query "$CAPTURE" metrics layout.recalculate-styles.p95_ms
 ```
+
+This is a workload-scaling check: the two variants render different numbers of rows. It is not evidence of a faster implementation for equal work. If the layout metric is missing, inspect instrument coverage before trying the experiment again.
 
 For a manual interaction use `record --duration 15s`; for external automation use `record --out FILE --endpoint "$WS" -- ./exercise-ui` and wait for work to finish in that executable. Use only one of duration, script or executable. If no samples appear, check instrument support, page readiness, selected time window and whether the interaction ran. Stop the foreground MiniBrowser with Ctrl-C and stop the site server (`kill "$SITE_PID"`). Do not close unrelated browser sessions.
 
@@ -82,7 +94,7 @@ For a manual interaction use `record --duration 15s`; for external automation us
 
 ```sh
 CAPTURE=/absolute/path/to/capture.json
-wkperf analyze "$CAPTURE" --brief --max-bytes 8000
+wkperf analyze "$CAPTURE" --ai=false --brief --max-bytes 8000
 wkperf query "$CAPTURE" keys 'layout.*' --limit 20
 wkperf query "$CAPTURE" metrics 'layout.composite.*' --limit 10
 wkperf query "$CAPTURE" events --limit 10
@@ -124,7 +136,7 @@ Minimal direct check (`jq` substitutes the path safely):
 ## Run and report a controlled repeat
 
 - Record the browser/engine, version, build, viewport, fixture, input, warmup, capture window, and instrumentation. Change one factor. Fix work by action count or readiness, not just elapsed time. Keep raw recordings and never overwrite the input artifact.
-- Run at least three pairs and alternate order. `wkperf experiment PLAN.json --out NEW_DIR` runs trusted argument vectors and substitutes `{recording}`. Set `pairs`, `metrics`, `baseline`, `candidate` and `conditions`; discover available keys before writing the plan. See [paired experiments](../../docs/EXPERIMENT.md). The report gives individual candidate-minus-baseline differences and their median. A single pair is exploratory; paired medians are not causal or statistical proof.
+- Run at least three pairs and alternate order. `wkperf experiment PLAN.json --out NEW_DIR` runs trusted argument vectors and substitutes `{recording}`. Set `pairs`, `metrics`, `baseline`, `candidate` and `conditions`. Use `wkperf summary CAPTURE.json --format json` on each pilot to find common experiment keys; `query keys` includes additional query-only keys. See [paired experiments](../../docs/EXPERIMENT.md). A single pair is exploratory; paired medians are not causal or statistical proof.
 - Report the measured symptom, units, baseline/candidate values or paired deltas, file plus record index or query key/window, sample coverage, and the strongest remaining uncertainty. Separate candidate explanations from observations. Suggest one falsifiable follow-up, not an unqualified fix.
 
 See [capture flags and protocol limits](../../docs/RECORD.md).

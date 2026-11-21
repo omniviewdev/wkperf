@@ -68,7 +68,10 @@ func finishTriggers(rec *model.Recording, tree *flame.Tree, buckets map[string]*
 		top = 10
 	}
 	out := make([]TriggerStat, 0, len(buckets))
-	tree = tree.TimedOnly()
+	var untimedSpans []flame.UntimedSpan
+	if tree != nil {
+		untimedSpans = tree.UntimedSpans
+	}
 	for _, b := range buckets {
 		sort.Float64s(b.durations)
 		t := TriggerStat{Kind: b.kind, Name: b.name, Count: len(b.durations), TopSelf: []metrics.FuncStat{}, TopInclusive: []metrics.FuncStat{}}
@@ -100,7 +103,7 @@ func finishTriggers(rec *model.Recording, tree *flame.Tree, buckets map[string]*
 		if len(t.TopInclusive) == 0 {
 			t.SampleMessage = "No samples in this trigger's intervals"
 			var spans []flame.UntimedSpan
-			for _, span := range tree.UntimedSpans {
+			for _, span := range untimedSpans {
 				for _, interval := range b.intervals {
 					if span.FromSec < interval.End-rec.StartTime && span.ToSec > interval.Start-rec.StartTime {
 						spans = append(spans, span)
@@ -151,10 +154,14 @@ func triggerStatsWithTree(rec *model.Recording, tree *flame.Tree, top int) []Tri
 			continue
 		}
 		s, e := math.Max(r.StartTime, rec.StartTime), math.Min(r.EndTime, rec.EndTime)
-		if e < s || (e > s && profile.ActiveDuration(rec, s, e) <= 0) {
+		if e < s {
 			continue
 		}
-		addTrigger(buckets, kind, triggerName(r), profile.ActiveDuration(rec, s, e)*1000, profile.Interval{Start: s, End: e})
+		duration := profile.ActiveDuration(rec, s, e)
+		if e > s && duration <= 0 {
+			continue
+		}
+		addTrigger(buckets, kind, triggerName(r), duration*1000, profile.Interval{Start: s, End: e})
 	}
 	return finishTriggers(rec, tree, buckets, top)
 }

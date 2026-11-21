@@ -160,6 +160,13 @@ func TestMCPTypedErrorsAndSourceMaps(t *testing.T) {
 		{"top", `{"file":"capture.json","operation":null}`, "usage_error"},
 		{"top", `{"file":"capture.json","query_operation":"top"}`, "usage_error"},
 		{"window", `{"file":"capture.json","from":0,"to":1,"query_operation":null}`, "usage_error"},
+		{"window", `{"file":"capture.json","from":0,"to":1,"query_operation":""}`, "usage_error"},
+		{"window", `{"file":"capture.json","to":1}`, "usage_error"},
+		{"window", `{"file":"capture.json","from":null,"to":1}`, "usage_error"},
+		{"window", `{"file":"capture.json","from":0}`, "usage_error"},
+		{"window", `{"file":"capture.json","from":1,"to":0}`, "window_error"},
+		{"find", `{"file":"capture.json"}`, "selector_error"},
+		{"window", `{"file":"capture.json","from":0,"to":1,"query_operation":"find"}`, "selector_error"},
 		{"metrics", `{"file":"capture.json","selector":"samples.total_ms"}`, "unknown_key"},
 	} {
 		data = mcpQueryResponse(t, engine, tc.operation, tc.arguments)

@@ -197,6 +197,8 @@ func (s *Server) Serve(ctx context.Context, input io.Reader, output io.Writer) e
 				*query.Request
 				Operation      json.RawMessage `json:"operation"`
 				QueryOperation json.RawMessage `json:"query_operation"`
+				From           *float64        `json:"from"`
+				To             *float64        `json:"to"`
 				MinShare       *float64        `json:"min_share"`
 				Depth          *int            `json:"depth"`
 				MinSamples     *int            `json:"min_samples"`
@@ -213,15 +215,38 @@ func (s *Server) Serve(ctx context.Context, input io.Reader, output io.Writer) e
 				result = failedCall(params.Name, diagnostic.Wrap(diagnostic.UsageError, "", fmt.Errorf("operation is selected by the tool name")))
 				break
 			}
+			if params.Name == "window" && (arguments.From == nil || arguments.To == nil) {
+				result = failedCall(params.Name, diagnostic.Wrap(diagnostic.UsageError, "", fmt.Errorf("window requires numeric from and to")))
+				break
+			}
+			if arguments.From != nil {
+				queryRequest.From = *arguments.From
+			}
+			if arguments.To != nil {
+				queryRequest.To = *arguments.To
+			}
 			if arguments.QueryOperation != nil {
 				if params.Name != "window" {
 					result = failedCall(params.Name, diagnostic.Wrap(diagnostic.UsageError, "", fmt.Errorf("query_operation is only accepted by window")))
 					break
 				}
-				if arguments.QueryOperation[0] != '"' || json.Unmarshal(arguments.QueryOperation, &queryRequest.QueryOperation) != nil {
-					result = failedCall(params.Name, diagnostic.Wrap(diagnostic.UsageError, "", fmt.Errorf("query_operation must be a string")))
+				if arguments.QueryOperation[0] != '"' || json.Unmarshal(arguments.QueryOperation, &queryRequest.QueryOperation) != nil || queryRequest.QueryOperation == "" {
+					result = failedCall(params.Name, diagnostic.Wrap(diagnostic.UsageError, "", fmt.Errorf("query_operation must be a nonempty string")))
 					break
 				}
+			}
+			operation := params.Name
+			if operation == "window" {
+				operation = queryRequest.QueryOperation
+			}
+			switch operation {
+			case "callers", "callees", "paths", "subtree", "find":
+				if queryRequest.Selector == "" {
+					result = failedCall(params.Name, diagnostic.Wrap(diagnostic.SelectorError, queryRequest.File, fmt.Errorf("%s requires one selector", operation)))
+				}
+			}
+			if result != nil {
+				break
 			}
 			if arguments.MinShare != nil {
 				queryRequest.MinShare, queryRequest.MinShareSet = *arguments.MinShare, true

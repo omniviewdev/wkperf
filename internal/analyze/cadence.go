@@ -54,9 +54,9 @@ func (b *builder) addCompositeCadence(c *metrics.CompositeCadence) {
 		add("p95_ms", "Composite interval p95", metrics.UnitMs, metrics.LowerBetter, false, c.P95Ms)
 		add("max_ms", "Composite interval max", metrics.UnitMs, metrics.LowerBetter, false, c.MaxMs)
 	}
-	add("missed_vsync_count", "Composite intervals > 25.05ms (missed vsync)", metrics.UnitCount, metrics.LowerBetter, true, float64(c.MissedVsyncCount))
+	add("missed_vsync_count", "Composite intervals > 25.05ms", metrics.UnitCount, metrics.LowerBetter, true, float64(c.MissedVsyncCount))
 	if c.Count > 0 {
-		add("missed_vsync_ratio", "Composite intervals missing a vsync", metrics.UnitRatio, metrics.LowerBetter, false, c.MissedVsyncRatio)
+		add("missed_vsync_ratio", "Share of composite intervals > 25.05ms", metrics.UnitRatio, metrics.LowerBetter, false, c.MissedVsyncRatio)
 	}
 	add("over_50ms_count", "Composite intervals > 50ms", metrics.UnitCount, metrics.LowerBetter, true, float64(c.Over50MsCount))
 	add("active_run_s", "Active composite run time", "s", metrics.Neutral, true, c.ActiveRunSec)

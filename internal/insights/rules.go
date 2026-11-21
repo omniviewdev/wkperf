@@ -51,22 +51,37 @@ const largeQuadPx = 2_000_000
 
 const minCoverageSamples = 20
 
-func quadArea(raw json.RawMessage) float64 {
+func quadArea(r *model.Record) float64 {
+	raw := r.Quad
+	if (len(raw) == 0 || string(raw) == "null") && len(r.Details) > 0 {
+		var legacy struct {
+			Quad json.RawMessage `json:"quad"`
+		}
+		if json.Unmarshal(r.Details, &legacy) == nil {
+			raw = legacy.Quad
+		}
+	}
 	if len(raw) == 0 {
 		return 0
 	}
-	var d struct {
-		Quad []float64 `json:"quad"`
+	var coordinates [8]float64
+	for i := range coordinates {
+		coordinates[i] = math.NaN() // A JSON null leaves a float unchanged.
 	}
-	if json.Unmarshal(raw, &d) != nil || len(d.Quad) < 8 {
+	q := coordinates[:]
+	if json.Unmarshal(raw, &q) != nil || len(q) != len(coordinates) {
 		return 0
 	}
-	minX, maxX, minY, maxY := math.Inf(1), math.Inf(-1), math.Inf(1), math.Inf(-1)
-	for i := 0; i+1 < len(d.Quad); i += 2 {
-		minX, maxX = math.Min(minX, d.Quad[i]), math.Max(maxX, d.Quad[i])
-		minY, maxY = math.Min(minY, d.Quad[i+1]), math.Max(maxY, d.Quad[i+1])
+	minX, maxX, minY, maxY := q[0], q[0], q[1], q[1]
+	for i := 2; i < len(q); i += 2 {
+		minX, maxX = math.Min(minX, q[i]), math.Max(maxX, q[i])
+		minY, maxY = math.Min(minY, q[i+1]), math.Max(maxY, q[i+1])
 	}
-	return (maxX - minX) * (maxY - minY)
+	area := (maxX - minX) * (maxY - minY)
+	if math.IsNaN(area) || math.IsInf(area, 0) {
+		return 0
+	}
+	return area
 }
 
 func (c *ruleCtx) collect() *recStats {
@@ -114,10 +129,11 @@ func (c *ruleCtx) collect() *recStats {
 			s.n++
 			s.ms += ms
 			if r.EventType == "paint" {
-				if a := quadArea(r.Details); a > st.maxQuad {
+				a := quadArea(r)
+				if a > st.maxQuad {
 					st.maxQuad = a
 				}
-				if quadArea(r.Details) >= largeQuadPx {
+				if a >= largeQuadPx {
 					st.paintQuads++
 				}
 			}
@@ -337,7 +353,8 @@ func rulePaint(c *ruleCtx, st *recStats) *Finding {
 	if p == nil {
 		return nil
 	}
-	if c.pct(p.exclusiveMs)+1e-9 < 5 && st.paintQuads < 3 {
+	heavy := c.pct(p.exclusiveMs)+1e-9 >= 5
+	if !heavy && st.paintQuads < 3 {
 		return nil
 	}
 	ev := []string{
@@ -345,9 +362,13 @@ func rulePaint(c *ruleCtx, st *recStats) *Finding {
 		fmt.Sprintf("%sms inclusive record time (nested work overlaps other categories)", f1(p.ms)),
 	}
 	if st.maxQuad > 0 {
-		ev = append(ev, fmt.Sprintf("largest painted area %.0f px² (%d paints over %d px²)", st.maxQuad, st.paintQuads, largeQuadPx))
+		ev = append(ev, fmt.Sprintf("largest paint quad bounding box %.0f px² (%d paint records at or above %d px²)", st.maxQuad, st.paintQuads, largeQuadPx))
 	}
-	f := c.finding("paint-heavy", "Painting is heavy", "paint", p.exclusiveMs, ev,
+	title := "Painting is heavy"
+	if !heavy {
+		title = "Repeated large paint regions"
+	}
+	f := c.finding("paint-heavy", title, "paint", p.exclusiveMs, ev,
 		"Reduce repaint area: avoid full-surface invalidation, replace expensive effects (box-shadow, filter, blur, gradients) with cheaper ones, and use contain: paint to scope repaints. Promote only truly animating elements to their own layer with will-change: transform, sparingly, since every layer costs memory.")
 	return &f
 }
@@ -671,15 +692,21 @@ func ruleNetwork(c *ruleCtx) *Finding {
 	if !ok {
 		return nil
 	}
-	p95, _ := c.metric("network.p95_ms")
-	bytes, _ := c.metric("network.transfer_bytes")
-	mean, _ := c.metric("network.mean_ms")
+	p95, haveP95 := c.metric("network.p95_ms")
+	bytes, haveBytes := c.metric("network.transfer_bytes")
 	if n < 50 && p95 < 1000 && bytes < 5<<20 {
 		return nil
 	}
-	ev := []string{
-		fmt.Sprintf("%.0f requests, %s MB transferred", n, f1(bytes/(1<<20))),
-		fmt.Sprintf("request time mean %sms, p95 %sms", f1(mean), f1(p95)),
+	activity := fmt.Sprintf("%.0f requests", n)
+	if haveBytes {
+		activity += fmt.Sprintf(", %s MB transferred", f1(bytes/(1<<20)))
+	} else {
+		activity += ", total transfer bytes unavailable"
+	}
+	ev := []string{activity}
+	if haveP95 {
+		mean, _ := c.metric("network.mean_ms")
+		ev = append(ev, fmt.Sprintf("request time mean %sms, p95 %sms", f1(mean), f1(p95)))
 	}
 	sev := SevLow
 	if p95 >= 3000 || bytes >= 20<<20 {

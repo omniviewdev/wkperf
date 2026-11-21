@@ -83,6 +83,36 @@ func runExperiment(ctx context.Context, file, dest string, log io.Writer) error 
 	if plan.Pairs < 1 || len(plan.Metrics) == 0 {
 		return fmt.Errorf("plan needs positive pairs and metric keys")
 	}
+	keys := make(map[string]struct{}, len(plan.Metrics))
+	for _, key := range plan.Metrics {
+		if strings.TrimSpace(key) == "" {
+			return fmt.Errorf("plan metric keys must not be blank")
+		}
+		if _, exists := keys[key]; exists {
+			return fmt.Errorf("duplicate plan metric key %q", key)
+		}
+		keys[key] = struct{}{}
+	}
+	env := os.Environ()
+	envKeys := make([]string, 0, len(plan.Environment))
+	for key := range plan.Environment {
+		envKeys = append(envKeys, key)
+	}
+	slices.Sort(envKeys)
+	for i, key := range envKeys {
+		value := plan.Environment[key]
+		if key == "" || strings.ContainsAny(key, "=\x00") || strings.ContainsRune(value, 0) {
+			return fmt.Errorf("invalid environment override for %q", key)
+		}
+		if runtime.GOOS == "windows" {
+			for _, prior := range envKeys[:i] {
+				if strings.EqualFold(key, prior) {
+					return fmt.Errorf("duplicate case-insensitive environment overrides %q and %q", prior, key)
+				}
+			}
+		}
+		env = append(env, key+"="+value)
+	}
 	if plan.Recording == "" {
 		plan.Recording = "recording.json"
 	} else if !filepath.IsLocal(plan.Recording) || filepath.Clean(plan.Recording) != plan.Recording || plan.Recording == "." {
@@ -130,10 +160,6 @@ func runExperiment(ctx context.Context, file, dest string, log io.Writer) error 
 		if out, err := exec.CommandContext(ctx, argv[0], argv[1:]...).Output(); err == nil {
 			report.HostDetails[key] = strings.TrimSpace(string(out))
 		}
-	}
-	env := os.Environ()
-	for k, v := range plan.Environment {
-		env = append(env, k+"="+v)
 	}
 	for p := range plan.Pairs {
 		var pair [2]map[string]metrics.Metric
@@ -189,12 +215,18 @@ func runExperiment(ctx context.Context, file, dest string, log io.Writer) error 
 			}
 			report.Runs = append(report.Runs, experimentRun{p + 1, name, filepath.Join(rel, plan.Recording), start.UTC(), float64(elapsed) / float64(time.Millisecond), pair[i]})
 		}
-		for k, b := range pair[0] {
+		for _, k := range plan.Metrics {
+			b := pair[0][k]
 			m := pair[1][k]
+			if m.Unit != b.Unit || m.Basis != b.Basis {
+				return fmt.Errorf("pair %d: metric %q changed unit or evidence basis", p+1, k)
+			}
 			d := report.Changes[k]
 			if d == nil {
 				d = &pairedChange{Unit: b.Unit}
 				report.Changes[k] = d
+			} else if d.Unit != b.Unit || report.Runs[0].Metrics[k].Basis != b.Basis {
+				return fmt.Errorf("pair %d: metric %q changed unit or evidence basis since pair 1", p+1, k)
 			}
 			d.Differences = append(d.Differences, m.Value-b.Value)
 		}

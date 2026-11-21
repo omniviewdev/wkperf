@@ -6,15 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"time"
 
-	"github.com/coder/websocket"
-
-	"github.com/omniviewdev/wkperf/internal/model"
 	"github.com/omniviewdev/wkperf/internal/workload"
 )
 
@@ -63,12 +59,9 @@ func Capture(ctx context.Context, options Options, output io.Writer) error {
 	defer closeReader()
 	setup, cancelSetup := context.WithTimeout(ctx, protocolTimeout)
 	defer cancelSetup()
-	client := &http.Client{
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
-	ws, _, err := websocket.Dial(setup, options.Endpoint, &websocket.DialOptions{HTTPClient: client})
+	ws, err := dialInspector(setup, options.Endpoint)
 	if err != nil {
-		return fmt.Errorf("connect to WebKit inspector: %w", err)
+		return err
 	}
 	defer ws.CloseNow()
 	// ScriptProfiler sends the entire sample buffer in one trackingComplete message.
@@ -141,10 +134,8 @@ func Capture(ctx context.Context, options Options, output io.Writer) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := json.NewEncoder(output).Encode(struct {
-		*model.Recording
-		Capabilities map[string]string `json:"captureCapabilities"`
-	}{recording, s.capture.resourceCapabilities()}); err != nil {
+	recording.CaptureCapabilities = s.capture.resourceCapabilities()
+	if err := json.NewEncoder(output).Encode(recording); err != nil {
 		return fmt.Errorf("write WebKit recording: %w", err)
 	}
 	return nil

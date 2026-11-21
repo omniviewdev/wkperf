@@ -38,6 +38,9 @@ type Recording struct {
 	MemoryPressureEvents []MemoryPressure `json:"memoryPressureEvents"`
 	Samples              []TargetSamples  `json:"samples"`
 
+	// CaptureCapabilities reports optional instrument status for wkperf captures.
+	CaptureCapabilities map[string]string `json:"captureCapabilities,omitzero"`
+
 	// Partial clips retain untimed evidence but exclude its weight.
 	UntimedExcluded bool            `json:"-"`
 	SampleEvidence  *SampleEvidence `json:"-"`
@@ -81,6 +84,7 @@ type Record struct {
 
 	Target  *Target         `json:"target,omitempty"`
 	Details json.RawMessage `json:"details,omitempty"` // script: string or object
+	Quad    json.RawMessage `json:"quad,omitempty"`    // layout: four x/y pairs
 
 	DOMNodeDisplayName string `json:"domNodeDisplayName,omitempty"` // layout
 	DOMNodeCSSPath     string `json:"domNodeCSSPath,omitempty"`
@@ -89,8 +93,9 @@ type Record struct {
 	Threads    []Thread         `json:"threads,omitempty"`
 	Categories []MemoryCategory `json:"categories,omitempty"` // memory
 
-	// network: HAR entry as produced by WI.HARBuilder.entry
-	Entry json.RawMessage `json:"entry,omitempty"`
+	// Network: HAR entry and recording-clock origin as exported by WebKit.
+	Entry            json.RawMessage `json:"entry,omitempty"`
+	ArchiveStartTime float64         `json:"archiveStartTime,omitempty"`
 }
 
 // Duration returns EndTime-StartTime in seconds, or 0 when not a span.

@@ -42,6 +42,9 @@ func TestCompositeCadenceEstimateMetrics(t *testing.T) {
 		if m.Basis != metrics.BasisEstimated || m.Group != "cadence" || !strings.HasSuffix(m.Label, "(estimate)") {
 			t.Errorf("%s must be labeled an estimate: %+v", m.Key, m)
 		}
+		if strings.HasPrefix(m.Key, "cadence.composite.missed_vsync_") && (!strings.Contains(m.Label, "> 25.05ms") || strings.Contains(m.Label, "vsync")) {
+			t.Errorf("%s must describe the spacing threshold, not claim a display event: %q", m.Key, m.Label)
+		}
 	}
 	if c := s.CompositeCadence; c == nil || c.Basis != metrics.BasisEstimated || c.Starts != 23 || c.Runs != 2 || c.Count != 20 ||
 		!approx(c.P50Ms, 17) || !approx(c.P95Ms, 61.5) || !approx(c.MaxMs, 90) || c.MissedVsyncCount != 5 ||

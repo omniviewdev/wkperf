@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "recording": {
+    "displayName": "CPU recording without call stacks",
+    "startTime": 10,
+    "endTime": 11,
+    "records": [
+      {"type":"timeline-record-type-cpu","timestamp":10.25,"usage":30},
+      {"type":"timeline-record-type-cpu","timestamp":10.75,"usage":45}
+    ]
+  }
+}

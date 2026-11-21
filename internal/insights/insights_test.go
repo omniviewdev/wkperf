@@ -39,6 +39,21 @@ func find(r *Report, id string) *Finding {
 	return nil
 }
 
+func TestNetworkFindingDistinguishesUnknownAndZeroTransfer(t *testing.T) {
+	for _, tc := range []struct{ entry, want string }{
+		{`{"time":1200,"response":{"bodySize":50}}`, "total transfer bytes unavailable"},
+		{`{"time":1200,"response":{"_transferSize":0,"bodySize":50}}`, "0.0 MB transferred"},
+	} {
+		rec := &model.Recording{EndTime: 2, Records: []model.Record{
+			{Type: model.TypeNetwork, StartTime: .1, EndTime: 1.3, Entry: json.RawMessage(tc.entry)},
+		}}
+		got := find(Analyze(rec, "", Options{}), "network")
+		if got == nil || len(got.Evidence) < 2 || !strings.Contains(got.Evidence[0], tc.want) || !strings.Contains(got.Evidence[1], "1200") {
+			t.Errorf("entry %s: finding %+v, want %q and measured latency", tc.entry, got, tc.want)
+		}
+	}
+}
+
 func healthy() *model.Recording {
 	rec := &model.Recording{DisplayName: "ok", StartTime: 0, EndTime: 10}
 	for i := 0; i < 600; i++ {
