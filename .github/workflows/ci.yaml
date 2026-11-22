@@ -21,11 +21,3 @@ jobs:
           if [ -n "$out" ]; then echo "unformatted files:"; echo "$out"; exit 1; fi
       - run: go vet ./...
       - run: go test ./... -count=1
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - run: node --test examples/wailsprobe/client.test.mjs
-      - name: Build stock Wails SDK consumer
-        if: runner.os == 'macOS'
-        working-directory: examples/wailsprobe
-        run: GOWORK=off go build -mod=readonly -o "$RUNNER_TEMP/wailsprobe-smoke" .

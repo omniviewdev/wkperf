@@ -52,14 +52,14 @@ func TestNativeFacetSelectionPreservesTotalsAndUnselectedStats(t *testing.T) {
 func TestOwnershipSettingsSurviveSuppliedTreeAndAllScalarCommands(t *testing.T) {
 	r := recording()
 	sample(r, .1, 2, bundled("measure"), model.StackFrame{Name: "getAnimations"})
-	rules := flame.OwnershipRules{AppURLs: []string{"wails://localhost/assets/*.js"}, LibraryURLs: []string{"wails://localhost/vendor/*.js"}}
+	rules := flame.OwnershipRules{AppURLs: []string{"app://localhost/assets/*.js"}, LibraryURLs: []string{"app://localhost/vendor/*.js"}}
 	tree := flame.Build(r, flame.Options{Ownership: rules})
 	report := rootcause.Build(r, tree, rootcause.Options{Source: "capture.json", Ownership: flame.OwnershipRules{LibraryURLs: []string{"wrong/*"}}})
 	if len(report.ContextAttribution) != 1 || report.ContextAttribution[0].Frame.Category != flame.CategoryApp || len(report.Ownership.AppURLs) != 1 || report.Ownership.AppURLs[0] != rules.AppURLs[0] {
 		t.Fatalf("effective ownership settings or context lost: %+v", report)
 	}
 	for _, s := range rootcause.Stats(report) {
-		if !strings.Contains(s.Command, "--app-url 'wails://localhost/assets/*.js'") || !strings.Contains(s.Command, "--library-url 'wails://localhost/vendor/*.js'") || strings.Contains(s.Command, "wrong/*") {
+		if !strings.Contains(s.Command, "--app-url 'app://localhost/assets/*.js'") || !strings.Contains(s.Command, "--library-url 'app://localhost/vendor/*.js'") || strings.Contains(s.Command, "wrong/*") {
 			t.Fatalf("scalar command cannot reproduce effective ownership: %+v", s)
 		}
 	}

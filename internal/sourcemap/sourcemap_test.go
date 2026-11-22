@@ -193,7 +193,7 @@ func TestResolveFunctionDeclarationNames(t *testing.T) {
 	}
 	var frames []model.StackFrame
 	for _, tc := range cases {
-		frames = append(frames, model.StackFrame{Name: tc.name, URL: "wails://wails.localhost/assets/index-abc.js", Line: 1, Column: tc.column})
+		frames = append(frames, model.StackFrame{Name: tc.name, URL: "app://localhost/assets/index-abc.js", Line: 1, Column: tc.column})
 	}
 	rec := &model.Recording{Samples: []model.TargetSamples{{StackTraces: []model.StackTrace{{StackFrames: frames}}}}}
 	d, err := Resolve(rec, []string{mapPath}, "")
@@ -273,8 +273,8 @@ func TestResolveRelocatedSourcePaths(t *testing.T) {
 				t.Fatal(err)
 			}
 			rec := &model.Recording{Samples: []model.TargetSamples{{StackTraces: []model.StackTrace{{StackFrames: []model.StackFrame{
-				{Name: "n", URL: "wails://wails.localhost/assets/index-abc.js", Line: 1, Column: 13},
-				{Name: "t", URL: "wails://wails.localhost/assets/index-abc.js", Line: 1, Column: 59},
+				{Name: "n", URL: "app://localhost/assets/index-abc.js", Line: 1, Column: 13},
+				{Name: "t", URL: "app://localhost/assets/index-abc.js", Line: 1, Column: 59},
 			}}}}}}
 			paths := []string{mapPath}
 			recordingPath := ""

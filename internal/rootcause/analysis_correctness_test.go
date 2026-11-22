@@ -11,13 +11,13 @@ import (
 )
 
 func bundled(name string) model.StackFrame {
-	return model.StackFrame{Name: name, URL: "wails://localhost/assets/index-TEST.js", Line: 12, Column: 4}
+	return model.StackFrame{Name: name, URL: "app://localhost/assets/index-TEST.js", Line: 12, Column: 4}
 }
 
 func TestA8NearestNonFrameworkContextKeepsUnknownAndMissingEvidence(t *testing.T) {
 	r := recording()
 	sample(r, .1, 6, bundled("tick"), bundled("getFiniteAnimations"), model.StackFrame{Name: "getAnimations"})
-	sample(r, .2, 9, bundled("processRootScheduleInMicrotask"), bundled("performSyncWorkOnRoot"), model.StackFrame{Name: "cell", URL: "wails://localhost/_/plugins/kubernetes/assets/entry2.js", Line: 248, Column: 31307})
+	sample(r, .2, 9, bundled("processRootScheduleInMicrotask"), bundled("performSyncWorkOnRoot"), model.StackFrame{Name: "cell", URL: "app://localhost/src/features/table.js", Line: 248, Column: 31307})
 	sample(r, .3, 15, bundled("commitRoot"), bundled("commitDeletionEffectsOnFiber"), model.StackFrame{Name: "removeChild"})
 	sample(r, .4, 2, model.StackFrame{Name: "bridge", URL: "user-script:2"}, model.StackFrame{Name: "nativeBridge"})
 	report := build(r)

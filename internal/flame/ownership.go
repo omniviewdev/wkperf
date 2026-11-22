@@ -151,7 +151,7 @@ func (classifier *Classifier) Categorize(frame Frame) Category {
 	if libraryPath(lower) {
 		return CategoryFramework
 	}
-	if mapped || firstPartyPlugin(lower) || sourcePath(lower) {
+	if mapped || sourcePath(lower) {
 		return CategoryApp
 	}
 	if reactFunction(name) || (name != frame.Name && reactFunction(frame.Name)) {
@@ -178,12 +178,6 @@ func libraryPath(path string) bool {
 	return strings.Contains(path, "/node_modules/") || strings.HasPrefix(path, "node_modules/") ||
 		strings.Contains(path, "/vendor/") || strings.HasPrefix(path, "vendor/") ||
 		strings.Contains(path, "/vendor-") || strings.Contains(path, "/vendor.") || strings.HasPrefix(path, "vendor-")
-}
-
-func firstPartyPlugin(path string) bool {
-	_, tail, found := strings.Cut(path, "/_/plugins/")
-	name, _, hasPath := strings.Cut(tail, "/")
-	return found && hasPath && name != ""
 }
 
 func sourcePath(path string) bool {

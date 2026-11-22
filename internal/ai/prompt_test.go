@@ -70,7 +70,7 @@ func sampleResult() *compare.Result {
 	}
 }
 
-var testCtx = Context{AppName: "Omniview", Platform: "a Wails/WKWebView desktop app", Framework: "React", Notes: "cold start"}
+var testCtx = Context{AppName: "Example App", Platform: "a WKWebView desktop app", Framework: "React", Notes: "cold start"}
 
 func TestSystemPromptCoversRequirements(t *testing.T) {
 	p := BuildAnalyzePrompt([]*insights.Report{sampleReport("r")}, testCtx)
@@ -88,7 +88,7 @@ func TestSystemPromptCoversRequirements(t *testing.T) {
 func TestAnalyzePromptContent(t *testing.T) {
 	p := BuildAnalyzePrompt([]*insights.Report{sampleReport("r"), nil}, testCtx)
 	for _, want := range []string{
-		"Omniview", "WKWebView", "React", "cold start",
+		"Example App", "WKWebView", "React", "cold start",
 		"Script 4000ms (32%)", "Layout 1500.5ms (12%)",
 		"renderList", "https://app/src/List.tsx:42", "(anonymous)", "sourceID::0:0",
 		"react-dom", "t=3.2s observed interval 88.4ms", "event=event-dispatched click", "topFunc=onClick",

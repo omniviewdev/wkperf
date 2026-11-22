@@ -33,7 +33,6 @@ Output is a terminal report, a single self-contained HTML file you can share, or
 ### Capture from a running application
 
 - [WebKit recording](docs/RECORD.md): `wkperf record` connects to an Inspector protocol endpoint. An inspectable Apple WKWebView is not itself a WebSocket endpoint.
-- [Stock Wails SDK](docs/WAILS-SDK.md): import [`pkg/wailsprobe`](pkg/wailsprobe) in your development build. Join browser calls to measured Go handler spans by transaction ID. The [runnable example](examples/wailsprobe) needs no Wails fork or source patch.
 - [Interactive UI](docs/UI.md): run `wkperf ui` to inspect local WebKit recordings in a browser.
 - [Paired experiments](docs/EXPERIMENT.md): `wkperf experiment` alternates baseline and candidate workloads and preserves individual recordings.
 - [Agent skill](skills/wkperf/SKILL.md): investigate a recording using the CLI or `wkperf mcp` over stdio.
@@ -62,7 +61,7 @@ wkperf version
 
 If you set `GOBIN`, add that directory instead. On Windows, add `%USERPROFILE%\go\bin` to your user `Path`.
 
-For a reproducible CLI or SDK install, pin the release tag, for example `go get github.com/omniviewdev/wkperf/pkg/wailsprobe@v0.6.0` in the consuming application.
+For a reproducible CLI install, pin the release tag, for example `go install github.com/omniviewdev/wkperf@v0.6.0`.
 
 > v0.5.0 updates the machine-readable JSON contracts. Agents and integrations upgrading from v0.4.0 should check the schema discriminator and run `wkperf schema`.
 

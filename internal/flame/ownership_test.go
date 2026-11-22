@@ -11,7 +11,7 @@ import (
 )
 
 func TestOwnershipUsesCapturedEvidence(t *testing.T) {
-	bundle := "wails://localhost/assets/index-TEST.js"
+	bundle := "app://localhost/assets/index-TEST.js"
 	for _, tc := range []struct {
 		name  string
 		frame Frame
@@ -21,9 +21,9 @@ func TestOwnershipUsesCapturedEvidence(t *testing.T) {
 		{"unresolved scheduler", Frame{Name: "tick", URL: bundle}, Category("unknown-bundled")},
 		{"unresolved closure", Frame{URL: bundle}, Category("unknown-bundled")},
 		{"injected script", Frame{Name: "bridge", URL: "user-script:2"}, Category("injected")},
-		{"first party plugin", Frame{Name: "ResourceTableContainer", URL: "wails://localhost/_/plugins/kubernetes/assets/entry2.js"}, CategoryApp},
-		{"first party commit name", Frame{Name: "commitRows", URL: "wails://localhost/_/plugins/kubernetes/assets/entry2.js"}, CategoryApp},
-		{"plugin name alone", Frame{Name: "run", URL: "/plugins/aws/plugin.js"}, Category("unknown-bundled")},
+		{"application source", Frame{Name: "Table", URL: "app://localhost/src/features/table.js"}, CategoryApp},
+		{"application commit name", Frame{Name: "commitRows", URL: "app://localhost/src/features/table.js"}, CategoryApp},
+		{"unresolved plugin bundle", Frame{Name: "run", URL: "app://localhost/_/plugins/example/entry.js"}, CategoryUnknownBundled},
 		{"source function exact name", Frame{Name: "commitRoot", URL: "https://app.test/src/update.ts"}, CategoryApp},
 		{"source function prefix", Frame{Name: "commitRows", URL: "/src/update.js"}, CategoryApp},
 		{"source function suffix", Frame{Name: "saveOnFiber", URL: "/src/update.tsx"}, CategoryApp},
@@ -58,7 +58,7 @@ func TestBundledReact19OwnershipNames(t *testing.T) {
 		"mountFutureHookState", "updateFutureHookState", "flushFutureEffects", "futureWorkOnFiber",
 	} {
 		t.Run(name, func(t *testing.T) {
-			if got := Categorize(Frame{Name: name, URL: "wails://localhost/assets/index-TEST.js"}); got != CategoryFramework {
+			if got := Categorize(Frame{Name: name, URL: "app://localhost/assets/index-TEST.js"}); got != CategoryFramework {
 				t.Fatalf("bundled React %q = %q, want framework", name, got)
 			}
 			if got := Categorize(Frame{Name: name, URL: "/src/user-code.js"}); got != CategoryApp {
@@ -139,10 +139,10 @@ func TestOwnershipRuleValidationAndGlobSemantics(t *testing.T) {
 }
 
 func TestOwnershipOverridesAreDeterministic(t *testing.T) {
-	bundle := "wails://localhost/assets/index-TEST.js"
+	bundle := "app://localhost/assets/index-TEST.js"
 	rules := OwnershipRules{
 		AppURLs:     []string{"**/assets/**", "**/node_modules/example/**"},
-		LibraryURLs: []string{"**/_/plugins/third-party/**", "**/external/**"},
+		LibraryURLs: []string{"**/extensions/third-party/**", "**/external/**"},
 	}
 	classifier := NewClassifier(rules)
 	for _, tc := range []struct {
@@ -151,7 +151,7 @@ func TestOwnershipOverridesAreDeterministic(t *testing.T) {
 	}{
 		{Frame{Name: "commitRoot", URL: bundle}, CategoryApp},
 		{Frame{Name: "getFiniteAnimations", URL: bundle}, CategoryApp},
-		{Frame{Name: "cell", URL: "wails://localhost/_/plugins/third-party/assets/entry.js"}, CategoryFramework},
+		{Frame{Name: "cell", URL: "app://localhost/extensions/third-party/assets/entry.js"}, CategoryFramework},
 		{Frame{Name: "cell", URL: bundle, Original: &Location{URL: "/external/widget.js"}}, CategoryFramework},
 		{Frame{Name: "commitRoot", URL: "/node_modules/example/index.js"}, CategoryApp},
 		{Frame{Name: "bridge", URL: "user-script:2"}, CategoryInjected},
@@ -183,16 +183,16 @@ func TestOwnershipOverridesAreDeterministic(t *testing.T) {
 
 func TestOwnershipSurvivesEveryTreeView(t *testing.T) {
 	rec := testgen.ReactOwnership()
-	rules := OwnershipRules{AppURLs: []string{"**/assets/index-*.js"}, LibraryURLs: []string{"**/_/plugins/**"}}
+	rules := OwnershipRules{AppURLs: []string{"**/assets/index-*.js"}, LibraryURLs: []string{"**/src/features/**"}}
 	tree := Build(rec, Options{Ownership: rules})
 	originalRules := OwnershipRules{AppURLs: slices.Clone(rules.AppURLs), LibraryURLs: slices.Clone(rules.LibraryURLs)}
 	plain := Build(rec)
 	rules.AppURLs[0] = "changed"
 	rules.LibraryURLs[0] = "changed"
-	plugin := findFunction(t, tree, "cell")
+	feature := findFunction(t, tree, "cell")
 	views := []*Tree{
 		tree, tree.Inverted(), tree.Inverted().Canonical(), tree.Window(0, 5),
-		tree.InIntervals([]Interval{{Start: 0, End: 5}}), tree.FocusFunction(plugin.ID),
+		tree.InIntervals([]Interval{{Start: 0, End: 5}}), tree.FocusFunction(feature.ID),
 		tree.FocusNode(tree.Root.Children[0].ID), tree.TimedOnly(),
 	}
 	for _, view := range views {
@@ -202,9 +202,9 @@ func TestOwnershipSurvivesEveryTreeView(t *testing.T) {
 		view.EachSample(func(sample Sample) {
 			for _, frame := range sample.Frames {
 				if frame.Name == "cell" && frame.Category != CategoryFramework {
-					t.Fatalf("plugin override lost in view: %+v", frame)
+					t.Fatalf("feature override lost in view: %+v", frame)
 				}
-				if frame.URL == "wails://localhost/assets/index-SYNTHETIC.js" && frame.Category != CategoryApp {
+				if frame.URL == "app://localhost/assets/index-SYNTHETIC.js" && frame.Category != CategoryApp {
 					t.Fatalf("app override lost in view: %+v", frame)
 				}
 			}
