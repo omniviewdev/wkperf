@@ -113,7 +113,7 @@ func contextForFinding(c *ruleCtx, f Finding) findingContext {
 		if f.ID != "forced-layout" && !matchesFinding(r, f.ID) {
 			continue
 		}
-		if f.ID == "layout-after-script" && !normalPostScriptLayout(c.rec, r) {
+		if f.ID == "layout-after-script" && !normalPostScriptLayout(c, r) {
 			continue
 		}
 		ms := profile.ActiveDuration(c.rec, r.StartTime, r.EndTime) * 1000
@@ -138,7 +138,7 @@ func contextForFinding(c *ruleCtx, f Finding) findingContext {
 				}
 			}
 			if f.ID == "layout-after-script" {
-				for _, frame := range profile.Frames(c.rec, c.rec.StartTime, c.rec.EndTime) {
+				for _, frame := range c.frames {
 					if best.StartTime < frame.Start || best.StartTime >= frame.End {
 						continue
 					}
@@ -188,17 +188,17 @@ func contextForFinding(c *ruleCtx, f Finding) findingContext {
 	return context
 }
 
-func normalPostScriptLayout(rec *model.Recording, r model.Record) bool {
-	for _, script := range rec.Records {
+func normalPostScriptLayout(c *ruleCtx, r model.Record) bool {
+	for _, script := range c.rec.Records {
 		if script.Type == model.TypeScript && !profile.IsGC(script) && script.StartTime <= r.StartTime && r.StartTime < script.EndTime {
 			return false
 		}
 	}
-	for _, frame := range profile.Frames(rec, rec.StartTime, rec.EndTime) {
+	for _, frame := range c.frames {
 		if r.StartTime < frame.Start || r.StartTime >= frame.End {
 			continue
 		}
-		for _, script := range rec.Records {
+		for _, script := range c.rec.Records {
 			if script.Type == model.TypeScript && !profile.IsGC(script) && script.StartTime >= frame.Start && script.EndTime <= r.StartTime {
 				return true
 			}

@@ -25,6 +25,7 @@ type ruleCtx struct {
 	long   []LongTask
 	wallMs float64
 	costs  []profile.RecordCost
+	frames []profile.Frame
 }
 
 // evStat aggregates records of one kind.
@@ -153,7 +154,7 @@ func (c *ruleCtx) collect() *recStats {
 			st.forcedExplicit++
 		}
 	}
-	for _, f := range profile.Frames(c.rec, c.rec.StartTime, c.rec.EndTime) {
+	for _, f := range c.frames {
 		for i := range c.rec.Records {
 			r := &c.rec.Records[i]
 			if !profile.Observed(c.rec, *r) {
@@ -376,7 +377,7 @@ func rulePaint(c *ruleCtx, st *recStats) *Finding {
 func ruleJank(c *ruleCtx) *Finding {
 	var frames []float64
 	janky, workExcess, intervalExcess := 0, 0.0, 0.0
-	for _, frame := range profile.Frames(c.rec, c.rec.StartTime, c.rec.EndTime) {
+	for _, frame := range c.frames {
 		if frame.Class != profile.FrameActive {
 			continue
 		}

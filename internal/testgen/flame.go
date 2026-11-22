@@ -20,12 +20,12 @@ func FlameTiny() *model.Recording {
 }
 
 // ReactOwnership separates framework-only commit work, unresolved library
-// context, first-party plugins, injected scripts, and mapped user/library code.
+// context, application source, injected scripts, and mapped user/library code.
 // Seven samples carry exactly 30 milliseconds of statistical weight.
 func ReactOwnership() *model.Recording {
 	rec := Empty()
 	rec.DisplayName = "Bundled React ownership evidence"
-	bundle := "wails://localhost/assets/index-SYNTHETIC.js"
+	bundle := "app://localhost/assets/index-SYNTHETIC.js"
 	bundled := func(name string, line int) model.StackFrame {
 		return model.StackFrame{Name: name, URL: bundle, Line: line, Column: 1}
 	}
@@ -39,13 +39,13 @@ func ReactOwnership() *model.Recording {
 		{Name: "getAnimations", SourceID: "native", Line: -1, Column: -1},
 		bundled("getFiniteAnimations", 23), bundled("exec2", 22), bundled("", 21), bundled("tick", 20),
 	}
-	plugin := model.StackFrame{Name: "cell", URL: "wails://localhost/_/plugins/kubernetes/assets/entry2.js", Line: 30, Column: 7}
+	feature := model.StackFrame{Name: "cell", URL: "app://localhost/src/features/table.js", Line: 30, Column: 7}
 	library := bundled("getFiniteAnimations", 40)
 	library.Original = &model.SourceLocation{Name: "getFiniteAnimations", URL: "/node_modules/@base-ui/react/utils/getFiniteAnimations.ts", Line: 4, Column: 2}
 	mappedUser := bundled("setProp", 50)
 	mappedUser.Original = &model.SourceLocation{Name: "commitRows", URL: "/src/rows.ts", Line: 9, Column: 3}
 	stacks := [][]model.StackFrame{
-		commit, animations, {plugin, bundled("renderWithHooks", 11), bundled("performSyncWorkOnRoot", 13)},
+		commit, animations, {feature, bundled("renderWithHooks", 11), bundled("performSyncWorkOnRoot", 13)},
 		{{Name: "commitRoot", URL: "/src/store.ts", Line: 8, Column: 1}},
 		{{Name: "bridge", URL: "user-script:2", Line: 1, Column: 1}},
 		{library}, {mappedUser},

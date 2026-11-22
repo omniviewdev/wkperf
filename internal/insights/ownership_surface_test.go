@@ -13,7 +13,7 @@ import (
 )
 
 func TestCatalogPreservesConfiguredOwnership(t *testing.T) {
-	rec := &model.Recording{StartTime: 0, EndTime: 1, Samples: []model.TargetSamples{{StackTraces: []model.StackTrace{{Timestamp: .1, StackFrames: []model.StackFrame{{Name: "utility", URL: "wails://localhost/assets/index.js", Line: 1}}}}, Durations: []float64{.02}}}}
+	rec := &model.Recording{StartTime: 0, EndTime: 1, Samples: []model.TargetSamples{{StackTraces: []model.StackTrace{{Timestamp: .1, StackFrames: []model.StackFrame{{Name: "utility", URL: "app://localhost/assets/index.js", Line: 1}}}}, Durations: []float64{.02}}}}
 	var opts Options
 	if err := json.Unmarshal([]byte(`{"Ownership":{"libraryURLs":["**/index.js"]}}`), &opts); err != nil {
 		t.Fatal(err)

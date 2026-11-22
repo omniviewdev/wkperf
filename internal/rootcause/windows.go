@@ -126,21 +126,21 @@ func windowLess(a, b Window) bool {
 	return a.Label < b.Label
 }
 
-func (b builder) windows() (longTasks, slowFrames, inputStalls, bursts, worst []Window) {
+func (b builder) windows(work *profile.WorkIndex) (longTasks, slowFrames, inputStalls, bursts, worst []Window) {
 	seen := map[string]bool{}
 	for _, task := range profile.Tasks(b.rec) {
 		from, to := math.Max(b.from, task.StartTime-b.rec.StartTime), math.Min(b.to, task.EndTime-b.rec.StartTime)
 		if to <= from {
 			continue
 		}
-		ms := profile.ActiveDuration(b.rec, b.rec.StartTime+from, b.rec.StartTime+to) * 1000
+		ms := work.ActiveDuration(b.rec.StartTime+from, b.rec.StartTime+to) * 1000
 		if number(ms) <= b.o.LongTaskMs {
 			continue
 		}
 		// A task union covers every instant with observed, non-GC work.
 		longTasks = append(longTasks, b.window("long-task", eventName(task.Record), from, to, ms, ms))
 	}
-	for _, f := range profile.Frames(b.rec, b.rec.StartTime+b.from, b.rec.StartTime+b.to) {
+	for _, f := range work.Frames(b.rec.StartTime+b.from, b.rec.StartTime+b.to) {
 		if f.Class == profile.FrameIdleGap || f.Class == profile.FrameActive && number(f.DurationMs) <= b.o.JankMs {
 			continue
 		}
@@ -168,7 +168,7 @@ func (b builder) windows() (longTasks, slowFrames, inputStalls, bursts, worst []
 	sort.Slice(longTasks, func(i, j int) bool { return windowLess(longTasks[i], longTasks[j]) })
 	sort.Slice(slowFrames, func(i, j int) bool { return windowLess(slowFrames[i], slowFrames[j]) })
 	sort.Slice(inputStalls, func(i, j int) bool { return windowLess(inputStalls[i], inputStalls[j]) })
-	bursts = b.eventBursts()
+	bursts = b.eventBursts(work)
 	b.completeWindows(longTasks)
 	b.completeWindows(slowFrames)
 	b.completeWindows(inputStalls)
@@ -181,7 +181,7 @@ func (b builder) windows() (longTasks, slowFrames, inputStalls, bursts, worst []
 	return
 }
 
-func (b builder) eventBursts() []Window {
+func (b builder) eventBursts(work *profile.WorkIndex) []Window {
 	events := b.rootEvents()
 	var out []Window
 	for i := 0; i < len(events); {
@@ -193,9 +193,9 @@ func (b builder) eventBursts() []Window {
 		}
 		if j-i >= 3 {
 			from := events[i].from
-			duration := profile.ActiveDuration(b.rec, b.rec.StartTime+from, b.rec.StartTime+end) * 1000
-			work := profile.Measure(b.rec, b.rec.StartTime+from, b.rec.StartTime+end).WorkMs
-			w := b.window("event-burst", "clustered script-event burst", from, end, duration, work)
+			lo, hi := b.rec.StartTime+from, b.rec.StartTime+end
+			duration := work.ActiveDuration(lo, hi) * 1000
+			w := b.window("event-burst", "clustered script-event burst", from, end, duration, work.Measure(lo, hi).WorkMs)
 			key := windowKey(w)
 			w.Stats = append(w.Stats, b.stat(key+".events", "Distinct script events in burst", float64(j-i), "count", timelineBasis))
 			out = append(out, w)
@@ -206,7 +206,7 @@ func (b builder) eventBursts() []Window {
 	return out
 }
 
-func (b builder) gcOverlaps() []GCOverlap {
+func (b builder) gcOverlaps(work *profile.WorkIndex) []GCOverlap {
 	seen := map[string]bool{}
 	var out []GCOverlap
 	for _, gc := range b.rec.Records {
@@ -275,7 +275,7 @@ func (b builder) gcOverlaps() []GCOverlap {
 			b.stat(key+".to_sec", "Collector interval end", g.ToSec, "s", timelineBasis),
 			b.stat(key+".duration_ms", "Observed active collector interval", g.DurationMs, "ms", timelineBasis),
 			b.stat(key+".events", "Distinct overlapping script events", float64(len(g.Events)), "count", timelineBasis),
-			b.stat(key+".work_overlap_ms", "Collector interval overlapping instrumented main-thread work", profile.Measure(b.rec, b.rec.StartTime+from, b.rec.StartTime+to).GCOverlapWithWorkMs, "ms", timelineBasis),
+			b.stat(key+".work_overlap_ms", "Collector interval overlapping instrumented main-thread work", work.Measure(b.rec.StartTime+from, b.rec.StartTime+to).GCOverlapWithWorkMs, "ms", timelineBasis),
 		}
 		out = append(out, g)
 	}

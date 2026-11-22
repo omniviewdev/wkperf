@@ -3,12 +3,15 @@
 package model
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/omniviewdev/wkperf/internal/diagnostic"
 )
@@ -193,49 +196,127 @@ func (f *StackFrame) UnmarshalJSON(data []byte) error {
 	type plain StackFrame
 	var v struct {
 		*plain
-		SourceID json.RawMessage `json:"sourceID"`
+		SourceID frameSourceID `json:"sourceID"`
 	}
 	v.plain = (*plain)(f)
 	if err := json.Unmarshal(data, &v); err != nil {
 		return err
 	}
-	if len(v.SourceID) == 0 || string(v.SourceID) == "null" {
-		return nil
+	if v.SourceID.err != nil {
+		return v.SourceID.err
 	}
-	if err := json.Unmarshal(v.SourceID, &f.SourceID); err == nil {
-		return nil
+	if v.SourceID.present {
+		f.SourceID = v.SourceID.value
 	}
-	var n json.Number
-	if err := json.Unmarshal(v.SourceID, &n); err != nil {
-		return fmt.Errorf("sourceID must be a string or number: %w", err)
-	}
-	f.SourceID = n.String()
 	return nil
 }
+
+// Keep each result until the enclosing frame is decoded: the last sourceID
+// wins even if an earlier duplicate had the wrong type.
+type frameSourceID struct {
+	value   string
+	present bool
+	err     error
+}
+
+func (id *frameSourceID) UnmarshalJSON(data []byte) error {
+	*id = frameSourceID{}
+	switch data[0] {
+	case 'n':
+		return nil
+	case '"':
+		value := data[1 : len(data)-1]
+		if bytes.IndexByte(value, '\\') < 0 && utf8.Valid(value) {
+			id.value = string(value)
+		} else {
+			id.err = json.Unmarshal(data, &id.value)
+		}
+	case '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+		id.value = string(data)
+	default:
+		var n json.Number
+		err := json.Unmarshal(data, &n)
+		id.err = fmt.Errorf("sourceID must be a string or number: %w", err)
+	}
+	id.present = true
+	return nil
+}
+
+const (
+	recordingDecodeContext = "decode recording: expected an object containing records or samples, or version/recording/overview"
+	recordingTrailingError = "decode recording: expected exactly one JSON object"
+)
 
 // Parse decodes a recording from r.
 func Parse(r io.Reader) (*Recording, error) {
 	dec := json.NewDecoder(r)
+	// Reject a malformed first value without waiting for EOF. Validate trailing
+	// input before the typed decode, even when the payload is large.
 	var root json.RawMessage
 	if err := dec.Decode(&root); err != nil {
-		return nil, fmt.Errorf("decode recording: expected an object containing records or samples, or version/recording/overview: %w", err)
+		return nil, fmt.Errorf("%s: %w", recordingDecodeContext, err)
 	}
-	var extra json.RawMessage
+	var extra struct{}
 	if err := dec.Decode(&extra); err != io.EOF {
-		return nil, fmt.Errorf("decode recording: expected exactly one JSON object")
+		return nil, errors.New(recordingTrailingError)
 	}
-	var envelope struct {
-		Recording json.RawMessage `json:"recording"`
+	return parseRecordingExport(root)
+}
+
+// The file reader reserves capacity for its EOF probe. Use that space for a
+// sentinel so syntax errors on EOF have an offset past the original input.
+func parseRecordingFile(data []byte) (*Recording, error) {
+	var export recordingExport
+	if err := json.Unmarshal(append(data, ' '), &export); err != nil {
+		if syntax, ok := err.(*json.SyntaxError); ok {
+			switch {
+			case syntax.Offset > int64(len(data)):
+				err = io.ErrUnexpectedEOF
+				if len(bytes.Trim(data, " \t\r\n")) == 0 {
+					err = io.EOF
+				}
+			case syntax.Offset > 0 && json.Valid(data[:syntax.Offset-1]):
+				return nil, errors.New(recordingTrailingError)
+			}
+		}
+		return nil, fmt.Errorf("%s: %w", recordingDecodeContext, err)
 	}
-	if err := json.Unmarshal(root, &envelope); err != nil {
-		return nil, fmt.Errorf("decode recording: expected an object with records or samples, or version/recording/overview: %w", err)
-	}
+	return export.recording, export.err
+}
+
+// Unmarshal validates the entire file before calling UnmarshalJSON. Borrow
+// the buffer only during the call; neither root nor wrapped payload is copied.
+type recordingExport struct {
+	recording *Recording
+	err       error
+}
+
+func (e *recordingExport) UnmarshalJSON(root []byte) error {
+	e.recording, e.err = parseRecordingExport(root)
+	// Only errors from validating the entire file need stream normalization.
+	return nil
+}
+
+func parseRecordingExport(root []byte) (*Recording, error) {
 	payload := root
-	if len(envelope.Recording) > 0 {
-		payload = envelope.Recording
-		if string(payload) == "null" {
+	switch root[0] {
+	case '{':
+		jsonObjectFields(root, func(key string, value []byte) {
+			if strings.EqualFold(key, "recording") {
+				payload = value
+			}
+		})
+		if bytes.Equal(payload, []byte("null")) {
 			return nil, fmt.Errorf("invalid recording payload; actual top-level keys: %s; expected recording object with records or samples", objectKeys(root))
 		}
+	case 'n':
+		// A top-level null has no fields, like an empty object.
+	default:
+		var envelope struct {
+			Recording json.RawMessage `json:"recording"`
+		}
+		err := json.Unmarshal(root, &envelope)
+		return nil, fmt.Errorf("decode recording: expected an object with records or samples, or version/recording/overview: %w", err)
 	}
 	var rec Recording
 	if err := json.Unmarshal(payload, &rec); err != nil {
@@ -252,16 +333,87 @@ func Parse(r io.Reader) (*Recording, error) {
 }
 
 func objectKeys(data []byte) string {
-	var object map[string]json.RawMessage
-	if err := json.Unmarshal(data, &object); err != nil {
+	if bytes.Equal(data, []byte("null")) {
+		return "[]"
+	}
+	if data[0] != '{' {
 		return "(not an object)"
 	}
-	keys := make([]string, 0, len(object))
-	for key := range object {
+	unique := make(map[string]struct{})
+	jsonObjectFields(data, func(key string, _ []byte) { unique[key] = struct{}{} })
+	keys := make([]string, 0, len(unique))
+	for key := range unique {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
 	return "[" + strings.Join(keys, ", ") + "]"
+}
+
+// jsonObjectFields walks only the members of an already validated JSON object.
+// Values are slices of the input, not copies. The scanner only tracks nesting
+// and strings; encoding/json remains responsible for syntax and type checks.
+func jsonObjectFields(data []byte, visit func(string, []byte)) {
+	i := 1
+	for {
+		i = skipJSONSpace(data, i)
+		if data[i] == '}' {
+			return
+		}
+		end := jsonStringEnd(data, i)
+		rawKey := data[i+1 : end-1]
+		key := string(rawKey)
+		if bytes.IndexByte(rawKey, '\\') >= 0 || !utf8.Valid(rawKey) {
+			_ = json.Unmarshal(data[i:end], &key)
+		}
+		start := skipJSONSpace(data, skipJSONSpace(data, end)+1)
+		i = start
+		depth := 0
+	value:
+		for {
+			switch data[i] {
+			case '"':
+				i = jsonStringEnd(data, i)
+				continue
+			case '{', '[':
+				depth++
+			case '}', ']', ',':
+				if depth == 0 {
+					break value
+				}
+				if data[i] != ',' {
+					depth--
+				}
+			}
+			i++
+		}
+		visit(key, bytes.TrimRight(data[start:i], " \t\r\n"))
+		if data[i] == '}' {
+			return
+		}
+		i++
+	}
+}
+
+func skipJSONSpace(data []byte, i int) int {
+	for {
+		switch data[i] {
+		case ' ', '\t', '\r', '\n':
+			i++
+		default:
+			return i
+		}
+	}
+}
+
+func jsonStringEnd(data []byte, start int) int {
+	for i := start + 1; ; i++ {
+		switch data[i] {
+		case '\\':
+			i++
+		case '"':
+			return i + 1
+		}
+	}
 }
 
 // Load reads and decodes the regular recording file at path.
@@ -278,9 +430,31 @@ func Load(path string) (*Recording, error) {
 		return nil, diagnostic.Wrap(diagnostic.LoadError, path, err)
 	}
 	defer f.Close()
-	rec, err := Parse(f)
+	rec, err := loadRecordingFile(f, info.Size())
 	if err != nil {
 		return nil, diagnostic.Wrap(diagnostic.LoadError, path, err)
 	}
 	return rec, nil
+}
+
+// Bound allocations based on file size alone. Larger files use Parse so an
+// invalid prefix in a large or sparse file fails before reading the rest.
+const maxBufferedRecordingSize = 128 << 20
+
+func loadRecordingFile(f *os.File, size int64) (*Recording, error) {
+	if size > maxBufferedRecordingSize {
+		return Parse(f)
+	}
+	// The extra byte probes for growth and makes room for the JSON sentinel
+	// without a second allocation. Parse any bytes read if the file shrank.
+	data := make([]byte, int(size)+1)
+	n, err := io.ReadFull(f, data)
+	switch err {
+	case io.EOF, io.ErrUnexpectedEOF:
+		return parseRecordingFile(data[:n])
+	case nil:
+		return Parse(io.MultiReader(bytes.NewReader(data), f))
+	default:
+		return nil, fmt.Errorf("%s: %w", recordingDecodeContext, err)
+	}
 }

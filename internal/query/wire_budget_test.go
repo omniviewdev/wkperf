@@ -21,7 +21,7 @@ func deepWireResult(rows, depth int) *Result {
 			if j == depth-1 {
 				name = fmt.Sprintf("leaf%03d", i)
 			}
-			frames[j] = Function{ID: fmt.Sprintf("f_%064x", j+1), Name: name, URL: "wails://app/assets/index.js", Line: j + 1, Column: 1, Category: "app"}
+			frames[j] = Function{ID: fmt.Sprintf("f_%064x", j+1), Name: name, URL: "app://localhost/assets/index.js", Line: j + 1, Column: 1, Category: "app"}
 		}
 		frames[depth-1].ID = fmt.Sprintf("f_%064x", depth+i+1)
 		result.Rows[i] = Row{Function: frames[depth-1], NodeID: fmt.Sprintf("n_%064x", i), SelfMS: 1, TotalMS: 1, Samples: 1, Percent: 100 / float64(rows), Depth: depth, Stack: frames}

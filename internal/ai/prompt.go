@@ -32,8 +32,8 @@ const (
 
 // Context describes the application under test so the model can tailor advice.
 type Context struct {
-	AppName     string // e.g. "Omniview"
-	Platform    string // e.g. "a Wails/WKWebView desktop app"
+	AppName     string // e.g. "Example App"
+	Platform    string // e.g. "a WKWebView desktop app"
 	Framework   string // e.g. "React"
 	Notes       string // free-form extra context
 	MaxFindings int    // findings rendered per report (default 10)

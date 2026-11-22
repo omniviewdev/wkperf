@@ -5,12 +5,14 @@ import "slices"
 type functionWork struct {
 	function    Function
 	self, total sum
+	seen        int
 }
 
-type edgeKey struct{ caller, callee frameKey }
+type edgeKey struct{ caller, callee *functionWork }
 type edgeWork struct {
 	edge  Edge
 	total sum
+	seen  int
 }
 
 type pathWork struct {
@@ -22,42 +24,42 @@ func (tree *Tree) aggregate(leafIDs []string) {
 	functions := make(map[frameKey]*functionWork)
 	edges := make(map[edgeKey]*edgeWork)
 	paths := make(map[string]*pathWork)
-	functionSeen := make(map[frameKey]int)
-	edgeSeen := make(map[edgeKey]int)
 	sampleIndex := 0
 	tree.EachSample(func(sample Sample) {
+		// A generation marks the first occurrence of each function and edge,
+		// without allocating a set per sample or counting recursive repeats.
 		generation := sampleIndex + 1
+		var caller *functionWork
 		for i, frame := range sample.Frames {
 			k := key(frame)
 			function := functions[k]
 			if function == nil {
-				function = &functionWork{function: Function{ID: FunctionID(frame), Frame: frame}}
+				function = &functionWork{function: Function{ID: frame.ID, Frame: frame}}
 				functions[k] = function
 			}
-			if functionSeen[k] != generation {
+			if function.seen != generation {
 				function.total.add(sample.WeightMs)
 				function.function.Samples++
-				functionSeen[k] = generation
+				function.seen = generation
 			}
 			if i == len(sample.Frames)-1 {
 				function.self.add(sample.WeightMs)
 				function.function.SelfSamples++
 			}
-			if i != 0 {
-				caller := sample.Frames[i-1]
-				ek := edgeKey{key(caller), k}
-				if edgeSeen[ek] == generation {
-					continue
-				}
+			if caller != nil {
+				ek := edgeKey{caller, function}
 				edge := edges[ek]
 				if edge == nil {
-					edge = &edgeWork{edge: Edge{CallerID: functions[ek.caller].function.ID, CalleeID: function.function.ID, Caller: caller, Callee: frame}}
+					edge = &edgeWork{edge: Edge{CallerID: caller.function.ID, CalleeID: function.function.ID, Caller: sample.Frames[i-1], Callee: frame}}
 					edges[ek] = edge
 				}
-				edge.total.add(sample.WeightMs)
-				edge.edge.Samples++
-				edgeSeen[ek] = generation
+				if edge.seen != generation {
+					edge.total.add(sample.WeightMs)
+					edge.edge.Samples++
+					edge.seen = generation
+				}
 			}
+			caller = function
 		}
 		id := leafIDs[sampleIndex]
 		path := paths[id]

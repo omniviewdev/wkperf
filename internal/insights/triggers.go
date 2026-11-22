@@ -166,10 +166,10 @@ func triggerStatsWithTree(rec *model.Recording, tree *flame.Tree, top int) []Tri
 	return finishTriggers(rec, tree, buckets, top)
 }
 
-func idleWakeups(rec *model.Recording, tree *flame.Tree, top int) WakeupStats {
+func idleWakeups(rec *model.Recording, tree *flame.Tree, frames []profile.Frame, top int) WakeupStats {
 	out := WakeupStats{Causes: []TriggerStat{}}
 	buckets := map[string]*triggerBucket{}
-	for _, f := range profile.Frames(rec, rec.StartTime, rec.EndTime) {
+	for _, f := range frames {
 		if f.Class != profile.FrameIdleGap || f.Occupancy.WorkMs <= 0 {
 			continue
 		}

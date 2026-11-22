@@ -35,25 +35,26 @@ func isStyleEvent(t string) bool { return t == "recalculate-styles" }
 // computeBreakdown partitions active recording time without treating sparse
 // rendering cadence, input stalls, or collector intervals as main-thread work.
 func computeBreakdown(rec *model.Recording) []Slice {
-	return breakdownWithWork(rec, profile.Measure(rec, rec.StartTime, rec.EndTime))
+	work := profile.NewWorkIndex(rec, rec.StartTime, rec.EndTime)
+	return breakdownWithWork(rec, work, work.Measure(rec.StartTime, rec.EndTime), work.Frames(rec.StartTime, rec.EndTime))
 }
 
-func breakdownWithWork(rec *model.Recording, work profile.Occupancy) []Slice {
-	wallMs := profile.ActiveDuration(rec, rec.StartTime, rec.EndTime) * 1000
+func breakdownWithWork(rec *model.Recording, index *profile.WorkIndex, work profile.Occupancy, frames []profile.Frame) []Slice {
+	wallMs := index.ActiveDuration(rec.StartTime, rec.EndTime) * 1000
 	const unattributed = "Active-frame time without instrumented main-thread work"
 	values := map[string]float64{
 		"Script": work.ScriptMs, "Style": work.StyleMs, "Layout": work.LayoutMs,
 		"Paint": work.PaintMs, "Composite": work.CompositeMs,
 	}
 	var activeFrames []span
-	for _, f := range profile.Frames(rec, rec.StartTime, rec.EndTime) {
+	for _, f := range frames {
 		if f.Class == profile.FrameActive {
 			activeFrames = append(activeFrames, span{f.Start, f.End})
 		}
 	}
 	for _, f := range mergeSpans(activeFrames) {
-		occupancy := profile.Measure(rec, f.s, f.e)
-		unused := profile.ActiveDuration(rec, f.s, f.e)*1000 - occupancy.WorkMs
+		occupancy := index.Measure(f.s, f.e)
+		unused := index.ActiveDuration(f.s, f.e)*1000 - occupancy.WorkMs
 		if unused > 0 {
 			values[unattributed] += unused
 		}

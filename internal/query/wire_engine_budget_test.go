@@ -15,7 +15,7 @@ func deepBudgetRecording(reverse bool) *model.Recording {
 		frames := make([]model.StackFrame, 400)
 		for j := range frames {
 			position := len(frames) - j - 1
-			frames[j] = model.StackFrame{Name: fmt.Sprintf("render%03d", position), URL: "wails://app/assets/index.js", Line: position + 1, Column: 1}
+			frames[j] = model.StackFrame{Name: fmt.Sprintf("render%03d", position), URL: "app://localhost/assets/index.js", Line: position + 1, Column: 1}
 		}
 		frames[0].Name = fmt.Sprintf("leaf%03d", i)
 		traces[i] = model.StackTrace{Timestamp: .01 + float64(i)*.05, StackFrames: frames}

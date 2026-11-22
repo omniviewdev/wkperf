@@ -41,8 +41,10 @@ func Analyze(rec *model.Recording, source string, o Options) *Report {
 	}
 	tree := flame.Build(rec, flame.Options{Ownership: o.Ownership})
 	o.Ownership = tree.Ownership
-	sum := analyze.SummarizeWithTree(rec, source, tree)
-	work, costs := profile.MeasureRecords(rec, rec.StartTime, rec.EndTime)
+	workIndex := profile.NewWorkIndex(rec, rec.StartTime, rec.EndTime)
+	sum := analyze.SummarizeWithTreeAndWork(rec, source, tree, workIndex)
+	work, costs := workIndex.MeasureRecords(rec.StartTime, rec.EndTime)
+	frames := workIndex.Frames(rec.StartTime, rec.EndTime)
 	r := &Report{
 		SchemaVersion:       "wkperf-insights/v3",
 		Top:                 o.Top,
@@ -59,7 +61,7 @@ func Analyze(rec *model.Recording, source string, o Options) *Report {
 		Name:                rec.DisplayName,
 		DurationSec:         sum.DurationSec,
 		Summary:             sum,
-		Breakdown:           breakdownWithWork(rec, work),
+		Breakdown:           breakdownWithWork(rec, workIndex, work, frames),
 		GCMs:                work.GCMs,
 		GCOverlapWithWorkMs: work.GCOverlapWithWorkMs,
 		StalledComposites:   sum.StalledComposites,
@@ -100,7 +102,7 @@ func Analyze(rec *model.Recording, source string, o Options) *Report {
 
 	idx := newSampleIndex(tree, rec.StartTime, o.WindowStartSec)
 	r.Triggers = triggerStatsWithTree(rec, tree, o.Top)
-	r.Wakeups = idleWakeups(rec, tree, o.Top)
+	r.Wakeups = idleWakeups(rec, tree, frames, o.Top)
 	r.SampleCoverage = sampleCoverage(sum, work.ScriptMs)
 	r.SampleCoverage.SampleCount = tree.SampleCount()
 	r.SampleCoverage.TimedSampleCount = len(tree.Samples)
@@ -121,8 +123,8 @@ func Analyze(rec *model.Recording, source string, o Options) *Report {
 		sampledMs += r.SampleCoverage.UntimedMs
 	}
 	note := rootcause.UntimedAttributionNote(r.SampleCoverage.UntimedMs, sampledMs)
-	allSlow := slowFrames(rec, idx, o.JankMs)
-	allStalls := inputStalls(rec, idx)
+	allSlow := slowFrames(rec, workIndex, frames, idx, o.JankMs)
+	allStalls := inputStalls(rec, frames, idx)
 	allLong := longTasks(rec, idx, o.LongTaskMs)
 	for i := range allSlow {
 		allSlow[i].SampleStatus = note
@@ -137,11 +139,11 @@ func Analyze(rec *model.Recording, source string, o Options) *Report {
 	r.InputStalls, r.InputStallsTotal = allStalls, len(allStalls)
 	r.LongTasks, r.LongTasksTotal = allLong, len(allLong)
 
-	r.RootCause = rootcause.Build(rec, tree, rootcause.Options{
+	r.RootCause = rootcause.BuildWithWorkIndex(rec, tree, rootcause.Options{
 		Source: source, OffsetSec: o.WindowStartSec, Sourcemaps: o.Sourcemaps,
 		Top: o.Top, JankMs: o.JankMs, LongTaskMs: o.LongTaskMs, Ownership: o.Ownership,
-	})
-	ctx := &ruleCtx{rec: rec, sum: sum, rep: r, opt: o, mods: mods, slow: allSlow, long: allLong, costs: costs, wallMs: sum.DurationSec * 1000}
+	}, workIndex)
+	ctx := &ruleCtx{rec: rec, sum: sum, rep: r, opt: o, mods: mods, slow: allSlow, long: allLong, costs: costs, frames: frames, wallMs: sum.DurationSec * 1000}
 	r.Findings = runRules(ctx)
 	r.Findings = mergeSampleFindings(append(r.Findings, rootFindings(ctx)...))
 	sortFindings(r.Findings)
@@ -300,9 +302,9 @@ func stringDetail(r *model.Record) string {
 	return ""
 }
 
-func slowFrames(rec *model.Recording, idx *sampleIndex, jankMs float64) []SlowFrame {
+func slowFrames(rec *model.Recording, workIndex *profile.WorkIndex, frames []profile.Frame, idx *sampleIndex, jankMs float64) []SlowFrame {
 	out := []SlowFrame{}
-	for _, f := range profile.Frames(rec, rec.StartTime, rec.EndTime) {
+	for _, f := range frames {
 		if f.Class != profile.FrameActive || f.DurationMs <= jankMs {
 			continue
 		}
@@ -314,7 +316,7 @@ func slowFrames(rec *model.Recording, idx *sampleIndex, jankMs float64) []SlowFr
 			GCOverlapWithWorkMs: work.GCOverlapWithWorkMs,
 		}
 		byEvent := map[string]float64{}
-		for _, cost := range profile.ExclusiveRecords(rec, f.Start, f.End) {
+		for _, cost := range workIndex.ExclusiveRecords(f.Start, f.End) {
 			if cost.Record.Type == model.TypeScript {
 				byEvent[eventLabel(&cost.Record)] += cost.ExclusiveMs
 			}
@@ -347,9 +349,9 @@ func slowFrames(rec *model.Recording, idx *sampleIndex, jankMs float64) []SlowFr
 	return out
 }
 
-func inputStalls(rec *model.Recording, idx *sampleIndex) []InputStall {
+func inputStalls(rec *model.Recording, frames []profile.Frame, idx *sampleIndex) []InputStall {
 	out := []InputStall{}
-	for _, f := range profile.Frames(rec, rec.StartTime, rec.EndTime) {
+	for _, f := range frames {
 		if f.Class != profile.FrameInputStall {
 			continue
 		}

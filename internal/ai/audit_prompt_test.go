@@ -37,8 +37,8 @@ func sampleAudit() *audit.Report {
 }
 
 func TestAuditPromptDeterministicAndContent(t *testing.T) {
-	a := BuildAuditPrompt(sampleAudit(), Context{AppName: "Omniview"})
-	b := BuildAuditPrompt(sampleAudit(), Context{AppName: "Omniview"})
+	a := BuildAuditPrompt(sampleAudit(), Context{AppName: "Example App"})
+	b := BuildAuditPrompt(sampleAudit(), Context{AppName: "Example App"})
 	if a != b {
 		t.Fatal("prompt not deterministic")
 	}

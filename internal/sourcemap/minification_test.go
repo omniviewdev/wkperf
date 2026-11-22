@@ -10,7 +10,7 @@ import (
 )
 
 func denseMinifiedFrames() []model.StackFrame {
-	const bundle = "wails://localhost/_/plugins/example/assets/entry2.js"
+	const bundle = "app://localhost/assets/feature.js"
 	return []model.StackFrame{
 		{Name: "ga", URL: bundle, Line: 3, Column: 160},
 		{Name: "wE", URL: bundle, Line: 4, Column: 1120},

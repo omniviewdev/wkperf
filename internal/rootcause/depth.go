@@ -22,7 +22,7 @@ func percentile(values []float64, p float64) float64 {
 func stackDepth(frames []flame.Frame) (repeated, commit int) {
 	counts := map[string]int{}
 	for _, f := range frames {
-		key := flame.FunctionID(f)
+		key := builtFrameID(f)
 		counts[key]++
 		if counts[key] > repeated {
 			repeated = counts[key]
@@ -69,7 +69,11 @@ func (b builder) depth() DepthStats {
 	})
 	for _, stack := range b.stacks(outlierSamples, "depth.outlier") {
 		repeat, commit := stackDepth(stack.Frames)
-		key := "depth.outlier." + stackKey(stack.Frames)
+		suffix := b.pathKeys[stack.StackID]
+		if suffix == "" {
+			suffix = stackKey(stack.Frames)
+		}
+		key := "depth.outlier." + suffix
 		d.Outliers = append(d.Outliers, DepthOutlier{Depth: len(stack.Frames), RepeatedFrameDepth: repeat, CommitDepth: commit, Stack: stack, Command: stack.Command, Stats: []Stat{
 			b.stat(key+".depth", "Outlier stack depth", float64(len(stack.Frames)), "frames", sampledBasis),
 			b.stat(key+".repeated_frame_depth", "Repeated identical frame appearances", float64(repeat), "frames", sampledBasis),
@@ -102,7 +106,7 @@ func repeatedFrame(frames []flame.Frame) *RepeatedFrame {
 	counts := make(map[string]int, len(frames))
 	var best RepeatedFrame
 	for _, f := range frames {
-		key := flame.FunctionID(f)
+		key := builtFrameID(f)
 		counts[key]++
 		if best.Count == 0 || counts[key] > best.Count || counts[key] == best.Count && frameLess(f, best.Frame) {
 			best = RepeatedFrame{Frame: f, Count: counts[key]}
@@ -115,19 +119,20 @@ func repeatedFrame(frames []flame.Frame) *RepeatedFrame {
 }
 
 func recursionFrame(frames []flame.Frame) *RepeatedFrame {
-	var prior, previous flame.Frame
+	var priorID, previousID string
 	run, pairRun, seen := 0, 0, 0
 	var best RepeatedFrame
 	for _, f := range frames {
 		if !contextFrame(f) {
 			continue
 		}
-		if seen > 0 && flame.FunctionID(f) == flame.FunctionID(previous) {
+		id := builtFrameID(f)
+		if seen > 0 && id == previousID {
 			run++
 		} else {
 			run = 1
 		}
-		if seen >= 2 && flame.FunctionID(f) == flame.FunctionID(prior) {
+		if seen >= 2 && id == priorID {
 			pairRun++
 		} else {
 			pairRun = min(seen+1, 2)
@@ -136,7 +141,7 @@ func recursionFrame(frames []flame.Frame) *RepeatedFrame {
 		if count >= 32 && (best.Count == 0 || count > best.Count || count == best.Count && frameLess(f, best.Frame)) {
 			best = RepeatedFrame{Frame: f, Count: count}
 		}
-		prior, previous = previous, f
+		priorID, previousID = previousID, id
 		seen++
 	}
 	if best.Count == 0 {
@@ -154,7 +159,7 @@ func reactFiberLevels(frames []flame.Frame) int {
 		}
 		for _, name := range frameNames(f) {
 			if strings.HasSuffix(name, "OnFiber") || strings.HasPrefix(name, "recursivelyTraverse") {
-				key := flame.FunctionID(f)
+				key := builtFrameID(f)
 				counts[key]++
 				maximum = max(maximum, counts[key])
 				break

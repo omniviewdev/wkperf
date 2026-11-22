@@ -196,21 +196,29 @@ func Summarize(rec *model.Recording, source string) *metrics.Summary {
 // samples, CPU, memory and pressure events are kept by timestamp. DurationSec
 // and chart series offsets are relative to the window start.
 func SummarizeWith(rec *model.Recording, source string, o Options) *metrics.Summary {
-	return summarize(rec, source, o, nil)
+	return summarize(rec, source, o, nil, nil)
 }
 
 // SummarizeWithTree reuses one full-recording tree across reports and analysis.
 func SummarizeWithTree(rec *model.Recording, source string, tree *flame.Tree) *metrics.Summary {
-	return summarize(rec, source, Options{}, tree)
+	return summarize(rec, source, Options{}, tree, nil)
 }
 
-func summarize(rec *model.Recording, source string, o Options, tree *flame.Tree) *metrics.Summary {
+// SummarizeWithTreeAndWork reuses timeline work and a tree from the same recording.
+func SummarizeWithTreeAndWork(rec *model.Recording, source string, tree *flame.Tree, work *profile.WorkIndex) *metrics.Summary {
+	return summarize(rec, source, Options{}, tree, work)
+}
+
+func summarize(rec *model.Recording, source string, o Options, tree *flame.Tree, workIndex *profile.WorkIndex) *metrics.Summary {
 	s := &metrics.Summary{Source: source}
 	if rec == nil {
 		return s
 	}
 	s.Name = rec.DisplayName
 	win := o.window(rec)
+	if workIndex == nil {
+		workIndex = profile.NewWorkIndex(rec, win.lo, win.hi)
+	}
 	duration := win.dur()
 	s.WallDurationSec = math.Max(0, win.hi-win.lo)
 	s.PausedDurationSec = math.Max(0, s.WallDurationSec-duration)
@@ -241,7 +249,7 @@ func summarize(rec *model.Recording, source string, o Options, tree *flame.Tree)
 		urls         = map[string]bool{}
 	)
 
-	frameData := profile.Frames(rec, win.lo, win.hi)
+	frameData := workIndex.Frames(win.lo, win.hi)
 	idleGapMs, activeFrameMs, observedFrameMs := 0.0, 0.0, 0.0
 	stallCount, stallMs, stallMaxMs := 0, 0.0, 0.0
 	jankWorkExcessMs, jankIntervalExcessMs := 0.0, 0.0
@@ -370,7 +378,7 @@ func summarize(rec *model.Recording, source string, o Options, tree *flame.Tree)
 	})
 	sort.Float64s(cpuMain)
 	sort.Float64s(netMs)
-	work, costs := profile.MeasureRecords(rec, win.lo, win.hi)
+	work, costs := workIndex.MeasureRecords(win.lo, win.hi)
 	scriptTimeMs := work.ScriptMs
 	layoutTimeMs := work.StyleMs + work.LayoutMs + work.PaintMs + work.CompositeMs
 	scriptExclusive, layoutExclusive := map[string]float64{}, map[string]float64{}
