@@ -40,18 +40,48 @@ func SampleIDs(tree *flame.Tree, keep func(flame.Sample) bool) []string {
 		return nil
 	}
 	var ids []string
-	index := 0
-	tree.EachSample(func(s flame.Sample) {
-		if keep == nil || keep(s) {
-			ids = append(ids, digest(sampleSignature(s), strconv.Itoa(index)))
+	keys := make(map[string]string)
+	eachSamplePath(tree, func(s flame.Sample, index int, pathID string) {
+		if keep != nil && !keep(s) {
+			return
 		}
-		index++
+		key := keys[pathID]
+		if key == "" {
+			key = stackKey(s.Frames)
+			if pathID != "" {
+				keys[pathID] = key
+			}
+		}
+		ids = append(ids, sampleID(s, index, key))
 	})
 	return ids
 }
 
-func sampleSignature(s flame.Sample) string {
-	return digest(s.TargetID, decimal(s.Timestamp), strconv.FormatFloat(s.WeightMs, 'g', -1, 64), strconv.FormatBool(s.Untimed), stackKey(s.Frames))
+// eachSamplePath preserves EachSample's order, which is part of sample identity.
+func eachSamplePath(tree *flame.Tree, visit func(flame.Sample, int, string)) {
+	index := 0
+	each := func(samples []flame.Sample, paths []string) {
+		for i, sample := range samples {
+			pathID := ""
+			if i < len(paths) {
+				pathID = paths[i]
+			}
+			visit(sample, index, pathID)
+			index++
+		}
+	}
+	each(tree.Untimed, tree.UntimedPathIDs())
+	each(tree.Samples, tree.SamplePathIDs())
+}
+
+func sampleID(s flame.Sample, index int, key string) string {
+	signature := digest(s.TargetID, decimal(s.Timestamp), strconv.FormatFloat(s.WeightMs, 'g', -1, 64), strconv.FormatBool(s.Untimed), key)
+	return digest(signature, strconv.Itoa(index))
+}
+
+type sampleEvidence struct {
+	stackKey string
+	ids      []string
 }
 
 type sampleRef struct {
@@ -71,12 +101,18 @@ func sampleReference(s flame.Sample) sampleRef {
 }
 
 func (b *builder) indexSamples() {
-	b.sampleEvidence = make(map[sampleRef][]string, b.tree.SampleCount())
-	index := 0
-	b.tree.EachSample(func(s flame.Sample) {
+	b.sampleEvidence = make(map[sampleRef]sampleEvidence, b.tree.SampleCount())
+	eachSamplePath(b.tree, func(s flame.Sample, index int, pathID string) {
 		ref := sampleReference(s)
-		b.sampleEvidence[ref] = append(b.sampleEvidence[ref], digest(sampleSignature(s), strconv.Itoa(index)))
-		index++
+		// Canonical paths are lookup keys, not replacements for report digests.
+		key := b.pathKeys[pathID]
+		if key == "" {
+			key = stackKey(s.Frames)
+		}
+		evidence := b.sampleEvidence[ref]
+		evidence.stackKey = key
+		evidence.ids = append(evidence.ids, sampleID(s, index, key))
+		b.sampleEvidence[ref] = evidence
 	})
 }
 
@@ -87,7 +123,7 @@ func (b builder) sampleIDs(samples []flame.Sample) []string {
 		ref := sampleReference(s)
 		if !seen[ref] {
 			seen[ref] = true
-			ids = append(ids, b.sampleEvidence[ref]...)
+			ids = append(ids, b.sampleEvidence[ref].ids...)
 		}
 	}
 	return ids

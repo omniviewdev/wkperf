@@ -13,3 +13,19 @@ A subsequent capture with the stricter protocol lifecycle and clock validation r
 ```sh
 GOWORK=off go test ./internal/insights -run '^$' -bench '^BenchmarkTriggerStatsLongRecording$' -benchmem -benchtime=1x -count=5
 ```
+
+### Profiling the analyzer itself
+
+The v0.7 audit compared release binaries against v0.6.0, not instrumented browser timings. Ten existing wrapped WebKit exports ranged from 335,390 to 728,766,611 bytes. Both binaries received identical paths, `--ai=false`, explicit ownership rules and `--format json`. The complete JSON reports matched byte for byte. A clipped metrics query, a clipped hotspot query and a folded-stack export also matched. This checks stability against an earlier implementation, not the absolute accuracy of the underlying browser clocks.
+
+On one 72,922,023-byte recording, 1,025 samples contained 159,069 frame occurrences but only 536 distinct generated frames. [Go CPU and allocation profiles](https://go.dev/doc/diagnostics#profiling) identified repeated frame hashing, GC-detail decoding, per-window occupancy sweeps and whole-recording JSON copies. Reusing frame identities and measured intervals preserves the original IDs and weights. Common non-GC records no longer require a JSON decode. Regular files up to 128 MiB use a size-aware input buffer; larger files do not preallocate their advertised size. This last bound is not a limit on total memory use.
+
+To reproduce the component measurements with your own recording:
+
+```sh
+export GOWORK=off WKPERF_BENCH_RECORDING=/absolute/path/to/recording.json
+go test ./internal/model -run '^$' -bench 'Benchmark(Load|Parse)Recording$' -benchmem -benchtime=1x -count=5
+go test ./internal/rootcause -run '^$' -bench '^BenchmarkRealProfile$' -benchmem -benchtime=1x -count=5
+```
+
+For end-to-end measurements, run `wkperf analyze "$WKPERF_BENCH_RECORDING" --ai=false --format json` as a fresh process. Alternate binary order within successive pairs, use the same output destination, and check report equality separately. Report wall time and process peak RSS independently of cumulative allocated bytes. Peaks and timings depend on the build toolchain, data and operating system.

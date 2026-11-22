@@ -11,6 +11,24 @@ import (
 
 func closeTo(a, b float64) bool { return math.Abs(a-b) < 1e-6 }
 
+func TestGCDetailsClassifier(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want bool
+	}{
+		{`{"__type":"GarbageCollection"}`, true},
+		{`{"__t\u0079pe":"Garbage\u0043ollection"}`, true},
+		{`{"nested":{"__type":"GarbageCollection"}}`, false},
+		{`{"__type":"GarbageCollection","__type":"other"}`, false},
+		{`{"__type":"GarbageCollection"}garbage`, false},
+		{`"GarbageCollection"`, false},
+	} {
+		if got := IsGC(model.Record{Details: json.RawMessage(tc.raw)}); got != tc.want {
+			t.Errorf("IsGC(%s) = %v; want %v", tc.raw, got, tc.want)
+		}
+	}
+}
+
 func TestExclusiveOccupancyAndPausedIntervals(t *testing.T) {
 	rec := &model.Recording{StartTime: 0, EndTime: 1, Discontinuities: []model.Discontinuity{{StartTime: .4, EndTime: .6}}, Records: []model.Record{
 		{Type: model.TypeScript, EventType: "timer-fired", StartTime: 0, EndTime: 1},

@@ -61,7 +61,7 @@ wkperf version
 
 If you set `GOBIN`, add that directory instead. On Windows, add `%USERPROFILE%\go\bin` to your user `Path`.
 
-For a reproducible CLI install, pin the release tag, for example `go install github.com/omniviewdev/wkperf@v0.6.0`.
+For a reproducible CLI install, pin the release tag, for example `go install github.com/omniviewdev/wkperf@v0.7.0`.
 
 > v0.5.0 updates the machine-readable JSON contracts. Agents and integrations upgrading from v0.4.0 should check the schema discriminator and run `wkperf schema`.
 

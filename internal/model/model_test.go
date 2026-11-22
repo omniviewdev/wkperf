@@ -1,16 +1,21 @@
 package model
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/omniviewdev/wkperf/internal/diagnostic"
 )
 
 func TestParseFlatWrappedAndLegacy(t *testing.T) {
@@ -42,6 +47,169 @@ func TestParseInvalidListsActualAndExpectedKeys(t *testing.T) {
 		if strings.Contains(input, "banana") && (!strings.Contains(err.Error(), "banana") || !strings.Contains(err.Error(), "records") || !strings.Contains(err.Error(), "samples")) {
 			t.Fatalf("error lacks actual/expected keys: %v", err)
 		}
+	}
+}
+
+func TestParseWrappedEnvelopePrecedence(t *testing.T) {
+	const payload = `{"displayName":"quote \" slash \\ braces } ] { ,","records":[],"samples":[{"stackTraces":[{"timestamp":1.25,"stackFrames":[{"sourceID":9007199254740993,"name":"leaf","line":1,"column":81,"original":{"url":"src.ts","line":2,"column":5}},{"sourceID":"\u0032","name":"root","line":3,"column":9}]}],"durations":[0.005]}]}`
+	want, err := Parse(strings.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := "\n\t" + `{"records":"ignored","recording":[false],"overview":{"recording":{"samples":[]}},"rEc\u006FrDiNg" : ` + payload + `  }` + "\r\n"
+	got, err := Parse(strings.NewReader(input))
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("wrapped payload = %+v, %v; want %+v", got, err, want)
+	}
+	trace := got.Samples[0].StackTraces[0]
+	leaf, root := trace.StackFrames[0], trace.StackFrames[1]
+	if trace.Timestamp != 1.25 || got.Samples[0].Durations[0] != 0.005 ||
+		leaf.SourceID != "9007199254740993" || leaf.Name != "leaf" || leaf.Line != 1 || leaf.Column != 81 ||
+		leaf.Original == nil || *leaf.Original != (SourceLocation{URL: "src.ts", Line: 2, Column: 5}) ||
+		root.SourceID != "2" || root.Name != "root" || root.Line != 3 || root.Column != 9 {
+		t.Fatalf("changed sample coordinates or frame identity: %+v", trace)
+	}
+}
+
+func TestParseMalformedEnvelopePrecedence(t *testing.T) {
+	for _, tc := range []struct{ input, want string }{
+		{`{"recording":{"records":[]},"RECORDING":null,"records":[]}`, "actual top-level keys: [RECORDING, recording, records]"},
+		{`{"recording":{"reco\u0072ds":false,"a":[]},"overview":null}`, "actual keys: [a, records]"},
+		{`{"records":[}],"recording":{"records":[]}}`, "expected an object containing"},
+		{`{"recording":null} trailing`, "expected exactly one JSON object"},
+		{`{"records":[]} false`, "expected exactly one JSON object"},
+		{`null`, "actual keys: []"},
+	} {
+		if got, err := Parse(strings.NewReader(tc.input)); got != nil || err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("Parse(%s) = %+v, %v; want error containing %q", tc.input, got, err, tc.want)
+		}
+	}
+}
+
+func TestStackFrameSourceIDCompatibility(t *testing.T) {
+	for _, tc := range []struct {
+		input, want string
+		wantErr     bool
+	}{
+		{`{"sourceID":false,"SOURCEID":-12.30e+45}`, "-12.30e+45", false},
+		{`{"sourceID":123,"sourceID":null}`, "previous", false},
+		{`{"sourceID":"valid","sourceID":[]}`, "previous", true},
+		{`{"sourceID":""}`, "", false},
+		{`{"sourceID":"source-\uD800"}`, "source-\uFFFD", false},
+		{"{\"sourceID\":\"\xff\"}", "\uFFFD", false},
+	} {
+		frame := StackFrame{SourceID: "previous"}
+		err := json.Unmarshal([]byte(tc.input), &frame)
+		if frame.SourceID != tc.want || (err != nil) != tc.wantErr {
+			t.Errorf("decode %q: got sourceID %q, error %v; want %q, error %t", tc.input, frame.SourceID, err, tc.want, tc.wantErr)
+		}
+	}
+}
+
+func benchmarkRecordingPath(b *testing.B) string {
+	b.Helper()
+	path := os.Getenv("WKPERF_BENCH_RECORDING")
+	if path == "" {
+		b.Skip("set WKPERF_BENCH_RECORDING to an absolute path to a WebKit recording")
+	}
+	return path
+}
+
+func BenchmarkParseRecording(b *testing.B) {
+	path := benchmarkRecordingPath(b)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.SetBytes(int64(len(data)))
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := Parse(bytes.NewReader(data)); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkLoadRecording(b *testing.B) {
+	path := benchmarkRecordingPath(b)
+	info, err := os.Stat(path)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.SetBytes(info.Size())
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := Load(path); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func TestLoadMatchesParse(t *testing.T) {
+	const flat = `{"records":[],"startTime":13.25,"endTime":18.5,"samples":[{"stackTraces":[{"timestamp":14,"stackFrames":[{"sourceID":9007199254740993,"line":1,"column":81}]}],"durations":[0.005]}]}`
+	path := filepath.Join(t.TempDir(), "recording.json")
+	for _, input := range []string{
+		flat, " \r\n" + `{"recording":` + flat + `,"overview":null}` + "\t ",
+		`{"sampleStackTraces":[{"stackFrames":[{"name":"leaf"}]}],"sampleDurations":[0.002]}`,
+		"", " \t\r\n", "{", `{"records":[{"type":"unfinished`,
+		`{"x":"\`, `{"x":"\u12`, `{"x":true,`, `{"x":-`, `{"x":1e`,
+		`{"records":[}]}`, `{"x":1e }`, `false`, `null`,
+		`{"records":[]}null`, `{"records":"bad"} ?`, `{"recording":null}{`,
+		`{"recording":null}`, `{"recording":{"records":"bad"}}`,
+	} {
+		if err := os.WriteFile(path, []byte(input), 0600); err != nil {
+			t.Fatal(err)
+		}
+		want, wantErr := Parse(strings.NewReader(input))
+		got, gotErr := Load(path)
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("Load(%q) = %+v; Parse = %+v", input, got, want)
+		}
+		if wantErr == nil {
+			if gotErr != nil {
+				t.Errorf("Load(%q): unexpected error %v", input, gotErr)
+			}
+			continue
+		}
+		var typed *diagnostic.Error
+		if !errors.As(gotErr, &typed) || typed.Code != diagnostic.LoadError || typed.File != path ||
+			typed.Message() != wantErr.Error() {
+			t.Errorf("Load(%q): %v; want a typed load error for %q", input, gotErr, wantErr)
+		}
+		for _, target := range []error{io.EOF, io.ErrUnexpectedEOF} {
+			if errors.Is(gotErr, target) != errors.Is(wantErr, target) {
+				t.Errorf("Load(%q): %v does not match Parse's %v wrapping", input, gotErr, target)
+			}
+		}
+	}
+}
+
+func TestLoadRejectsSparseRecordingWithMalformedPrefix(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sparse.json")
+	if err := os.WriteFile(path, []byte(`!`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(path, maxBufferedRecordingSize+1); err != nil {
+		t.Fatal(err)
+	}
+	var syntax *json.SyntaxError
+	if rec, err := Load(path); rec != nil || !errors.As(err, &syntax) || syntax.Offset != 1 {
+		t.Fatalf("Load sparse malformed recording = %+v, %v; want syntax error at byte 1", rec, err)
+	}
+}
+
+func TestLoadRecordingFileReadsPastReportedSize(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "recording.json")
+	if err := os.WriteFile(path, []byte(`{"records":[]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if rec, err := loadRecordingFile(f, 4); err != nil || rec.Records == nil {
+		t.Fatalf("load with stale size = %+v, %v; want recording with empty records", rec, err)
 	}
 }
 

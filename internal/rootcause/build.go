@@ -19,6 +19,11 @@ const timelineBasis = "instrumented timeline interval"
 
 // Build uses a supplied mapped tree, or builds a canonical tree when tree is nil.
 func Build(rec *model.Recording, tree *flame.Tree, o Options) *Report {
+	return BuildWithWorkIndex(rec, tree, o, nil)
+}
+
+// BuildWithWorkIndex reuses measured timeline work from the same recording.
+func BuildWithWorkIndex(rec *model.Recording, tree *flame.Tree, o Options, work *profile.WorkIndex) *Report {
 	r := &Report{SchemaVersion: "2", Source: o.Source}
 	if rec == nil {
 		return r
@@ -74,7 +79,7 @@ func Build(rec *model.Recording, tree *flame.Tree, o Options) *Report {
 	}
 	functions := tree.Functions()
 	if len(functions) > 0 {
-		r.Commands.Paths = b.query("paths "+quote(flame.FunctionID(functions[0].Frame)), from, to)
+		r.Commands.Paths = b.query("paths "+quote(functions[0].ID), from, to)
 	} else {
 		r.Commands.Paths = b.reproduce("samples.count")
 		r.Commands.Depth = b.reproduce("samples.count")
@@ -83,8 +88,8 @@ func Build(rec *model.Recording, tree *flame.Tree, o Options) *Report {
 	r.HotPath = b.hotPath(tree, "hot_path", from, to)
 	r.Commands.HotPath = r.HotPath.Command
 	r.Commands.Window = r.HotPath.Command
-	r.Owners, r.ContextAttribution, r.ContextUnavailable = b.ownership()
 	b.indexSamples()
+	r.Owners, r.ContextAttribution, r.ContextUnavailable = b.ownership()
 	r.Findings = b.stackFindings()
 	r.PeriodicRoots = b.periodicRoots()
 	totalMs := tree.Root.TotalMs
@@ -104,8 +109,14 @@ func Build(rec *model.Recording, tree *flame.Tree, o Options) *Report {
 	}
 	r.Depth = b.depth()
 	r.Findings = append(r.Findings, b.depthFindings(r.Depth)...)
-	r.GCOverlaps = b.gcOverlaps()
-	r.LongTasks, r.SlowFrames, r.InputStalls, r.EventBursts, r.Windows = b.windows()
+	lo, hi := rec.StartTime+from, rec.StartTime+to
+	if work == nil {
+		// GC and burst windows round active boundaries to relative nanoseconds.
+		roundLo, roundHi := rec.StartTime+seconds(lo-rec.StartTime), rec.StartTime+seconds(hi-rec.StartTime)
+		work = profile.NewWorkIndex(rec, math.Min(lo, roundLo), math.Max(hi, roundHi))
+	}
+	r.GCOverlaps = b.gcOverlaps(work)
+	r.LongTasks, r.SlowFrames, r.InputStalls, r.EventBursts, r.Windows = b.windows(work)
 	sampledMs := tree.Root.TotalMs
 	excludedMs := 0.0
 	if !tree.UntimedIncluded {
@@ -118,7 +129,7 @@ func Build(rec *model.Recording, tree *flame.Tree, o Options) *Report {
 		b.stat("samples.untimed_ms", "Sample weight without timestamps", tree.UntimedTotal.Ms, "ms", sampledBasis),
 		b.stat("samples.untimed_excluded_ms", "Untimed sample weight excluded from this window", excludedMs, "ms", sampledBasis),
 		b.stat("window.duration_ms", "Selected wall duration", (to-from)*1000, "ms", timelineBasis),
-		b.stat("window.active_ms", "Active wall duration", profile.ActiveDuration(rec, rec.StartTime+from, rec.StartTime+to)*1000, "ms", timelineBasis),
+		b.stat("window.active_ms", "Active wall duration", work.ActiveDuration(lo, hi)*1000, "ms", timelineBasis),
 		b.stat("window.from_sec", "Selected window start", r.FromSec, "s", timelineBasis),
 		b.stat("window.to_sec", "Selected window end", r.ToSec, "s", timelineBasis),
 		b.stat("triage.long_tasks", "Retained long tasks", float64(len(r.LongTasks)), "count", timelineBasis),
@@ -138,7 +149,7 @@ type builder struct {
 	paths          []flame.Path
 	pathKeys       map[string]string
 	pathByID       map[string]flame.Path
-	sampleEvidence map[sampleRef][]string
+	sampleEvidence map[sampleRef]sampleEvidence
 }
 
 func defaults(o Options) Options {
@@ -224,13 +235,32 @@ func (b builder) stat(key, label string, value float64, unit, basis string) Stat
 	return Stat{Key: key, Label: label, Value: value, Unit: unit, Basis: basis, Command: b.reproduce(key)}
 }
 
+// builtFrameID uses the generated identity already stored on retained frames.
+func builtFrameID(f flame.Frame) string {
+	if f.ID != "" {
+		return f.ID
+	}
+	return flame.FunctionID(f)
+}
+
 func stackKey(frames []flame.Frame) string {
 	h := sha256.New()
+	var entry [len("f_") + sha256.Size*2 + 1]byte
 	for _, f := range frames {
-		h.Write([]byte(flame.FunctionID(f)))
-		h.Write([]byte{0})
+		id := builtFrameID(f)
+		if len(id) < len(entry) {
+			copy(entry[:], id)
+			entry[len(id)] = 0
+			h.Write(entry[:len(id)+1])
+		} else {
+			h.Write([]byte(id))
+			h.Write([]byte{0})
+		}
 	}
-	return hex.EncodeToString(h.Sum(nil)[:12])
+	var sum [sha256.Size]byte
+	var encoded [24]byte
+	hex.Encode(encoded[:], h.Sum(sum[:0])[:12])
+	return string(encoded[:])
 }
 
 func frameLess(a, b flame.Frame) bool {
@@ -267,7 +297,10 @@ func (b builder) stacks(samples []flame.Sample, prefix string) []Stack {
 		if len(s.Frames) == 0 || s.WeightMs <= 0 {
 			continue
 		}
-		key := stackKey(s.Frames)
+		key := b.sampleEvidence[sampleReference(s)].stackKey
+		if key == "" {
+			key = stackKey(s.Frames)
+		}
 		v := agg[key]
 		if v == nil {
 			v = &Stack{Frames: s.Frames}

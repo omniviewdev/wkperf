@@ -4,6 +4,7 @@
 package profile
 
 import (
+	"bytes"
 	"encoding/json"
 	"math"
 	"sort"
@@ -121,10 +122,17 @@ func IsGC(r model.Record) bool {
 	if r.EventType == "garbage-collected" {
 		return true
 	}
+	// Most details describe timers and events. A matching JSON string must
+	// contain the literal value or an escape. Decode candidates normally to
+	// preserve escaped keys and values, malformed inputs, and duplicate fields.
+	raw := bytes.TrimSpace(r.Details)
+	if len(raw) == 0 || raw[0] != '{' || (!bytes.Contains(raw, []byte("GarbageCollection")) && bytes.IndexByte(raw, '\\') < 0) {
+		return false
+	}
 	var details struct {
 		Type string `json:"__type"`
 	}
-	return len(r.Details) > 0 && json.Unmarshal(r.Details, &details) == nil && details.Type == "GarbageCollection"
+	return json.Unmarshal(r.Details, &details) == nil && details.Type == "GarbageCollection"
 }
 
 func CountOnly(eventType string) bool {
@@ -162,7 +170,9 @@ func category(r model.Record) (int, bool) {
 func occupancy(spans []workSpan, collections, active []Interval, start, end float64) Occupancy {
 	var ms [kindCount]float64
 	var o Occupancy
-	for _, a := range active {
+	firstActive := sort.Search(len(active), func(i int) bool { return active[i].End > start })
+	for i := firstActive; i < len(active) && active[i].Start < end; i++ {
+		a := active[i]
 		if hi, lo := math.Min(end, a.End), math.Max(start, a.Start); hi > lo {
 			o.DurationMs += (hi - lo) * 1000
 		}
@@ -286,12 +296,20 @@ type triggerSpan struct {
 // Frames discards records overlapping a capture pause: the unobserved portion
 // cannot establish frame latency. Window clipping retains existing semantics.
 func Frames(rec *model.Recording, start, end float64) []Frame {
+	return newWorkIndex(rec, start, end, false).Frames(start, end)
+}
+
+// Frames classifies rendering intervals in a window covered by the index.
+func (w *WorkIndex) Frames(start, end float64) []Frame {
+	rec := w.rec
 	if rec == nil || end <= start {
 		return nil
 	}
-	active := ActiveIntervals(rec, start, end)
-	spans := exclusiveSpans(rec, active)
-	collections := collectorIntervals(rec, active)
+	var spans []workSpan
+	haveActiveBounds := finite(start) && finite(end)
+	if haveActiveBounds {
+		spans = w.spansFor(start, end)
+	}
 	haveWork := false
 	for _, instrument := range rec.InstrumentTypes {
 		if instrument == model.TypeScript || instrument == model.TypeLayout {
@@ -334,7 +352,10 @@ func Frames(rec *model.Recording, start, end float64) []Frame {
 			continue
 		}
 		duration := hi - lo
-		o := occupancy(spans, collections, active, lo, hi)
+		var o Occupancy
+		if haveActiveBounds {
+			o = occupancy(spans, w.collections, w.active, lo, hi)
+		}
 		if o.DurationMs+1e-6 < duration*1000 {
 			continue
 		}

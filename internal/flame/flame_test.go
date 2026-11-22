@@ -358,6 +358,37 @@ func TestCanonicalMetadataKeepsAvailableOriginal(t *testing.T) {
 	}
 }
 
+func TestRecursiveAggregatesDeduplicateEdgesPerSample(t *testing.T) {
+	a, b := frame("a", 1), frame("b", 2)
+	tree := Build(recording([][]model.StackFrame{{a, b, a, b, a}, {b, a, a, a}}, []float64{.002, .003}))
+	wantEdges := []struct {
+		caller, callee string
+		samples        int
+		ms             float64
+	}{
+		{"a", "a", 1, 3},
+		{"a", "b", 2, 5},
+		{"b", "a", 1, 2},
+	}
+	edges := tree.Edges()
+	if len(edges) != len(wantEdges) {
+		t.Fatalf("edges = %+v, want %d", edges, len(wantEdges))
+	}
+	for i, want := range wantEdges {
+		edge := edges[i]
+		if edge.Caller.Name != want.caller || edge.Callee.Name != want.callee || edge.Samples != want.samples {
+			t.Fatalf("edge %d = %+v, want %+v", i, edge, want)
+		}
+		near(t, edge.TotalMs, want.ms)
+	}
+	for _, f := range tree.Functions() {
+		if f.Samples != 2 || f.SelfSamples != 1 {
+			t.Fatalf("recursive function counts = %+v", f)
+		}
+		near(t, f.TotalMs, 5)
+	}
+}
+
 func TestWindowClampsToRecordingBounds(t *testing.T) {
 	tree := Build(goldenRecording())
 	window := tree.Window(2, 3)

@@ -28,6 +28,7 @@ func Build(rec *model.Recording, opts ...Options) *Tree {
 	var samples, untimed []Sample
 	canonical := make(map[frameKey]Frame)
 	normalized := make(map[model.StackFrame]Frame)
+	hasFrameVariants := false
 	end := normalizeTime(rec.EndTime - origin)
 	bounded := finite(end) && end > 0
 	if !bounded {
@@ -50,14 +51,17 @@ func Build(rec *model.Recording, opts ...Options) *Tree {
 				if !ok {
 					frame = fromModel(raw, options.Mapper, classifier)
 					normalized[raw] = frame
+					// Repeated raw frames cannot change the canonical representative.
+					k := key(frame)
+					previous, exists := canonical[k]
+					if !exists {
+						canonical[k] = frame
+					} else if previous != frame {
+						hasFrameVariants = true
+						canonical[k] = chooseFrame(previous, frame)
+					}
 				}
 				frames[len(frames)-1-j] = frame
-				k := key(frame)
-				if previous, ok := canonical[k]; ok {
-					canonical[k] = chooseFrame(previous, frame)
-				} else {
-					canonical[k] = frame
-				}
 			}
 			sample := Sample{Frames: frames, Timestamp: timestamp, WeightMs: weight, TargetID: target.Target.Identifier, Untimed: missingTime}
 			if missingTime {
@@ -76,10 +80,12 @@ func Build(rec *model.Recording, opts ...Options) *Tree {
 	if !finite(end) {
 		end = 0
 	}
-	for _, group := range [][]Sample{samples, untimed} {
-		for i := range group {
-			for j, frame := range group[i].Frames {
-				group[i].Frames[j] = canonical[key(frame)]
+	if hasFrameVariants {
+		for _, group := range [][]Sample{samples, untimed} {
+			for i := range group {
+				for j, frame := range group[i].Frames {
+					group[i].Frames[j] = canonical[key(frame)]
+				}
 			}
 		}
 	}
@@ -576,7 +582,6 @@ func buildNodes(tree *Tree, inverted bool) (*Node, map[string]*Node, []string) {
 	if !inverted {
 		leafIDs = make([]string, 0, tree.SampleCount())
 	}
-	ids := make(map[frameKey]string)
 	tree.EachSample(func(sample Sample) {
 		current := rootWork
 		current.total.add(sample.WeightMs)
@@ -593,12 +598,7 @@ func buildNodes(tree *Tree, inverted bool) (*Node, map[string]*Node, []string) {
 			}
 			child := current.children[k]
 			if child == nil {
-				functionID, ok := ids[k]
-				if !ok {
-					functionID = FunctionID(frame)
-					ids[k] = functionID
-				}
-				node := &Node{ID: contextID(current.node.ID, functionID), Frame: frame, Parent: current.node, Children: make([]*Node, 0)}
+				node := &Node{ID: contextID(current.node.ID, frame.ID), Frame: frame, Parent: current.node, Children: make([]*Node, 0)}
 				child = &nodeWork{node: node}
 				current.children[k] = child
 				current.node.Children = append(current.node.Children, node)
