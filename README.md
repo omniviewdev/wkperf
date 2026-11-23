@@ -61,7 +61,7 @@ wkperf version
 
 If you set `GOBIN`, add that directory instead. On Windows, add `%USERPROFILE%\go\bin` to your user `Path`.
 
-For a reproducible CLI install, pin the release tag, for example `go install github.com/omniviewdev/wkperf@v0.7.0`.
+For a reproducible CLI install, pin the release tag, for example `go install github.com/omniviewdev/wkperf@v0.8.0`.
 
 > v0.5.0 updates the machine-readable JSON contracts. Agents and integrations upgrading from v0.4.0 should check the schema discriminator and run `wkperf schema`.
 
@@ -110,9 +110,9 @@ Reports are standalone HTML files. Share the file directly; recipients do not ne
 
 ### Interactive flame graphs
 
-![Actual wkperf flame graph showing app, React, and native getAnimations work with source-aware tooltips](docs/assets/flame-report.png)
+![Recorded post-load stacks in the wkperf flame workbench, with weighted branches and a docked frame inspector](docs/assets/flame-report.png)
 
-*Synthetic stack fixture. Widths represent sampled time, not elapsed recording time.*
+**[Guided tour: investigate two real recordings](docs/FLAME-TOUR.md).** Follow a 365-frame stack, distinguish self from inclusive weight, and trace a sampled leaf back to its callers. The sanitized recordings ship under `examples/flame/`.
 
 ```bash
 wkperf flame demo/regressions/get-animations.json --out flame.html
