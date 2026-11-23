@@ -148,6 +148,8 @@
     const root = rootOf(state);
     const viewRoot = state.focused || root;
     const selected = atPath(viewRoot, state.path);
+    const inspector = holder.querySelector(".wk-inspector");
+    inspector.hidden = false;
     const canvas = holder.querySelector(".wk-flame-canvas");
     const crumbs = holder.querySelector(".wk-flame-breadcrumb");
     const treeWidth = Math.max(1, canvas.clientWidth);
@@ -173,7 +175,7 @@
     };
     collect(selected, 0, 100, 0, state.path);
     canvas.replaceChildren();
-    canvas.style.height = ((maxDepth + 1) * 25 + 2) + "px";
+    canvas.style.height = ((maxDepth + 1) * 20 + 2) + "px";
     for (const entry of nodes) {
       const node = entry.node;
       const button = document.createElement("button");
@@ -181,7 +183,7 @@
       button.className = "wk-flame-node wk-flame-" + node.category + (entry.match ? " wk-flame-match" : "");
       button.style.left = entry.left + "%";
       button.style.width = entry.width + "%";
-      button.style.top = (entry.depth * 25) + "px";
+      button.style.top = (entry.depth * 20) + "px";
       if (data.mode === "diff") {
         const paint = color(node, maximum);
         button.style.backgroundColor = paint.background;
@@ -214,6 +216,43 @@
       addCrumb(ancestor, function () { state.path = state.path.slice(0, depth + 1); });
     });
     holder.querySelector(".wk-flame-summary").textContent = number(selected.totalMs) + " ms · " + pct(selected.totalMs, root.totalMs) + " of sampled time" + (expression ? " · " + matching + " matching frames" : "") + (invert.checked ? " · self → callers" : " · root → leaf");
+    inspector.querySelector(".wk-name").textContent = frameName(selected);
+    const details = inspector.querySelector("dl");
+    details.replaceChildren();
+    function field(label, value) {
+      const term = document.createElement("dt");
+      const detail = document.createElement("dd");
+      term.textContent = label;
+      detail.textContent = value;
+      details.append(term, detail);
+    }
+    field("Inclusive · full recording", number(selected.totalMs) + " ms · " + pct(selected.totalMs, root.totalMs));
+    field("Self weight", number(selected.selfMs) + " ms");
+    if (data.mode === "diff") field("Change", number(selected.deltaMs) + " " + state.chart.unit);
+    if (selected !== root) {
+      field("Frame category", selected.category);
+      field("Generated location", location(selected.frame));
+      if (selected.original) field("Original location", location(selected.original));
+    }
+    inspector.querySelector(".wk-branch-label").textContent = invert.checked
+      ? (selected === root ? "Heaviest sampled leaves" : "Heaviest callers")
+      : "Heaviest callees";
+    const branches = inspector.querySelector(".wk-branches");
+    branches.replaceChildren();
+    const children = selected.children || [];
+    if (!children.length) branches.textContent = "No sampled branches.";
+    children.map((child, i) => ({child, i})).sort((a, b) => weight(b.child) - weight(a.child)).slice(0, 5).forEach(({child, i}) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = number(weight(child)) + " ms · " + frameName(child);
+      button.addEventListener("click", () => {
+        state.path = state.path.concat(i);
+        hideTooltip();
+        renderOne(index);
+        holder.querySelector(".wk-flame-breadcrumb button:last-child").focus();
+      });
+      branches.appendChild(button);
+    });
   }
   function render() {
     hideTooltip();

@@ -2,6 +2,8 @@
 
 Run `wkperf ui --open`. If the browser does not open, paste the printed URL into your browser. Keep the terminal running while you use the UI; press Ctrl-C to stop it.
 
+For a reproducible investigation with real sampled stacks and browser screenshots, follow the [flame workbench tour](FLAME-TOUR.md).
+
 1. In Web Inspector's [Timelines tab](https://webkit.org/web-inspector/timelines-tab/#sharing), export a recording as JSON. Include the instruments you want to investigate, such as **JavaScript & Events** for call stacks.
 2. Choose that file under **Baseline recording**. To compare two runs, choose the second file under **Candidate recording**. Use recordings of the same action and page when possible.
 3. Select **Analyze recordings**. Open a recording's **Flame graph** for calling contexts, **Attribution** for sampled self weight by category, and **Hot functions** for a function ranking. **Metrics** and **Findings** show other evidence independently of the sampled stacks.

@@ -13,7 +13,8 @@ import (
 //go:embed flame.js
 var script string
 
-const style = `.wk-flame{position:relative;background:#111827;color:#e5e7eb;border:1px solid #334155;border-radius:12px;padding:24px;margin:20px 0;font:14px/1.5 system-ui,-apple-system,sans-serif;box-sizing:border-box}.wk-flame *{box-sizing:border-box}.wk-flame h2{font-size:24px;letter-spacing:-.03em;margin:0 0 6px}.wk-flame h3{font-size:16px;margin:24px 0 4px;overflow-wrap:anywhere}.wk-flame p{color:#a8b4c7;margin:6px 0}.wk-flame-controls{display:flex;flex-wrap:wrap;gap:12px;align-items:end;margin:20px 0 12px}.wk-flame-controls label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:#cbd5e1}.wk-flame-controls label.wk-flame-toggle{flex-direction:row;align-items:center;align-self:center}.wk-flame input{background:#1e293b;color:#f8fafc;border:1px solid #475569;border-radius:5px;padding:7px;min-width:0;font:inherit}.wk-flame input[type=number]{width:88px}.wk-flame input[type=checkbox]{accent-color:#60a5fa}.wk-flame input[aria-invalid=true]{border-color:#f87171}.wk-flame-controls button,.wk-flame-breadcrumb button{background:#243247;border:1px solid #475569;border-radius:5px;color:#e2e8f0;padding:7px 11px;cursor:pointer}.wk-flame button:focus-visible,.wk-flame input:focus-visible{outline:3px solid #38bdf8;outline-offset:2px}.wk-flame-legend{display:flex;gap:15px;flex-wrap:wrap;font-size:12px;color:#cbd5e1}.wk-flame-legend span:before{content:"";display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;background:var(--swatch)}.wk-flame-status{min-height:22px;font-size:12px}.wk-flame-breadcrumb{display:flex;gap:5px;flex-wrap:wrap;margin:10px 0}.wk-flame-breadcrumb button{font-size:11px;padding:2px 7px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.wk-flame-summary{font-size:12px;color:#9caec6}.wk-flame-canvas{position:relative;width:100%;min-height:27px;border:1px solid #334155;border-radius:4px;background:#0b1220;overflow:hidden;margin-top:10px}.wk-flame-node{position:absolute;height:24px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;text-align:left;font:11px/22px ui-monospace,SFMono-Regular,Consolas,monospace;border:1px solid #111827;border-radius:2px;background:#718096;color:#000000;padding:0 5px;cursor:pointer;min-width:0}.wk-flame-node:hover{outline:2px solid #e2e8f0;outline-offset:-2px;z-index:2}.wk-flame-app{background:#60a5fa}.wk-flame-framework{background:#a78bfa}.wk-flame-native{background:#94a3b8}.wk-flame-gc{background:#fbbf24}.wk-flame-match{box-shadow:inset 0 0 0 3px #fef08a;z-index:1}.wk-flame-tooltip{position:absolute;z-index:20;pointer-events:none;background:#020617;color:#e2e8f0;border:1px solid #64748b;border-radius:7px;padding:12px;box-shadow:0 8px 24px #0008;white-space:pre-wrap;overflow-wrap:anywhere;max-width:min(520px,95%);font:12px/1.6 ui-monospace,SFMono-Regular,monospace}.wk-flame-empty{padding:14px;border:1px dashed #475569;border-radius:6px}.wk-flame-note{font-size:12px}`
+//go:embed flame.css
+var style string
 
 type htmlTree struct {
 	Root *viewNode `json:"root"`
@@ -54,7 +55,7 @@ func RenderHTML(w io.Writer, charts []Chart, opts Options) error {
 		return err
 	}
 	out := &textWriter{w: w}
-	out.printf("<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>%s</title><style>body{margin:0;padding:24px;background:#080e19}main{max-width:1600px;margin:auto}@media(max-width:700px){body{padding:8px}}</style></head><body><main>\n", html.EscapeString(title(opts)))
+	out.printf("<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>%s</title><style>body{margin:0;background:#16191d}main{margin:auto}</style></head><body><main>\n", html.EscapeString(title(opts)))
 	if out.err == nil {
 		out.err = HTMLFragment(w, charts, opts)
 	}
@@ -76,7 +77,7 @@ func HTMLFragment(w io.Writer, charts []Chart, opts Options) error {
 		return fmt.Errorf("encode flame data: %w", err)
 	}
 	out := &textWriter{w: w}
-	out.printf("<section class=\"wk-flame\" aria-label=\"%s\"><style>%s</style>\n<h2>%s</h2>\n", html.EscapeString(title(opts)), style, html.EscapeString(title(opts)))
+	out.printf("<section class=\"wk-flame\" aria-label=\"%s\"><style>%s</style><header class=\"wk-title\"><b>wkperf</b><span>Performance tools</span><h2>%s</h2></header>\n", html.EscapeString(title(opts)), style, html.EscapeString(title(opts)))
 	if data.Mode == "diff" {
 		out.text("<p>Calling-context difference · current minus baseline. Rectangle widths show union time; colors show Delta in each recording's stated unit.</p><div class=\"wk-flame-legend\"><span style=\"--swatch:#dc3c41\">slower · positive delta</span><span style=\"--swatch:#239669\">faster · negative delta</span><span style=\"--swatch:#718096\">unchanged</span></div>\n")
 	} else {
@@ -117,12 +118,12 @@ func HTMLFragment(w io.Writer, charts []Chart, opts Options) error {
 		}
 		rects, depth := viewLayout(root, opts.MinMS)
 		maximum := maxAbsDelta(root)
-		out.printf("<div class=\"wk-flame-canvas\" style=\"height:%dpx\">", (depth+1)*25+2)
+		out.printf("<div class=\"wk-workspace\"><div class=\"wk-plot\"><div class=\"wk-scale\" aria-label=\"Fraction of visible weighted stack width\"><span>0%%</span><span>25%%</span><span>50%%</span><span>75%%</span><span>100%%</span></div><div class=\"wk-flame-canvas\" style=\"height:%dpx\">", (depth+1)*20+2)
 		for _, rect := range rects {
 			paint := nodePaint(rect.node, data.Mode == "diff", maximum)
-			out.printf("<button type=\"button\" class=\"wk-flame-node\" style=\"left:%.8f%%;width:%.8f%%;top:%dpx;background:%s;color:%s\" title=\"%s\" aria-label=\"%s\">%s</button>", rect.x*100, rect.width*100, rect.depth*25, paint.Background, paint.Foreground, html.EscapeString(tooltipWithUnit(rect.node, root, data.Mode == "diff", chart.Unit)), html.EscapeString(shortARIA(rect.node)), html.EscapeString(frameName(rect.node.Frame)))
+			out.printf("<button type=\"button\" class=\"wk-flame-node\" style=\"left:%.8f%%;width:%.8f%%;top:%dpx;background:%s;color:%s\" title=\"%s\" aria-label=\"%s\">%s</button>", rect.x*100, rect.width*100, rect.depth*20, paint.Background, paint.Foreground, html.EscapeString(tooltipWithUnit(rect.node, root, data.Mode == "diff", chart.Unit)), html.EscapeString(shortARIA(rect.node)), html.EscapeString(frameName(rect.node.Frame)))
 		}
-		out.text("</div></article>\n")
+		out.text("</div></div><aside class=\"wk-inspector\" hidden><h4>Frame inspector</h4><strong class=\"wk-name\"></strong><dl></dl><h4 class=\"wk-branch-label\"></h4><div class=\"wk-branches\"></div></aside></div></article>\n")
 	}
 	out.text("</div><p class=\"wk-flame-note\">Each recording stays separate. Folded and sampled exports retain canonical root → leaf stacks. ")
 	if opts.MinMS > 0 {
